@@ -495,7 +495,8 @@ function subscribe(
   surface: Surface,
   refreshSettings: () => void,
 ): () => void {
-  const publish = (): void => {
+  const publish = (reusePanels = false): void => {
+    const previous = store.getSnapshot()
     surface.version += 1
     store.set({
       version: surface.version,
@@ -510,29 +511,29 @@ function subscribe(
       cwd: surface.cwd,
       pendingApproval: surface.pendingApproval,
       pendingQuestion: surface.pendingQuestion,
-      commands: store.getSnapshot().commands,
-      models: surface.models,
-      sessions: ctx.agents.list().map((agent): SessionEntry => ({
+      commands: previous.commands,
+      models: reusePanels ? previous.models : surface.models,
+      sessions: reusePanels ? previous.sessions : ctx.agents.list().map((agent): SessionEntry => ({
         id: agent.id,
         model: agent.options.model ?? '',
         status: agent.status,
       })),
       queued: queuedEntries(surface.agent),
       settings: surface.settings,
-      jobs: jobsRows(ctx, Date.now()),
+      jobs: reusePanels ? previous.jobs : jobsRows(ctx, Date.now()),
       subagents: surface.subagents,
-      workflows: [...surface.workflows.values()],
+      workflows: reusePanels ? previous.workflows : [...surface.workflows.values()],
       feedback: surface.feedback,
       plan: surface.fold.plan,
       goal: surface.fold.goal,
       reasoning: surface.reasoning,
       attachmentCount: surface.pendingAttachments.length,
       compaction: surface.fold.compaction,
-      sandbox: ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode,
-      occupancy: readOccupancy(ctx, surface.agent.session),
+      sandbox: reusePanels ? previous.sandbox : ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode,
+      occupancy: reusePanels ? previous.occupancy : readOccupancy(ctx, surface.agent.session),
     })
   }
-  const uiPublish = createUiPublishScheduler(publish)
+  const uiPublish = createUiPublishScheduler(() => { publish(true) })
   const off = ctx.on('internal/dispatch', (_mode, eventName, args) => {
     if (eventName === 'session/event') {
       // Only the surface's own session feeds the fold: a foreign agent's
@@ -544,7 +545,11 @@ function subscribe(
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
       enrichToolCards(ctx, event, surface.fold)
       anchorRetry(surface.fold, event)
-      uiPublish.request(!shouldCoalesceSessionEvent(event))
+      if (shouldCoalesceSessionEvent(event)) uiPublish.request(false)
+      else {
+        uiPublish.dispose()
+        publish()
+      }
       return
     }
     if (eventName === 'agent/status') {
@@ -553,7 +558,8 @@ function subscribe(
       const payload = (args as unknown[])[0] as { agent?: unknown; status?: unknown } | undefined
       if (payload?.agent !== surface.agent) return
       surface.busy = payload.status === 'running'
-      uiPublish.request(true)
+      uiPublish.dispose()
+      publish()
     }
   }, { global: true })
   // The occupancy projection can change on the same session event the fold
