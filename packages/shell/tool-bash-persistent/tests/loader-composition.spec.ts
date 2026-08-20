@@ -84,12 +84,13 @@ suite('persistent Bash through a real cordis.yml Loader composition', () => {
       '  config:',
       '    pollIntervalMs: 10',
       '    exactProbeAfterMs: 20',
-      // A mismatched PS1 would reach the tool deadline before this fallback;
-      // every command in this composition therefore proves exact prompt readiness.
-      '    idleSilenceMs: 10000',
+      // The silence tier is pushed beyond the send bound, so no send below can
+      // settle as inferred_idle: every case proves the controlled-prompt fast
+      // path that the production defaults (3.5s silence) would otherwise mask.
+      '    idleSilenceMs: 30000',
       '    handoffGraceMs: 100',
       '    scrollbackLines: 20000',
-      '    timeoutMs: 12000',
+      '    timeoutMs: 2000',
       '    disposeGraceMs: 500',
       "- name: '@deepseek-ai/dsh-tool-bash-persistent'",
       '  config:',
@@ -136,14 +137,14 @@ suite('persistent Bash through a real cordis.yml Loader composition', () => {
     await execute('state', 'export KEEP=loader; mkdir -p nested; cd nested')
     const observed = text(await execute('observe', 'printf "cwd=%s keep=%s\\n" "$PWD" "$KEEP"'))
     expect(observed).toContain(`cwd=${join(root, 'nested')} keep=loader`)
-    expect(observed).not.toContain('dsh>')
+    expect(observed).not.toContain('DSH_PERSISTENT_BASH')
 
     const multiline = text(await execute(
       'multiline',
       'value="line one"\nprintf "%s:%s\\n" "$value" "it\'s fine"',
     ))
     expect(multiline).toBe("line one:it's fine")
-    expect(multiline).not.toContain('dsh>')
+    expect(multiline).not.toContain('DSH_PERSISTENT_BASH')
 
     const heredoc = text(await execute(
       'heredoc',
@@ -155,6 +156,12 @@ suite('persistent Bash through a real cordis.yml Loader composition', () => {
     expect(large.startsWith('1\n2\n3\n')).toBe(true)
     expect(large).toContain('<response clipped>')
     expect(large).not.toContain('beginning of this command output was dropped')
+
+    // `exec` replaces the wrapper before its end marker prints; the seam's
+    // stdin_read readiness is what returns the replacement shell's prompt
+    // instead of spinning until the tool deadline.
+    const execed = text(await execute('exec-replacement', 'exec bash --noprofile --norc -i'))
+    expect(execed).toBe('dsh> ')
 
     const exited = text(await execute('exit', 'exit'))
     expect(exited).toContain('next bash call starts from the workspace')

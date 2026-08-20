@@ -10,7 +10,7 @@ Agent 正在回答时，Ink 把事件循环花在逐 token 的 `store.set`、整
 
 ## Decision
 
-TUI 插件仍使用 Ink 7。fold 仍然立刻应用每条 session 事件。`assistant/chunk` 的 text/reasoning delta 的 UI `store.set` 按 40ms 合并（`createUiPublishScheduler`）；tool/call、tool/result、turn/end、assistant/message 以及 agent status 立即发布。live assistant wrap 复用已完成行（`wrapLiveAssistantText`）。Thinking/compaction 的 tick 放在 `ChatTranscript` 里；状态栏星号（`✶✸✹✺`）有自己的 100ms timer；等待中的 retry 标题在 `Transcript` 内闪烁。user 节点采用 Grok 风格的 prompt 块：灰色 Ink 背景（`bg = light`），上下各一空行，连续 user 之间合并。assistant markdown 在块之间保留一空行（marked 的 `space` token）；think/tool/assistant 节点仍然紧贴。深色调色板把 assistant 正文保持为 `whiteBright`，user prompt 用灰色块上的 `blue`，chrome 数据（`gray`、turn 尾、权限条、composer `›`）不再提亮。hex/`black` 仍改成具名色，以免 Windows Terminal 画出看不见的黑字。设置页没有主题切换，终端固定深色调色板。live Thinking 只改 spinner 字形。忙碌状态栏在稳定的 yellow 上循环星号字形。设置页用 Claude Code 风格 chrome：搜索框、可点击 tab 条、Tab / ←→ 切换、Esc 关闭。models 页的 provider 是青色分节标题，没有 `▸`。`TUI_PERF=1` 在 stderr 打印 publish/s 和 render/s。
+TUI 插件仍使用 Ink 7。fold 仍然立刻应用每条 session 事件。`assistant/chunk` 的 text/reasoning delta 的 UI `store.set` 按 40ms 合并（`createUiPublishScheduler`）；tool/call、tool/result、turn/end、assistant/message 以及 agent status 立即发布。live assistant wrap 复用已完成行（`wrapLiveAssistantText`）。Thinking/compaction 的 tick 放在 `ChatTranscript` 里；状态栏星号（`✶✸✹✺`）有自己的 100ms timer；等待中的 retry 标题在 `Transcript` 内闪烁。user 节点采用 Grok 风格的 prompt 块：更深的灰色 Ink 背景（dark 下 `#2d2d2d`，light 下具名 `gray`），白色 prompt 字（dark remap 后为 `whiteBright`），上下各一空行，连续 user 之间合并。assistant markdown 在块之间保留一空行（marked 的 `space` token）；think/tool/assistant 节点仍然紧贴。深色调色板把 assistant 正文保持为 `whiteBright`，chrome 数据（`gray`、turn 尾、权限条、composer `›`）不再提亮。hex/`black` 仍改成具名色，以免 Windows Terminal 画出看不见的黑字。设置页没有主题切换，终端固定深色调色板。live Thinking 在标签上扫灰色高亮（`thinkingShimmerLevel` 映到 `gray` / `whiteBright`）；不盖 hex 灰阶，因为 Windows Terminal 会把它画成黑字。忙碌状态栏在稳定的 yellow 上循环星号字形。设置页用 Claude Code 风格 chrome：搜索框、可点击 tab 条、Tab / ←→ 切换、Esc 关闭。models 页的 provider 是青色分节标题，没有 `▸`。`TUI_PERF=1` 在 stderr 打印 publish/s 和 render/s。
 
 ## Alternatives considered
 
@@ -32,4 +32,4 @@ App 里 100ms 的 `setTick` 会重建 `historyLines`。星号只属于 StatusBar
 
 ## Testing
 
-`packages/tui/tui/tests/wrap.spec.ts`、`ui-publish.spec.ts`、`busy-star.spec.ts` 和 `render-frame.spec.ts` 覆盖增量 wrap、合并发布、深色 remap、prompt vpad 以及忙碌星号。
+`packages/tui/tui/tests/wrap.spec.ts`、`ui-publish.spec.ts`、`busy-star.spec.ts` 和 `render-frame.spec.ts` 覆盖增量 wrap、合并发布、深色 remap、prompt vpad、忙碌星号以及 Thinking 灰阶扫光。

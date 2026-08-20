@@ -1094,7 +1094,7 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
-  it('routes /effort off|high|max to the host and rejects other values', async () => {
+  it('routes /effort off|low|high|max to the host and rejects other values', async () => {
     const efforts: (string | undefined)[] = []
     const { capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
       setEffort: (effort) => { efforts.push(effort) },
@@ -1104,20 +1104,22 @@ describe('Ink 7 full-screen render', () => {
       await type('\r')
       await type('/effort off')
       await type('\r')
-      expect(efforts).toEqual(['high', undefined])
-      let lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('推理等级 → off'))).toBe(true)
       await type('/effort low')
       await type('\r')
+      expect(efforts).toEqual(['high', undefined, 'low'])
+      let lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('推理等级 → low'))).toBe(true)
+      await type('/effort foo')
+      await type('\r')
       lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('用法：/effort off|high|max'))).toBe(true)
-      expect(efforts).toEqual(['high', undefined])
+      expect(lines.some(line => line.includes('用法：/effort off|low|high|max'))).toBe(true)
+      expect(efforts).toEqual(['high', undefined, 'low'])
     } finally {
       unmount()
     }
   })
 
-  it('opens /effort as a three-option Claude-style selector', async () => {
+  it('opens /effort as a four-option Claude-style selector', async () => {
     const efforts: (string | undefined)[] = []
     const { capture, unmount, type } = await mount([], {
       setEffort: (effort) => { efforts.push(effort) },
@@ -1127,15 +1129,16 @@ describe('Ink 7 full-screen render', () => {
       let lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('推理力度（↑↓ 选择'))).toBe(true)
       expect(lines.some(line => line.includes('▸ off') && line.includes('当前'))).toBe(true)
+      expect(lines.some(line => line.includes('low') && line.includes('低强度推理'))).toBe(true)
       expect(lines.some(line => line.includes('high') && line.includes('高强度推理'))).toBe(true)
       expect(lines.some(line => line.includes('max') && line.includes('最大强度推理'))).toBe(true)
       expect(lines.some(line => line.includes('/attach'))).toBe(false)
       await type('\x1b[B')
       lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('▸ high'))).toBe(true)
+      expect(lines.some(line => line.includes('▸ low'))).toBe(true)
       await type('\r')
-      expect(efforts).toEqual(['high'])
-      expect(lastFrameLines(capture.output).some(line => line.includes('推理等级 → high'))).toBe(true)
+      expect(efforts).toEqual(['low'])
+      expect(lastFrameLines(capture.output).some(line => line.includes('推理等级 → low'))).toBe(true)
     } finally {
       unmount()
     }

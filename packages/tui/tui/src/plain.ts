@@ -385,8 +385,11 @@ export function renderNodePlain(node: TuiNode, locale: 'zh' | 'en' = 'zh'): stri
       return `▸ ${node.text}`
     case 'context':
       return `${locale === 'en' ? '◆ context injected' : '◆ 上下文注入'} · ${node.producer}\n${node.text}`
-    case 'assistant':
-      return node.text === '' ? '' : `● ${node.text}`
+    case 'assistant': {
+      const mark = locale === 'zh' ? ' · 已中断' : ' · interrupted'
+      if (node.text === '') return node.interrupted === true ? `●${mark}` : ''
+      return `● ${node.text}${node.interrupted === true ? mark : ''}`
+    }
     case 'think':
       return node.text.split('\n').map(line => `  │ ${line}`).join('\n')
     case 'tool': {
@@ -598,7 +601,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       '/presets     switch the agent preset (blank session, in place)',
       '/rename      rename the session title · /workspace <dir> switch directory',
       '/attach      attach png/jpg/gif/webp · /fork [seq] fork the session',
-      '/effort      set the reasoning effort: off | high | max',
+      '/effort      set the reasoning effort: off | low | high | max',
       '/goal        current goal details · /quit /exit save and exit',
       'Enter send · Ctrl+Enter steer · Shift+Enter newline · Esc cancel the running turn',
       'Shift+Tab cycle the file permission · PgUp/PgDn scroll history · ↑/↓ input history',
@@ -616,7 +619,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       '/presets     切换 agent 预设（空白会话原地生效）',
       '/rename      重命名会话标题 · /workspace <目录> 切换工作目录',
       '/attach      附加 png/jpg/gif/webp · /fork [seq] 分叉会话',
-      '/effort      设置推理力度：off | high | max',
+      '/effort      设置推理力度：off | low | high | max',
       '/goal        当前 goal 详情 · /quit /exit 保存并退出',
       'Enter 发送 · Ctrl+Enter 转向(steer) · Shift+Enter 换行 · Esc 取消当前轮',
       'Shift+Tab 切换文件权限 · PgUp/PgDn 滚动历史 · ↑/↓ 历史输入',

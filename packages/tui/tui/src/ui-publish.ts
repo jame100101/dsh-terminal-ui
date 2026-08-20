@@ -39,7 +39,12 @@ export interface PublishTimer {
 export function createUiPublishScheduler(
   publish: () => void,
   delayMs: number = STREAM_UI_PUBLISH_MS,
-  timer: PublishTimer = { schedule: setTimeout, cancel: clearTimeout },
+  timer: PublishTimer = {
+    schedule: (callback, delayMs) => setTimeout(callback, delayMs),
+    cancel: (handle) => {
+      clearTimeout(handle as ReturnType<typeof setTimeout>)
+    },
+  },
 ): { request(immediate: boolean): void; flush(): void; dispose(): void } {
   let handle: unknown = null
   const run = (): void => {

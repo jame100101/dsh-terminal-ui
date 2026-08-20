@@ -1,61 +1,46 @@
 name: E2E (real DeepSeek API)
 
-# Real-API end-to-end suite (`pnpm run test:e2e`). It consumes the
-# DEEPSEEK_API_KEY_EXTERNAL repository secret (mapped to the DEEPSEEK_API_KEY
-# env var the tests read) and calls the external API at https://api.deepseek.com
-# (DEEPSEEK_BASE_URL is pinned to it explicitly so a stray repo-root .env can't
-# redirect the run).
+# Real-API end-to-end suite (`pnpm run test:e2e`). Unlike ci.yml this job
+# consumes the DEEPSEEK_API_KEY_EXTERNAL secret (mapped to the env var
+# DEEPSEEK_API_KEY the tests read) and hits the external API at
+# https://api.deepseek.com (DEEPSEEK_BASE_URL is pinned to it explicitly so a
+# stray repo-root .env can't redirect the run).
 #
-# Triggers are deliberately narrow for this fork:
-#   - workflow_dispatch — manual pre-release validation.
-#   - push to main — automatic validation of product-affecting changes only;
-#     documentation-only paths are ignored below.
-#   - NO pull_request: fork and Dependabot PRs therefore have no surface at
-#     all to reach the secret (strictly stronger than a skip guard).
-#   - NO schedule: the nightly cron was removed so an unchanged repo no
-#     longer burns real API quota every day.
+# pull_request IS a trigger, but GitHub withholds repo secrets from BOTH forked
+# PRs and Dependabot PRs (the latter are same-repo, fork==false, but still
+# keyless). The job-level `if:` below skips the whole job for those untrusted
+# PRs. The Dependabot test keys on the PR AUTHOR (pull_request.user.login), not
+# github.actor (the run trigger) — a maintainer reopening a Dependabot PR would
+# make github.actor human while the PR is still keyless. When the job runs, the
+# secret is expected, so the preflight hard-fails if it's missing (a missing
+# secret would otherwise make the self-skipping suite report a false green). A
+# job skipped by a job-level `if:` reports as a SUCCESSFUL check, so this
+# workflow is safe to use as a required status check if desired.
 #
-# SECURITY — never add `pull_request_target` here: it runs in the base repo's
-# context WITH secrets while checking out untrusted fork code, a textbook
-# key-leak vector for a public repo.
+# SECURITY — NEVER change this trigger to `pull_request_target`. `pull_request`
+# checks out and runs the PR's HEAD code WITHOUT secrets for forks, which is what
+# keeps an untrusted fork from exfiltrating the key. `pull_request_target` runs
+# in the BASE repo's context WITH secrets while still able to check out untrusted
+# fork code — a textbook key-leak vector, especially once this repo is public.
+# The fork/secret model and its public-repo implications are recorded in
+# .agents/notes/implemented/testing/2026-06-19-real-api-e2e-ci.md.
+#
+# Note: scheduled triggers are auto-disabled after 60 days of repo inactivity;
+# push/pull_request/workflow_dispatch act as backstops.
 on:
   workflow_dispatch:
   push:
-    branches: [main]
-    # Documentation-only changes never alter the runtime the real-API suite
-    # exercises; skip them. Everything that can affect the product — sources,
-    # manifests, lockfiles, patches, tests, fixtures, workflows, runtime
-    # config — still triggers the suite.
-    paths-ignore:
-      - 'README.md'
-      - 'README.zh.md'
-      - 'README.i18n.yaml'
-      - 'CONTRIBUTING.md'
-      - 'CONTRIBUTING.zh.md'
-      - 'CONTRIBUTING.i18n.yaml'
-      - 'AGENTS.md'
-      - 'CLAUDE.md'
-      - 'TUI-WEB-COMPARISON.md'
-      - 'BENCHMARK.md'
-      - 'THIRD_PARTY_NOTICES.md'
-      - 'docs/**'
-      - 'assets/**'
-      - 'website/**'
-      - '.agents/**'
-      # CI orchestration and the keyless cross-platform smoke do not alter
-      # the product runtime the real-API suite exercises; skip them. e2e.yml
-      # itself is deliberately NOT ignored: changing this workflow must run
-      # once to validate the new configuration.
-      - '.github/workflows/ci.yml'
-      - '.github/workflows/dsh-tui-smoke.yml'
-      - '**/README.md'
-      - '**/README.zh.md'
-      - '**/README.i18n.yaml'
+    branches: [main, master]
+  pull_request:
+  schedule:
+    # 00:17 UTC nightly = 08:17 Asia/Shanghai — off the top-of-hour cron stampede.
+    - cron: '17 0 * * *'
 
-# A push run is already producing the post-merge signal; never cancel it.
+# Cancel a superseded PR run (it is on a stale commit); never cancel a
+# push/schedule run — it is already producing the post-merge/nightly signal.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Least privilege: this job only reads the repo to run tests.
 permissions:
@@ -70,6 +55,11 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     name: e2e
+    # Run on every trusted event. Skip untrusted PRs (forks + Dependabot) where
+    # the secret is withheld — they would otherwise hard-fail the preflight.
+    if: >-
+      github.event_name != 'pull_request'
+      || !(github.event.pull_request.head.repo.fork || github.event.pull_request.user.login == 'dependabot[bot]')
     # Bounded file parallelism (DSH_E2E_MAX_WORKERS), 120s/test, retry 2. 45m
     # still bounds retry storms against a slow API while the happy path fans out.
     timeout-minutes: 45
@@ -86,20 +76,16 @@ jobs:
       - name: Install (immutable)
         run: pnpm install --frozen-lockfile
 
-      # The with-key escalation e2e self-skips without a usable runner. Install
-      # bwrap so trusted CI exercises it; the userns knob is best-effort and the
-      # test's functional probe decides.
-      - name: Install bubblewrap (unrestrict userns)
-        run: |
-          sudo apt-get update -q
-          sudo apt-get install -yq bubblewrap
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 \
-            || echo "apparmor userns knob absent — the functional probe decides"
+      # The with-key escalation e2e self-skips without a usable runner. Prepare
+      # bwrap so trusted CI exercises it; the functional probe remains the
+      # authority on whether the runner can use the sandbox.
+      - name: Prepare bubblewrap (unrestrict userns)
+        run: bash scripts/prepare-ci-bubblewrap.sh
 
       # Guard against a false green: the e2e suites self-skip when the key is
       # absent, so a missing/misconfigured secret would otherwise pass as
-      # "all skipped". This job only runs on trusted events, so the secret
-      # MUST be present — fail loudly if not.
+      # "all skipped". This job only runs on trusted events (the `if:` above
+      # excludes keyless PRs), so the secret MUST be present — fail loudly if not.
       - name: Preflight (require DEEPSEEK_API_KEY)
         env:
           # Repo secret DEEPSEEK_API_KEY_EXTERNAL holds the external-API key;
@@ -118,7 +104,7 @@ jobs:
       # the built artifact under plain Node, resolving plugins through real package
       # exports — the shape a real consumer runs. That requires a prior build.
       - name: Build (lib for the e2e example bins)
-        run: pnpm run build
+        run: pnpm run build:official
 
       # Real-API end-to-end tests only. The keyless gates (lint/typecheck/
       # coverage/snapshot/etc.) already run in ci.yml on every push/PR.

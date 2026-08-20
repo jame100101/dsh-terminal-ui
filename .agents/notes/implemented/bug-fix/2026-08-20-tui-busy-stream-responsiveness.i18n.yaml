@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/bug-fix/2026-08-20-tui-busy-stream-responsiveness.md
-2026-08-20-tui-busy-stream-responsiveness.md: c6c24e449faec8d9cf09069d5c76c5d9f3d38909
-2026-08-20-tui-busy-stream-responsiveness.zh.md: 294ae21c92ae20f9b091ab4466f4f90c48eb150c
+2026-08-20-tui-busy-stream-responsiveness.md: cc92958dd49e96be2bbc155a24eb8ff5df7880a0
+2026-08-20-tui-busy-stream-responsiveness.zh.md: c3113e33b92001cac6392e71378c4649f50ee395

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BUSY_STAR_FRAMES, busyStarFrame } from '../src/busy-star'
-import { themed } from '../src/render'
+import { themed, thinkingShimmerColor, thinkingShimmerLevel } from '../src/render'
 import stringWidth from 'string-width'
 
 describe('busyStarFrame', () => {
@@ -13,6 +13,32 @@ describe('busyStarFrame', () => {
     expect(busyStarFrame(6).glyph).toBe(busyStarFrame(0).glyph)
     expect(busyStarFrame(0).color).toBe('yellow')
     expect(busyStarFrame(2).color).toBe('yellow')
+  })
+})
+
+describe('thinkingShimmerLevel', () => {
+  it('sweeps a gray-to-bright band across the label', () => {
+    const length = 10
+    const at0 = Array.from({ length }, (_, index) => thinkingShimmerLevel(index, 0, length))
+    expect(at0[0]).toBeGreaterThan(at0[5] ?? 0)
+    expect(thinkingShimmerLevel(9, 0, length)).toBe(145)
+    const centerPhase = 4
+    const band = Array.from({ length: 11 }, (_, index) => thinkingShimmerLevel(index - 5, centerPhase, length))
+    expect(band[0]).toBe(145)
+    expect(band[2] ?? 0).toBeGreaterThan(band[0] ?? 0)
+    expect(band[5]).toBe(255)
+    expect(band[8] ?? 0).toBeGreaterThan(band[10] ?? 0)
+    expect(band[10]).toBe(145)
+    expect(thinkingShimmerColor(145)).toBe('gray')
+    expect(thinkingShimmerColor(255)).toBe('whiteBright')
+    const peakAt = (phase: number): number => {
+      let best = 0
+      for (let index = 0; index < length; index += 1) {
+        if (thinkingShimmerLevel(index, phase, length) >= thinkingShimmerLevel(best, phase, length)) best = index
+      }
+      return best
+    }
+    expect(peakAt(4)).toBeLessThan(peakAt(10))
   })
 })
 

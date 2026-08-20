@@ -256,9 +256,6 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       args: options.args,
       exit: code => void shutdown.shutdown(code),
     })
-    // The live user patch layer, exposed so surfaces (the TUI's plugin
-    // toggle) can write it back; the HMR watcher below hot-applies edits.
-    hostCtx.provide('profilePatchPath', composed.profile.patchPath)
   })
   app.current = ctx
   // A surface can dispose the whole tree while boot or this post-boot watcher

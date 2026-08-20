@@ -66,7 +66,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-token-meter'
 import { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
-import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { EncodedImageAttachment, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
 import { anchorRetry, applyEvent, createScratch, foldFromLog, initialState } from './fold'
 import type { FoldScratch } from './fold'
@@ -114,6 +114,24 @@ function userMessage(text: string, attachments: readonly ImageAttachmentRef[] = 
     ],
     source: { kind: 'user' },
   })
+}
+
+/** Encode pending image refs for `commands.execute`. */
+async function encodePendingImages(
+  ctx: Context,
+  refs: readonly ImageAttachmentRef[],
+): Promise<EncodedImageAttachment[]> {
+  if (refs.length === 0) return []
+  const out: EncodedImageAttachment[] = []
+  for (const ref of refs) {
+    const stored = await ctx.attachments.readImage(ref)
+    out.push({
+      mediaType: ref.mediaType,
+      data: Buffer.from(stored.data).toString('base64'),
+      ...(ref.name === undefined ? {} : { name: ref.name }),
+    })
+  }
+  return out
 }
 
 /** Localized copy for a rejected feedback mutation. */
@@ -970,8 +988,13 @@ async function boot(
       submit()
       return
     }
-    void commands.execute(surface.agent, text, new AbortController().signal).then((execution) => {
-      if (execution !== undefined) return
+    void encodePendingImages(ctx, surface.pendingAttachments).then(images =>
+      commands.execute(surface.agent, text, images, new AbortController().signal),
+    ).then((execution) => {
+      if (execution !== undefined) {
+        surface.pendingAttachments = []
+        return
+      }
       submit()
     }).catch(() => { submit() })
   }
@@ -1343,7 +1366,7 @@ async function boot(
           }).catch(() => {})
         },
         setEffort: (effort) => {
-          // `/effort off|high|max`: set (or clear, for off) the persisted
+          // `/effort off|low|high|max`: set (or clear, for off) the persisted
           // reasoning effort on the current default route.
           const selected = surface.selection.current ?? ctx.agentDefaultModel.currentSelection()
           const reasoningEffort = effort === undefined ? undefined : ReasoningEffortId(effort)

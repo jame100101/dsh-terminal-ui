@@ -172,7 +172,7 @@ const COPY: Record<Locale, Copy> = {
     turn: '轮',
     effort: 'effort',
     effortChanged: effort => `推理等级 → ${effort}`,
-    effortUsage: '用法：/effort off|high|max',
+    effortUsage: '用法：/effort off|low|high|max',
     contextTitle: producer => `◆ 上下文注入 · ${producer}`,
     cardTruncated: '… 卡片过长，已截断显示',
     retryIn: seconds => `${seconds}s 后`,
@@ -253,7 +253,7 @@ const COPY: Record<Locale, Copy> = {
     turn: 'turn',
     effort: 'effort',
     effortChanged: effort => `reasoning effort → ${effort}`,
-    effortUsage: 'Usage: /effort off|high|max',
+    effortUsage: 'Usage: /effort off|low|high|max',
     contextTitle: producer => `◆ context injected · ${producer}`,
     cardTruncated: '… card too long, display truncated',
     retryIn: seconds => `in ${seconds}s`,
@@ -385,6 +385,37 @@ export function themed(color: string | undefined, theme: 'dark' | 'light', fallb
   return mapped
 }
 
+/** Half-width of the live-Thinking highlight window in cells. */
+const SHIMMER_WINDOW = 4
+
+/**
+ * One character's grayscale level under the sweeping highlight. The window
+ * travels left to right across the label and loops. Pure: one phase per
+ * ~100 ms tick.
+ * @param index - the character index inside the label.
+ * @param phase - the animation phase (increments once per tick).
+ * @param length - the label length the window sweeps across.
+ * @returns the grayscale level, 0-255.
+ */
+export function thinkingShimmerLevel(index: number, phase: number, length: number): number {
+  const span = length + SHIMMER_WINDOW * 2 + 1
+  const center = (phase % span) - SHIMMER_WINDOW
+  const t = Math.max(0, Math.min(1, 1 - Math.abs(index - center) / (SHIMMER_WINDOW + 1)))
+  const smooth = t * t * (3 - 2 * t)
+  return Math.round(145 + 110 * smooth)
+}
+
+/**
+ * Map a shimmer level to a named Ink color. Hex grayscale paints as black
+ * on Windows Terminal, so the original 145–255 sweep becomes gray vs
+ * whiteBright.
+ * @param level - {@link thinkingShimmerLevel} output.
+ * @returns a named Ink color.
+ */
+export function thinkingShimmerColor(level: number): 'gray' | 'whiteBright' {
+  return level >= 200 ? 'whiteBright' : 'gray'
+}
+
 /** Structured-trajectory palette: model blue, tool activity red, user cyan. */
 export function traceLineColor(text: string): 'blue' | 'red' | 'cyan' | undefined {
   if (text.startsWith('· assistant')) return 'blue'
@@ -426,7 +457,7 @@ export interface TuiHost {
   exit(): void
   newSession(): void
   selectModel(provider: string, model: string, reasoningEffort?: string): void
-  /** `/effort off|high|max`: set or clear the reasoning effort on the current route. */
+  /** `/effort off|low|high|max`: set or clear the reasoning effort on the current route. */
   setEffort(effort: string | undefined): void
   /** Shift+Tab: rotate the session's file-policy mode; returns the new mode. */
   cycleSandbox(): 'read-only' | 'workspace-write' | 'danger-full-access'
@@ -501,7 +532,7 @@ function localCommands(locale: Locale): PaletteItem[] {
     { name: 'workflows', description: zh ? 'workflow 运行进度面板' : 'workflow run progress panel', needsArgs: false },
     { name: 'sessions', description: zh ? '列出活动会话' : 'list live sessions', needsArgs: false },
     { name: 'presets', description: zh ? '切换 agent 预设（设置页）' : 'switch the agent preset (settings page)', needsArgs: false },
-    { name: 'effort', description: zh ? '设置推理力度（off/high/max）' : 'set the reasoning effort (off/high/max)', needsArgs: true },
+    { name: 'effort', description: zh ? '设置推理力度（off/low/high/max）' : 'set the reasoning effort (off/low/high/max)', needsArgs: true },
     { name: 'goal', description: zh ? '查看当前 goal 详情' : 'current goal details', needsArgs: false },
     { name: 'rename', description: zh ? '重命名当前会话标题' : 'rename the current session title', needsArgs: true },
     { name: 'workspace', description: zh ? '切换工作目录' : 'switch the workspace directory', needsArgs: true },
@@ -617,7 +648,7 @@ function nodeLines(
     case 'user':
       return withKey(wrapText(`${marker}▸ ${sanitizeTerminalText(node.text)}`, width).map(text => ({
         text: padEndDisplay(text, width),
-        color: 'blue',
+        color: 'white',
         background: true,
       })))
     case 'context': {
@@ -639,7 +670,8 @@ function nodeLines(
       const lines: { text: string; color?: string; runs?: MdRun[] }[] = []
       let first = true
       for (const md of markdownLines(sanitizeTerminalText(node.text), width)) {
-        const prefix = first && md.text !== '' ? `${marker}${ratingGlyph}● ` : ''
+        const interruptMark = node.interrupted === true ? (locale === 'zh' ? '已中断 · ' : 'interrupted · ') : ''
+        const prefix = first && md.text !== '' ? `${marker}${ratingGlyph}● ${interruptMark}` : ''
         first = md.text === '' ? first : false
         if (md.runs !== undefined) {
           for (const wrapped of wrapRuns(md.runs, width, prefix)) {
@@ -819,11 +851,11 @@ const Transcript = React.memo(function Transcript(props: {
   height: number
   width: number
   offset: number
-  onMaximumOffsetChange?: (maximumOffset: number, lineCount: number) => void
+  onMaximumOffsetChange?: ((maximumOffset: number, lineCount: number) => void) | undefined
   theme: 'dark' | 'light'
   locale: Locale
   /** Pin the floating back-to-bottom button when scrolled off the tail. */
-  backButton?: boolean
+  backButton?: boolean | undefined
 }): React.ReactElement {
   const viewport = selectTranscriptViewport(props.lines, props.height, props.offset, props.backButton === true ? 1 : 0)
   const scrollbar = selectScrollbar(props.lines.length, props.height, viewport.offset, props.backButton === true ? 1 : 0)
@@ -876,7 +908,7 @@ const Transcript = React.memo(function Transcript(props: {
             </Text>
           )
           return line.background === true
-            ? <Box key={index} width="100%" backgroundColor="gray">{row}</Box>
+            ? <Box key={index} width="100%" backgroundColor={props.theme === 'dark' ? '#2d2d2d' : 'gray'}>{row}</Box>
             : <React.Fragment key={index}>{row}</React.Fragment>
         })}
         {props.backButton === true ? (
@@ -1435,10 +1467,10 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   width: number
   contentWidth: number
   offset: number
-  onMaximumOffsetChange?: (maximumOffset: number, lineCount: number) => void
+  onMaximumOffsetChange?: ((maximumOffset: number, lineCount: number) => void) | undefined
   theme: 'dark' | 'light'
   locale: Locale
-  backButton?: boolean
+  backButton?: boolean | undefined
   linesRef: React.MutableRefObject<readonly TranscriptLine[]>
 }): React.ReactElement {
   const snapshot = props.snapshot
@@ -1460,9 +1492,17 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   const liveThinkLines: TranscriptLine[] = (() => {
     if (snapshot.live === null || !snapshot.busy || snapshot.live.think === '') return []
     const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    const glyph = spinner[tick % spinner.length] ?? '⠋'
+    const label = `${glyph} Thinking`
     const elapsed = snapshot.live.thinkSince === null ? 0 : Date.now() - snapshot.live.thinkSince
-    const label = `${spinner[tick % spinner.length]} Thinking ${(elapsed / 1000).toFixed(1)}s…`
-    const lines: TranscriptLine[] = [{ key: 'live-think', text: label, color: 'magenta' }]
+    const runs = [
+      ...[...label].map((character, index) => ({
+        text: character,
+        color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
+      })),
+      { text: ` ${(elapsed / 1000).toFixed(1)}s…`, color: 'gray' as const },
+    ]
+    const lines: TranscriptLine[] = [{ key: 'live-think', text: `${label} ${(elapsed / 1000).toFixed(1)}s…`, runs }]
     const tail = snapshot.live.think.split('\n').at(-1) ?? ''
     if (tail !== '') {
       const tailSpace = Math.max(8, props.contentWidth - 3)
@@ -1481,10 +1521,15 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   const lines: TranscriptLine[] = [...props.settledLines, ...liveThinkLines, ...liveTextLines]
   if (snapshot.compaction) {
     const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    const glyph = spinner[tick % spinner.length] ?? '⠋'
+    const label = `${glyph} compacting…`
     lines.push({
       key: 'live-compact',
-      text: `${spinner[tick % spinner.length]} compacting…`,
-      color: 'yellow',
+      text: label,
+      runs: [...label].map((character, index) => ({
+        text: character,
+        color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
+      })),
     })
   }
   lines.push(...props.dockLines)
@@ -1652,9 +1697,12 @@ export function App(props: {
       const query = (effortMatch[1] ?? '').trim().toLowerCase()
       const current = snapshot.reasoning.effort ?? 'off'
       const descriptions: Record<string, string> = locale === 'zh'
-        ? { off: '关闭额外推理', high: '高强度推理', max: '最大强度推理' }
-        : { off: 'disable additional reasoning', high: 'high reasoning effort', max: 'maximum reasoning effort' }
-      return ['off', 'high', 'max']
+        ? { off: '关闭额外推理', low: '低强度推理', high: '高强度推理', max: '最大强度推理' }
+        : { off: 'disable additional reasoning', low: 'low reasoning effort', high: 'high reasoning effort', max: 'maximum reasoning effort' }
+      const catalog = snapshot.reasoning.levels.length > 0
+        ? ['off', ...snapshot.reasoning.levels]
+        : ['off', 'low', 'high', 'max']
+      return [...new Set(catalog)]
         .filter(option => option.startsWith(query))
         .map(option => ({
           name: `effort:${option}`,
@@ -1971,7 +2019,10 @@ export function App(props: {
     }
     if (text === '/effort' || text.startsWith('/effort ')) {
       const argument = text === '/effort' ? '' : text.slice('/effort '.length).trim()
-      if (argument !== 'off' && argument !== 'high' && argument !== 'max') {
+      const allowed = snapshot.reasoning.levels.length > 0
+        ? ['off', ...snapshot.reasoning.levels]
+        : ['off', 'low', 'high', 'max']
+      if (!allowed.includes(argument)) {
         setNotice(copy.effortUsage)
         return
       }
@@ -2750,8 +2801,8 @@ export function App(props: {
                 ? '╭─ 推理力度（↑↓ 选择 · Enter 应用 · Tab 补全 · Esc 取消）'
                 : '╭─ reasoning effort (↑↓ select · Enter apply · Tab complete · Esc close)',
               hint: locale === 'zh'
-                ? '╰─ off / high / max · Enter 应用'
-                : '╰─ off / high / max · Enter applies',
+                ? '╰─ off / low / high / max · Enter 应用'
+                : '╰─ off / low / high / max · Enter applies',
             }
             : {}}
         />

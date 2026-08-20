@@ -16,7 +16,7 @@ export const BUSY_STAR_FRAMES = ['✶', '✸', '✹', '✺', '✹', '✸'] as co
 export function busyStarFrame(tick: number): { glyph: string; color: string } {
   const index = tick < 0 ? 0 : tick
   return {
-    glyph: BUSY_STAR_FRAMES[index % BUSY_STAR_FRAMES.length],
+    glyph: BUSY_STAR_FRAMES[index % BUSY_STAR_FRAMES.length] ?? '✶',
     color: 'yellow',
   }
 }

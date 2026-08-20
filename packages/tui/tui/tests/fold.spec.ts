@@ -465,4 +465,38 @@ describe('session fold', () => {
     // The full strip passes through when it fits.
     expect(fitStatsStrip('轮 1 · 步 2', 60)).toBe('轮 1 · 步 2')
   })
+
+  it('marks interrupted assistant prefixes and shows image placeholders', () => {
+    const interrupted = foldAll([
+      event('assistant/message', {
+        turn: 1,
+        step: 1,
+        interrupted: true,
+        message: { id: 'a2', role: 'assistant', content: [text('half')], source: { kind: 'model' } },
+      }, 1, 10),
+    ])
+    const row = interrupted.nodes.find(node => node.kind === 'assistant')
+    expect(row?.kind === 'assistant' && row.interrupted).toBe(true)
+    expect(renderNodePlain(row!, 'zh')).toContain('已中断')
+    expect(renderNodePlain(row!, 'en')).toContain('interrupted')
+    const withImage = foldAll([
+      event('user/message', {
+        id: 'm2',
+        role: 'user',
+        content: [{
+          type: 'image',
+          attachment: {
+            attachmentId: 'att-1' as never,
+            mediaType: 'image/png',
+            bytes: 12,
+            width: 2,
+            height: 2,
+            name: 'shot.png',
+          },
+        }],
+        source: { kind: 'user' },
+      }, 1, 10),
+    ])
+    expect(withImage.nodes.find(node => node.kind === 'user')?.text).toContain('📎 shot.png')
+  })
 })

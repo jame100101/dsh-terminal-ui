@@ -75,7 +75,12 @@ function blocksText(blocks: readonly ContentBlock[] | undefined, cap: number): s
         out += blocksText(block.content, cap === 0 ? 0 : Math.max(0, cap - out.length))
         break
       }
-      // reasoning / image / tool-call blocks are not visible prose.
+      case 'image': {
+        const label = block.attachment.name ?? 'image'
+        out += `${out === '' || out.endsWith('\n') ? '' : '\n'}📎 ${label}`
+        break
+      }
+      // reasoning / tool-call blocks are not visible prose.
       default:
         break
     }
@@ -334,7 +339,13 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
         flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)))
       }
       const text = blocksText(event.data.message.content, 0)
-      nodes = appendNode(nodes, { kind: 'assistant', id: event.seq, text, messageId: event.data.message.id }, scratch)
+      nodes = appendNode(nodes, {
+        kind: 'assistant',
+        id: event.seq,
+        text,
+        messageId: event.data.message.id,
+        ...(event.data.interrupted === true ? { interrupted: true as const } : {}),
+      }, scratch)
       traces = appendTrace(traces, trace(event.seq, `assistant (${text.length} chars)`), scratch)
       if (event.data.usage !== undefined && scratch.step !== null && scratch.step.usage === null) {
         scratch.step.usage = usageOf(event.data.usage)
