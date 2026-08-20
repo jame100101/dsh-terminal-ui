@@ -30,6 +30,13 @@ export interface TranscriptLine {
   dim?: boolean
   /** Waiting retry headers blink dim from a Transcript-local timer. */
   pulse?: boolean
+  /**
+   * Live thinking/compaction header. Transcript owns the 100ms glyph and
+   * shimmer so ChatTranscript does not rebuild the window on that timer.
+   */
+  shimmer?: 'thinking' | 'compact'
+  /** Epoch ms for the elapsed suffix on a thinking shimmer row. */
+  shimmerSince?: number
   /** Grok prompt-block fill (`bg = light`): a gray bar behind user rows. */
   background?: boolean
   runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string }[]

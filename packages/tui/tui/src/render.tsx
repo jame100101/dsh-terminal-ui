@@ -448,6 +448,47 @@ export function thinkingShimmerColor(level: number): 'gray' | 'whiteBright' {
   return level >= 200 ? 'whiteBright' : 'gray'
 }
 
+const BRAILLE_SPINNER = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+
+/**
+ * Glyph, elapsed suffix, and per-character shimmer runs for a live
+ * thinking or compacting header. Pure in `tick` so Transcript can animate
+ * without ChatTranscript rebuilding the window.
+ * @param kind - which live header to paint.
+ * @param tick - 100ms phase.
+ * @param since - epoch ms for the thinking elapsed suffix; ignored for compact.
+ * @returns display text and colored runs.
+ */
+export function liveShimmerPaint(
+  kind: 'thinking' | 'compact',
+  tick: number,
+  since?: number,
+): { text: string; runs: NonNullable<TranscriptLine['runs']> } {
+  const glyph = BRAILLE_SPINNER[tick % BRAILLE_SPINNER.length] ?? '⠋'
+  if (kind === 'compact') {
+    const label = `${glyph} compacting…`
+    return {
+      text: label,
+      runs: [...label].map((character, index) => ({
+        text: character,
+        color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
+      })),
+    }
+  }
+  const label = `${glyph} Thinking`
+  const elapsed = since === undefined ? '' : ` ${((Date.now() - since) / 1000).toFixed(1)}s…`
+  return {
+    text: `${label}${elapsed}`,
+    runs: [
+      ...[...label].map((character, index) => ({
+        text: character,
+        color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
+      })),
+      ...(elapsed === '' ? [] : [{ text: elapsed, color: 'gray' as const }]),
+    ],
+  }
+}
+
 /** Structured-trajectory palette: model blue, tool activity red, user cyan. */
 export function traceLineColor(text: string): 'blue' | 'red' | 'cyan' | undefined {
   if (text.startsWith('· assistant')) return 'blue'
@@ -961,6 +1002,16 @@ const Transcript = React.memo(function Transcript(props: {
     const interval = setInterval(() => { setPulseOn(value => !value) }, 500)
     return () => { clearInterval(interval) }
   }, [hasPulse])
+  const hasShimmer = viewport.lines.some(line => line.shimmer !== undefined)
+  const [shimmerTick, setShimmerTick] = useState(0)
+  useEffect(() => {
+    if (!hasShimmer) {
+      setShimmerTick(0)
+      return
+    }
+    const interval = setInterval(() => { setShimmerTick(value => value + 1) }, 100)
+    return () => { clearInterval(interval) }
+  }, [hasShimmer])
   useEffect(() => {
     const capacity = Math.max(1, Math.max(1, Math.floor(props.height)) - reserved)
     const maximumOffset = Math.max(0, lineCount - capacity)
@@ -989,20 +1040,23 @@ const Transcript = React.memo(function Transcript(props: {
           // and keyed reordering through Ink's reconciler can accumulate stale
           // rows — position-keyed rows never move, only their text changes.
           const absoluteIndex = paintWindowStart + paintSliceStart + index
+          const painted = line.shimmer !== undefined
+            ? liveShimmerPaint(line.shimmer, shimmerTick, line.shimmerSince)
+            : { text: line.text, runs: line.runs }
           const span = props.selection === undefined || props.selection === null
             ? null
             : selectionSpanOnLine(
               props.selection,
               absoluteIndex,
-              lineSelectableWidth(line.text),
+              lineSelectableWidth(painted.text),
             )
           const color = themed(line.color, props.theme, 'white')
           const dim = line.pulse === true ? pulseOn : line.dim === true
           const body = span === null
             ? (
               <Text wrap="truncate" color={color} bold={line.bold === true} dimColor={dim}>
-                {line.runs !== undefined && line.runs.length > 0
-                  ? line.runs.map((run, runIndex) => (
+                {painted.runs !== undefined && painted.runs.length > 0
+                  ? painted.runs.map((run, runIndex) => (
                     <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
                       {...run.color !== undefined
                         ? { color: themed(run.color, props.theme, 'white') }
@@ -1012,18 +1066,18 @@ const Transcript = React.memo(function Transcript(props: {
                       {run.text}
                     </Text>
                   ))
-                  : (line.text || ' ')}
+                  : (painted.text || ' ')}
               </Text>
             )
             : (
               <SelectedLine
-                text={line.text || ' '}
+                text={painted.text || ' '}
                 startCol={span.start}
                 endCol={span.end}
                 color={color}
                 bold={line.bold === true}
                 dim={dim}
-                lineWidth={Math.max(1, stringWidth(line.text || ' '))}
+                lineWidth={Math.max(1, stringWidth(painted.text || ' '))}
               />
             )
           return (
@@ -1856,15 +1910,6 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   selection?: TextSelection | null | undefined
 }): React.ReactElement {
   const snapshot = props.snapshot
-  const [tick, setTick] = useState(0)
-  useEffect(() => {
-    if (!snapshot.busy && !snapshot.compaction) {
-      setTick(0)
-      return
-    }
-    const interval = setInterval(() => { setTick(value => value + 1) }, 100)
-    return () => { clearInterval(interval) }
-  }, [snapshot.busy, snapshot.compaction])
   const liveWrapRef = useRef<LiveWrapState | null>(null)
   const liveText = snapshot.live?.text ?? ''
   if (!snapshot.busy || liveText === '') liveWrapRef.current = null
@@ -1873,18 +1918,12 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   }
   const liveThinkLines: TranscriptLine[] = (() => {
     if (snapshot.live === null || !snapshot.busy || snapshot.live.think === '') return []
-    const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    const glyph = spinner[tick % spinner.length] ?? '⠋'
-    const label = `${glyph} Thinking`
-    const elapsed = snapshot.live.thinkSince === null ? 0 : Date.now() - snapshot.live.thinkSince
-    const runs = [
-      ...[...label].map((character, index) => ({
-        text: character,
-        color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
-      })),
-      { text: ` ${(elapsed / 1000).toFixed(1)}s…`, color: 'gray' as const },
-    ]
-    const lines: TranscriptLine[] = [{ key: 'live-think', text: `${label} ${(elapsed / 1000).toFixed(1)}s…`, runs }]
+    const lines: TranscriptLine[] = [{
+      key: 'live-think',
+      text: 'Thinking',
+      shimmer: 'thinking',
+      ...(snapshot.live.thinkSince !== null ? { shimmerSince: snapshot.live.thinkSince } : {}),
+    }]
     const tail = snapshot.live.think.split('\n').at(-1) ?? ''
     if (tail !== '') {
       const tailSpace = Math.max(8, props.contentWidth - 3)
@@ -1904,16 +1943,10 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   if (liveThinkLines.length > 0) tailBlocks.push(liveThinkLines)
   if (liveTextLines.length > 0) tailBlocks.push(liveTextLines)
   if (snapshot.compaction) {
-    const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    const glyph = spinner[tick % spinner.length] ?? '⠋'
-    const label = `${glyph} compacting…`
     tailBlocks.push([{
       key: 'live-compact',
-      text: label,
-      runs: [...label].map((character, index) => ({
-        text: character,
-        color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
-      })),
+      text: 'compacting…',
+      shimmer: 'compact',
     }])
   }
   if (props.dockLines.length > 0) tailBlocks.push([...props.dockLines])

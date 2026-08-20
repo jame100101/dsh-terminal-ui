@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { BUSY_STAR_FRAMES, busyStarFrame } from '../src/busy-star'
-import { themed, thinkingShimmerColor, thinkingShimmerLevel } from '../src/render'
+import { liveShimmerPaint, themed, thinkingShimmerColor, thinkingShimmerLevel } from '../src/render'
 import stringWidth from 'string-width'
 
 describe('busyStarFrame', () => {
@@ -39,6 +39,18 @@ describe('thinkingShimmerLevel', () => {
       return best
     }
     expect(peakAt(4)).toBeLessThan(peakAt(10))
+  })
+})
+
+describe('liveShimmerPaint', () => {
+  it('keeps thinking and compact headers on named gray/whiteBright only', () => {
+    const thinking = liveShimmerPaint('thinking', 0, Date.now() - 1200)
+    expect(thinking.text).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking /)
+    expect(thinking.text).toContain('s…')
+    expect(thinking.runs.every(run => run.color === 'gray' || run.color === 'whiteBright')).toBe(true)
+    const compact = liveShimmerPaint('compact', 3)
+    expect(compact.text).toMatch(/^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] compacting…$/)
+    expect(liveShimmerPaint('thinking', 0).text).not.toBe(liveShimmerPaint('thinking', 1).text)
   })
 })
 
