@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-20-tui-copy-message-and-copy-mode.md
-2026-08-20-tui-copy-message-and-copy-mode.md: 7edacdbc67cf2f2152971b5161ca51a437856f3b
-2026-08-20-tui-copy-message-and-copy-mode.zh.md: c9639e52263009bf961a9b53dd852bb3c0c584cf
+2026-08-20-tui-copy-message-and-copy-mode.md: 32a6f91d488b471fb5cf66de2b8db68a11e8db21
+2026-08-20-tui-copy-message-and-copy-mode.zh.md: 1f5cb3eb78112a581e77ebbc8a19bc238f6f1875

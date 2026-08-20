@@ -608,7 +608,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       'Shift+Tab cycle the file permission · PgUp/PgDn scroll history · ↑/↓ input history',
       'Click disclosure arrows to expand/collapse; any Thinking arrow toggles all Thinking rows',
       'Click the ▼ button to jump back to the newest lines · Ctrl+L clear · Ctrl+D exit when idle',
-      'Drag in the transcript to copy; click a prompt or reply to copy the whole message',
+      'Drag in the transcript to copy; /copy copies the latest reply',
     ].join('\n')
     : [
       '/help        显示本帮助',
@@ -628,7 +628,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       'Shift+Tab 切换文件权限 · PgUp/PgDn 滚动历史 · ↑/↓ 历史输入',
       '点击展开箭头展开/折叠；任一 Thinking 箭头统一切换全部 Thinking',
       '点击 ▼ 按钮回到最新消息 · Ctrl+L 清屏 · Ctrl+D 空闲退出',
-      '在对话里拖选即可复制；单击用户提示或助手回复复制整条',
+      '在对话里拖选即可复制；/copy 复制最近一条回复',
     ].join('\n')
 }
 

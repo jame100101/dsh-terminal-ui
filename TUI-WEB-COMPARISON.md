@@ -24,7 +24,7 @@
 | 斜杠命令目录 | 命令目录 + 弹窗选择器（`/` 触发） | `/` 调出 palette（命令按 a→z 字母排序），Tab 补全参数；host 命令在 zh 界面显示中文说明 | 🟡 |
 | 命令装饰/说明 | 每条命令自定义渲染（CommandNodeView/卡片） | 命令结果渲染为 status 行/command 卡片 | 🟡 |
 | `@`/`#` 触发菜单 | @ 文件/会话提及、# 菜单（skill/subagent） | 无触发菜单（仅 `/`） | ❌ |
-| 输入历史 | 无（浏览器无 shell 历史） | ↑/↓ shell 风格历史（cmd/PowerShell） | ➕ |
+| 输入历史 | 无（浏览器无 shell 历史） | 空草稿时 ↑/↓ 回忆提交历史；有文字时方向键移动光标（含折行） | ➕ |
 | busyEnter（运行中 Enter） | 队列/转向 | queue/steer 设置 + Ctrl+Enter steer | ✅ |
 | 多行输入 | 文本框换行 | 自动换行（≤5 行）+ Shift+Enter 硬换行 | ✅ |
 | 图片附件 | 拖拽/粘贴 + 附件栏 + 缩略图 | /attach 路径添加（png/jpg/gif/webp），📎 dock | 🟡 |
@@ -57,7 +57,7 @@
 | compaction 展示 | CompactionItem/Card 详情 | 实时 compacting 渐变行 + compacted 状态 | 🟡 |
 | 回合尾统计 | 回合尾 stats | └ turn N · LLM/工具/TTFT | ✅ |
 | deliverables（产出文件） | ProducedFiles 列表 + 点击打开 | 无（未投影 produced-files） | ❌ |
-| 消息操作（复制/打开文件） | 复制按钮、打开文件 | 默认拖选自动复制；单击提示/回复复制整条；`/copy` 最近回复 | 🟡 |
+| 消息操作（复制/打开文件） | 复制按钮、打开文件 | 默认拖选自动复制；输入框 TUI 选区；`/copy` 最近回复。打开文件仍无。剩余 composer 项见 `packages/tui/tui/bug.md` | 🟡 |
 | 消息反馈 👍/👎 | 悬停操作 + 备注 | 选择消息后 g/b（同 messageFeedback CAS 服务） | 🟡 |
 | 图片渲染 | 消息内缩略图 + lightbox | 图片块不渲染（仅文本） | ❌ |
 | 轨迹视图 | 时间线分组 + 时长视图 + 预览 | /trajectory 扁平轨迹（蓝=模型/红=工具/青=用户） | 🟡 |
@@ -122,7 +122,7 @@
 | 右侧滚动条 | 原生滚动条 | **转录右缘浏览器式滚动条列（█ 滑块 + │ 轨道独立成列，与内容互不干扰）：点击跳转到对应历史位置（2 格点击区），按住拖拽连续滚动** | ➕ |
 | 翻页 | 原生 | PgUp/PgDn，End/Ctrl+Home | ✅ |
 | 回到底部 | 原生跟随 | 上翻时底部**居中反色悬浮按钮，点击回到底部**（顶栏横幅保留） | ✅ |
-| 消息选择 | 点击 | **Tab 进入选择模式**，↑/↓ 移动、Space 展开、g/b 评分、Esc 返回 | 🟡 |
+| 消息选择 | 点击 | 无 Tab 选中模式；拖选复制；折叠箭头点击展开 | 🟡 |
 | 输入历史 | — | ↑/↓（shell 风格） | ➕ |
 | 光标/IME | 浏览器 | NativeCursor 锚定 + IME 组合 | ✅ |
 | 快捷键 | Ctrl+L 清屏、Ctrl+D 退出等 | 同 | ✅ |

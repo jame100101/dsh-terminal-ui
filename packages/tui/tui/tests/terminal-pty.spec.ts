@@ -3,7 +3,11 @@ import { fileURLToPath } from 'node:url'
 import * as nodePty from 'node-pty'
 import xtermHeadless from '@xterm/headless'
 import { afterEach, describe, expect, it } from 'vitest'
-import { selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
+import { composerTextWrapWidth, selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
+
+function composerWrapWidth(columns: number): number {
+  return composerTextWrapWidth(selectTerminalFrameWidth(columns) - 2)
+}
 
 const fixture = fileURLToPath(new URL('./fixtures/pty-app.tsx', import.meta.url))
 const activePtys = new Set<nodePty.IPty>()
@@ -166,16 +170,16 @@ describe('production TUI through a real PTY', () => {
     await harness.write(rapid)
     expectCaretOnComposer(
       harness.terminal,
-      selectComposerLayout(rapidDraft, rapidDraft.length, selectTerminalFrameWidth(80) - 4, 5).caretLine,
+      selectComposerLayout(rapidDraft, rapidDraft.length, composerWrapWidth(80), 5).caretLine,
     )
     await harness.resize(100, 30)
     expectCaretOnComposer(
       harness.terminal,
-      selectComposerLayout(rapidDraft, rapidDraft.length, selectTerminalFrameWidth(100) - 4, 5).caretLine,
+      selectComposerLayout(rapidDraft, rapidDraft.length, composerWrapWidth(100), 5).caretLine,
     )
     await harness.write(' after resize')
     const resizedDraft = `${rapidDraft} after resize`
-    const resizedCaretLine = selectComposerLayout(resizedDraft, resizedDraft.length, selectTerminalFrameWidth(100) - 4, 5).caretLine
+    const resizedCaretLine = selectComposerLayout(resizedDraft, resizedDraft.length, composerWrapWidth(100), 5).caretLine
     expectCaretOnComposer(harness.terminal, resizedCaretLine)
 
     await harness.write('\x1b[5~')
@@ -190,7 +194,7 @@ describe('production TUI through a real PTY', () => {
     expectCaretOnComposer(harness.terminal, resizedCaretLine)
 
     await harness.resize(40, 18)
-    const narrowCaretLine = selectComposerLayout(resizedDraft, resizedDraft.length, selectTerminalFrameWidth(40) - 4, 5).caretLine
+    const narrowCaretLine = selectComposerLayout(resizedDraft, resizedDraft.length, composerWrapWidth(40), 5).caretLine
     expectCaretOnComposer(harness.terminal, narrowCaretLine)
     expect(screenLines(harness.terminal).slice(4).filter(line => line.trimEnd().endsWith('█')).length).toBeGreaterThan(3)
     expectScrollbarColumn(harness.terminal, 40)

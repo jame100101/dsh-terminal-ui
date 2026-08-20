@@ -22,11 +22,11 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **`/jobs` panel**: live registry rows (id/kind/label/status/elapsed/detail) refreshed every second while open; Enter requests a kill for running jobs. **`/subagents` panel**: the durable descendant tree (depth-indented, mode/activity/label, diagnostics). **`/workflows` panel**: event-driven run rows (status/phase/log/agent-count/error).
 - **`/model`** opens the models settings page (select the default with Enter). **`/sessions`** loads the live agent plus the newest 50 persisted sessions (titles/filter) on first open rather than scanning persisted logs during startup; `Enter` resumes one with full history replay — exactly ONE live session exists at a time (switches dispose the previous agent; `/fork` yields a persisted, resumable artifact). **`/new`** starts a fresh session.
 - **Bounded transcript work**: complete-log resume uses a private linear replay builder, while settled display rows are cached per immutable node, terminal width, expansion, feedback, and locale. Composer and slash-picker updates reuse those projections and slice the visible viewport without copying the complete wrapped-line list.
-- **Collapsible rows** (context `◆`/Thinking/tool/retry): click the trailing `▶`/`▼` directly. Context/tool/retry retain per-node expansion; clicking any Thinking arrow changes the persisted global Thinking display, updates every Thinking row together, and keeps the header's `thinking on/off` label synchronized. Idle Tab has no transcript-selection mode, arrows remain composer history navigation, and Space remains ordinary draft input.
+- **Collapsible rows** (context `◆`/Thinking/tool/retry): click the trailing `▶`/`▼` directly. Context/tool/retry retain per-node expansion; clicking any Thinking arrow changes the persisted global Thinking display, updates every Thinking row together, and keeps the header's `thinking on/off` label synchronized. Idle Tab 没有 transcript 选中模式；输入框有文字时方向键移动光标（含折行），空草稿时 ↑/↓ 回忆提交历史；Space 仍是普通输入。
 - **Slash picker** (`/`) over host commands plus TUI-local ones, listed **alphabetically (a–z)** in the DamnatioX palette style; host commands get Chinese descriptions in the zh locale and dispatch through `ctx.commands` without a model turn.
 - **Approval and ask_user takeovers** (allow-once / deny / options / custom answers); **`/trajectory`** structured view; **todo and queue docks** at the transcript tail.
-- **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits.
-- **复制**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；单击用户提示或助手回复复制整条（`node.text`，无字形）。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。`Esc` 清掉高亮。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
+- **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits. 输入框里有选区时 `Ctrl+C` 复制该选区，不取消任务。
+- **复制**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；松开鼠标即复制并清掉高亮。单击且没有拖动不会选中整条消息。消息之间的空行可以起选或继续拖选，但不会进入剪贴板。拖到会话顶部或底部会滚动，以便继续选中当前看不见的历史。输入框是 TUI 自己的编辑器：拖选或 `Ctrl+A` 用蓝色背景选中，`Ctrl+C` 复制，`Ctrl+V`（或终端粘贴）插入，输入或粘贴会替换当前选区。每一折行都画 2 格的 `› `/缩进，第一行和后面的行共用同一折行宽度；折行比绘制盒子少 1 格，满行不会把末字裁掉。硬换行达到 4 行及以上时收成一行预览加 `… N 行`（Claude Code 粘贴）。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
 
 ## Model Experience
 
@@ -67,11 +67,21 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
 | 图片粘贴 | ✅ 终端无位图粘贴通道；等价路径 `/attach <图片路径>` 走同一 attachments 服务（输入即入下一消息） |
 | MessageList 虚拟化 | ⚠ 最近 3000 节点的投影窗口 + 节点级换行缓存 + 底部锚定视口；尚未采用 Web 的 50-message 向前分页 |
+| 对话复制（拖选 / 输入框 / `/copy`） | ✅ 默认拖选复制提示词和回复；输入框 TUI 选区（Ctrl+A/C/V）；`/copy`；剩余项见 [bug.md](./bug.md) |
+
+## Status
+
+| Item | State |
+|---|---|
+| 拖选复制提示词和回复；输入框 Ctrl+A/C/V；`/copy` | 已完成 |
+| 输入框第一折行仍吞一格 | 待办 — [bug.md](./bug.md) |
+| 粘贴终端内容不自动收成预览行 | 待办 — [bug.md](./bug.md) |
+| 流式渲染、转录虚拟化、内存（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 下一关 |
 
 ## Known Limitations and Deferred Work
 
 - **Non-TTY fallback is fail-closed**: the linear REPL mounts no answerer, so approval asks deny and `ask_user` fails — headless-strict semantics, matching `phi run`. TUI-local slash commands print a "linear mode" notice instead of leaking into a model turn.
-- **The composer is single-line** (DamnatioX TS parity): Shift+Enter inserts a `↵`-rendered newline; the caret viewport scrolls horizontally with `…` ellipses.
+- **输入框折行**最多 5 行，硬换行达到 4 行及以上时收成预览加行数。尚未修好的折行/粘贴问题见 [bug.md](./bug.md)。
 - **Pending steering has no transcript bubble yet** (the queue dock shows the queued steer previews).
 - **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), the back-to-bottom button, and default drag-copy of prompt/reply text.
 - **Markdown styling covers headings, paragraphs, and GFM tables**: list items and blockquote interiors stay plain text (remaining GFM pass).

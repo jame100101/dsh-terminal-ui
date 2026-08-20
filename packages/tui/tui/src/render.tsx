@@ -37,15 +37,20 @@ import {
 import type { TuiStore } from './store'
 import type { TuiNode } from './types'
 import {
-  nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport,
+  composerGlyphAt, composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth,
+  composerVisibleRowCount, countComposerHardLines, lineSelectableWidth, nextCodePointBoundary,
+  previousCodePointBoundary, COMPOSER_COLLAPSE_HARD_LINES, COMPOSER_PROMPT_WIDTH,
+  scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport, wrapComposerRanges,
   selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt,
   transcriptLineAtRow, TRANSCRIPT_LINE_OVERSCAN,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
-import { copyToClipboard } from './clipboard'
+import { copyToClipboard, pasteFromClipboard } from './clipboard'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
-import { extractSelectedText, selectionMoved, selectionSpanOnLine, sliceDisplayRange } from './selection'
-import type { TextSelection } from './selection'
+import {
+  extractSelectedText, glyphSpanAt, selectionFromGlyphs, selectionIsDrag, selectionSpanOnLine, sliceDisplayParts,
+} from './selection'
+import type { GlyphAnchor, TextSelection } from './selection'
 import { countUiRender } from './tui-perf'
 import { padEndDisplay, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
 import type { LiveWrapState } from './wrap'
@@ -57,6 +62,10 @@ const MAX_TURN_INPUT_BYTES = 900_000
 const SCROLLBAR_ANCHOR_GLYPH = '\uE000'
 /** Cap on wrapped tool-card body rows: a giant card must not flood the frame. */
 const MAX_TOOL_CARD_ROWS = 400
+/** Lines one select-edge tick scrolls the transcript by. */
+const SELECT_SCROLL_LINES = 2
+/** Interval while the pointer stays against the transcript edge during a drag. */
+const SELECT_SCROLL_MS = 40
 
 /** UI chrome language. */
 type Locale = 'zh' | 'en'
@@ -147,6 +156,7 @@ interface Copy {
   copyRange: (n: string, total: number) => string
   copyDone: string
   copyFailed: (reason: string) => string
+  composerMoreLines: (count: number) => string
 }
 
 /** The chrome copy table. */
@@ -236,6 +246,7 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `没有第 ${n} 条最近回复（共 ${total} 条）`,
     copyDone: '已复制',
     copyFailed: reason => `复制失败：${reason}`,
+    composerMoreLines: n => `… ${n} 行`,
   },
   en: {
     idle: '▣ idle · Enter send · /help',
@@ -322,6 +333,7 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `No ${n}-latest reply (${total} available)`,
     copyDone: 'Copied',
     copyFailed: reason => `Copy failed: ${reason}`,
+    composerMoreLines: n => `… ${n} lines`,
   },
 }
 
@@ -658,10 +670,6 @@ function nodeLines(
       ...line,
       ...(line.runs !== undefined ? { runs: line.runs } : {}),
       dim: line.dim === true,
-      ...(node.kind === 'user' || node.kind === 'assistant' || node.kind === 'think'
-        || node.kind === 'tool' || node.kind === 'context'
-        ? { copyNodeId: node.id }
-        : {}),
       ...(isCollapsible(node) && (line.text.endsWith('▶') || line.text.endsWith('▼'))
         ? {
           disclosureNodeId: node.id,
@@ -870,6 +878,57 @@ function Header(props: {
   )
 }
 
+/**
+ * One already-wrapped row with an inverse mid-span. Segments partition by
+ * glyph start column so a CJK split cannot duplicate a character or wrap the
+ * row onto a second terminal line (which would shift the transcript).
+ */
+function SelectedLine(props: {
+  text: string
+  startCol: number
+  endCol: number
+  color?: string
+  bold?: boolean
+  dim?: boolean
+  /** Composer uses a blue fill; transcript keeps inverse. */
+  highlight?: 'inverse' | 'blue'
+  /** Explicit cell width so Ink cannot wrap a pre-wrapped row again. */
+  lineWidth: number
+}): React.ReactElement {
+  const { before, mid, after } = sliceDisplayParts(props.text, props.startCol, props.endCol)
+  const rest = {
+    wrap: 'truncate' as const,
+    bold: props.bold === true,
+    dimColor: props.dim === true,
+    ...(props.color !== undefined ? { color: props.color } : {}),
+  }
+  const selected = props.highlight === 'blue'
+    ? <Text wrap="truncate" color="white" backgroundColor="blue">{mid}</Text>
+    : <Text wrap="truncate" inverse>{mid}</Text>
+  const beforeW = stringWidth(before)
+  const midW = stringWidth(mid)
+  const afterW = stringWidth(after)
+  return (
+    <Box
+      flexDirection="row"
+      flexWrap="nowrap"
+      height={1}
+      overflow="hidden"
+      width={Math.max(1, props.lineWidth)}
+    >
+      {beforeW > 0
+        ? <Box width={beforeW} height={1} flexGrow={0} flexShrink={0} overflow="hidden"><Text {...rest}>{before}</Text></Box>
+        : null}
+      {midW > 0
+        ? <Box width={midW} height={1} flexGrow={0} flexShrink={0} overflow="hidden">{selected}</Box>
+        : null}
+      {afterW > 0
+        ? <Box width={afterW} height={1} flexGrow={0} flexShrink={0} overflow="hidden"><Text {...rest}>{after}</Text></Box>
+        : null}
+    </Box>
+  )
+}
+
 /** The transcript viewport with the browser-style right-edge scrollbar column and the floating back-to-bottom button. */
 const Transcript = React.memo(function Transcript(props: {
   lines: readonly TranscriptLine[]
@@ -885,8 +944,10 @@ const Transcript = React.memo(function Transcript(props: {
   locale: Locale
   /** Pin the floating back-to-bottom button when scrolled off the tail. */
   backButton?: boolean | undefined
-  /** In-app drag-select range, in indices of {@link lines}. */
+  /** In-app drag-select range, in absolute transcript line indices. */
   selection?: TextSelection | null | undefined
+  /** Absolute index of {@link lines}[0] in the full transcript. */
+  windowStart?: number | undefined
 }): React.ReactElement {
   const reserved = props.backButton === true ? 1 : 0
   const viewport = selectTranscriptViewport(props.lines, props.height, props.offset, reserved)
@@ -910,6 +971,10 @@ const Transcript = React.memo(function Transcript(props: {
   // sibling Boxes, so no line's text width can ever shift, wrap, or break the
   // rail — the gutter stays a perfectly straight line on the last column, and
   // the thumb sits at a stable, clickable position.
+  const paintCapacity = Math.max(1, Math.floor(props.height) - reserved)
+  const paintWindowOffset = Math.min(viewport.offset, Math.max(0, props.lines.length - paintCapacity))
+  const paintSliceStart = Math.max(0, props.lines.length - paintWindowOffset - paintCapacity)
+  const paintWindowStart = props.windowStart ?? 0
   return (
     <Box flexDirection="row" flexGrow={1} height={Math.max(1, props.height)} overflow="hidden">
       <Box
@@ -923,42 +988,57 @@ const Transcript = React.memo(function Transcript(props: {
           // Index keys: scrolling reorders the visible rows every wheel tick,
           // and keyed reordering through Ink's reconciler can accumulate stale
           // rows — position-keyed rows never move, only their text changes.
-          const absoluteIndex = props.lines.indexOf(line)
+          const absoluteIndex = paintWindowStart + paintSliceStart + index
           const span = props.selection === undefined || props.selection === null
             ? null
-            : selectionSpanOnLine(props.selection, absoluteIndex < 0 ? index : absoluteIndex, stringWidth(line.text))
-          const body = line.runs !== undefined && line.runs.length > 0 && span === null
-            ? line.runs.map((run, runIndex) => (
-              <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
-                {...run.color !== undefined
-                  ? { color: themed(run.color, props.theme, 'white') }
-                  : run.code === true
-                    ? { color: themed('cyan', props.theme, 'cyan') }
-                    : {}}>
-                {run.text}
+            : selectionSpanOnLine(
+              props.selection,
+              absoluteIndex,
+              lineSelectableWidth(line.text),
+            )
+          const color = themed(line.color, props.theme, 'white')
+          const dim = line.pulse === true ? pulseOn : line.dim === true
+          const body = span === null
+            ? (
+              <Text wrap="truncate" color={color} bold={line.bold === true} dimColor={dim}>
+                {line.runs !== undefined && line.runs.length > 0
+                  ? line.runs.map((run, runIndex) => (
+                    <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
+                      {...run.color !== undefined
+                        ? { color: themed(run.color, props.theme, 'white') }
+                        : run.code === true
+                          ? { color: themed('cyan', props.theme, 'cyan') }
+                          : {}}>
+                      {run.text}
+                    </Text>
+                  ))
+                  : (line.text || ' ')}
               </Text>
-            ))
-            : span === null
-              ? (line.text || ' ')
-              : (
-                <>
-                  {sliceDisplayRange(line.text, 0, span.start)}
-                  <Text inverse>{sliceDisplayRange(line.text, span.start, span.end) || ' '}</Text>
-                  {sliceDisplayRange(line.text, span.end, stringWidth(line.text))}
-                </>
-              )
-          const row = (
-            <Text
-              color={themed(line.color, props.theme, 'white')}
-              bold={line.bold === true}
-              dimColor={line.pulse === true ? pulseOn : line.dim === true}
+            )
+            : (
+              <SelectedLine
+                text={line.text || ' '}
+                startCol={span.start}
+                endCol={span.end}
+                color={color}
+                bold={line.bold === true}
+                dim={dim}
+                lineWidth={Math.max(1, stringWidth(line.text || ' '))}
+              />
+            )
+          return (
+            <Box
+              key={index}
+              height={1}
+              overflow="hidden"
+              width="100%"
+              {...(line.background === true
+                ? { backgroundColor: props.theme === 'dark' ? '#2d2d2d' : 'gray' }
+                : {})}
             >
               {body}
-            </Text>
+            </Box>
           )
-          return line.background === true
-            ? <Box key={index} width="100%" backgroundColor={props.theme === 'dark' ? '#2d2d2d' : 'gray'}>{row}</Box>
-            : <React.Fragment key={index}>{row}</React.Fragment>
         })}
         {props.backButton === true ? (
           <Text key="back-button">
@@ -1129,6 +1209,52 @@ function fitDisplayText(value: string, width: number): string {
 
 /** Cap on composer lines: overflowing text wraps, never steals the frame. */
 const MAX_COMPOSER_LINES = 5
+/** Prompt on wrap line 0; later wrap rows use the same cell budget. */
+const COMPOSER_PROMPT = '› '
+const COMPOSER_INDENT = '  '
+
+/** One composer wrap row: a 2-cell prefix plus already-wrapped text. */
+function ComposerTextRow(props: {
+  prefix: string
+  text: string
+  /** Painted text box; one cell wider than the wrap budget. */
+  paintWidth: number
+  dim?: boolean
+  highlight?: { startCol: number; endCol: number }
+}): React.ReactElement {
+  const painted = props.text === '' ? ' ' : props.text
+  const highlight = props.highlight
+  return (
+    <Box
+      flexDirection="row"
+      flexWrap="nowrap"
+      height={1}
+      overflow="hidden"
+      flexGrow={0}
+      flexShrink={0}
+      width={COMPOSER_PROMPT_WIDTH + props.paintWidth}
+    >
+      <Box width={COMPOSER_PROMPT_WIDTH} height={1} flexGrow={0} flexShrink={0} overflow="hidden">
+        <Text wrap="truncate" dimColor>{props.prefix}</Text>
+      </Box>
+      {highlight !== undefined
+        ? (
+          <SelectedLine
+            text={painted}
+            startCol={highlight.startCol}
+            endCol={highlight.endCol}
+            highlight="blue"
+            lineWidth={props.paintWidth}
+          />
+        )
+        : (
+          <Box width={props.paintWidth} height={1} flexGrow={0} flexShrink={0} overflow="hidden">
+            <Text wrap="truncate" dimColor={props.dim === true}>{painted}</Text>
+          </Box>
+        )}
+    </Box>
+  )
+}
 
 /** Multi-line caret-anchored input: overflowing text wraps onto further lines. */
 function ImeTextInput(props: {
@@ -1139,6 +1265,11 @@ function ImeTextInput(props: {
   focus: boolean
   width: number
   mask?: string
+  /** Shared with App so Ctrl+C copies the composer range instead of cancelling. */
+  markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
+  /** Bumped to drop the composer highlight (Esc). */
+  clearSeq?: number
+  moreLines: (count: number) => string
 }): React.ReactElement {
   const [cursorOffset, setCursorOffset] = useState(props.value.length)
   const cursorOffsetRef = useRef(props.value.length)
@@ -1146,6 +1277,10 @@ function ImeTextInput(props: {
   const pendingLocalValues = useRef(new Set<string>())
   const inputRef = useRef<DOMElement | null>(null)
   const [origin, setOrigin] = useState({ x: 0, y: 0, measured: false })
+  const [mark, setMark] = useState<{ anchor: number; head: number } | null>(null)
+  const markRef = useRef<{ anchor: number; head: number } | null>(null)
+  const selectingRef = useRef(false)
+  const pressGlyphRef = useRef<{ start: number; end: number } | null>(null)
 
   useEffect(() => {
     if (pendingLocalValues.current.delete(props.value)) {
@@ -1161,13 +1296,24 @@ function ImeTextInput(props: {
     latestValueRef.current = props.value
     cursorOffsetRef.current = props.value.length
     setCursorOffset(props.value.length)
-  }, [props.value])
+    markRef.current = null
+    setMark(null)
+    if (props.markOutRef !== undefined) props.markOutRef.current = null
+  }, [props.value, props.markOutRef])
 
   const displayValue = props.mask ? props.mask.repeat([...props.value].length) : props.value
   const displayCursorOffset = props.mask
     ? props.mask.length * [...props.value.slice(0, cursorOffset)].length
     : cursorOffset
-  const layout = selectComposerLayout(displayValue, displayCursorOffset, props.width, MAX_COMPOSER_LINES)
+  const boxWidth = Math.max(1, Math.floor(props.width))
+  const paintWidth = composerTextPaintWidth(boxWidth)
+  const textWrapWidth = composerTextWrapWidth(boxWidth)
+  const wrapWidthRef = useRef(textWrapWidth)
+  wrapWidthRef.current = textWrapWidth
+  const layout = selectComposerLayout(displayValue, displayCursorOffset, textWrapWidth, MAX_COMPOSER_LINES)
+  const composerRanges = wrapComposerRanges(displayValue, textWrapWidth)
+  const hardLineCount = countComposerHardLines(displayValue)
+  const collapsed = hardLineCount >= COMPOSER_COLLAPSE_HARD_LINES
   useLayoutEffect(() => {
     if (inputRef.current === null) return
     const metrics = measureElement(inputRef.current)
@@ -1181,18 +1327,102 @@ function ImeTextInput(props: {
     setCursorOffset(nextOffset)
   }, [])
 
+  const publishMark = useCallback((next: { anchor: number; head: number } | null): void => {
+    markRef.current = next
+    setMark(next)
+    if (props.markOutRef !== undefined) props.markOutRef.current = next
+  }, [props.markOutRef])
+
+  useEffect(() => {
+    if (props.clearSeq === undefined || props.clearSeq === 0) return
+    publishMark(null)
+  }, [props.clearSeq, publishMark])
+
   const commitEdit = useCallback(
     (nextValue: string, nextOffset: number) => {
       latestValueRef.current = nextValue
       pendingLocalValues.current.add(nextValue)
+      publishMark(null)
       moveCursor(nextOffset)
       props.onChange(nextValue)
     },
-    [moveCursor, props.onChange],
+    [moveCursor, props.onChange, publishMark],
   )
+
+  const replaceSelection = useCallback((insert: string): void => {
+    const currentValue = latestValueRef.current
+    const range = markRef.current
+    if (range !== null && range.anchor !== range.head) {
+      const lo = Math.min(range.anchor, range.head)
+      const hi = Math.max(range.anchor, range.head)
+      commitEdit(`${currentValue.slice(0, lo)}${insert}${currentValue.slice(hi)}`, lo + insert.length)
+      return
+    }
+    const currentOffset = cursorOffsetRef.current
+    commitEdit(`${currentValue.slice(0, currentOffset)}${insert}${currentValue.slice(currentOffset)}`, currentOffset + insert.length)
+  }, [commitEdit])
 
   useInput(
     (input, key) => {
+      const mouse = parseMouseReport(input)
+      if (mouse !== null) {
+        if ((mouse.button & 64) !== 0) return
+        if (props.mask !== undefined || !origin.measured) return
+        const localRow = mouse.row - 1 - origin.y
+        const localCol = mouse.column - 1 - origin.x
+        const widthNow = wrapWidthRef.current
+        const layoutNow = selectComposerLayout(latestValueRef.current, cursorOffsetRef.current, widthNow, MAX_COMPOSER_LINES)
+        const hardCount = countComposerHardLines(latestValueRef.current)
+        const collapsedNow = hardCount >= COMPOSER_COLLAPSE_HARD_LINES
+        const paintedRows = collapsedNow ? 2 : layoutNow.visibleLines.length
+        if (mouse.action === 'press' && mouse.button === 0) {
+          if (localRow < 0 || localCol < 0 || localRow >= paintedRows) {
+            publishMark(null)
+            return
+          }
+        } else if (!selectingRef.current) {
+          return
+        }
+        const col = Math.max(0, localCol - COMPOSER_PROMPT_WIDTH)
+        const glyph = collapsedNow
+          ? (localRow <= 0
+            ? composerGlyphAt(latestValueRef.current.split('\n')[0] ?? '', widthNow, 0, col)
+            : { start: 0, end: latestValueRef.current.length })
+          : composerGlyphAt(
+            latestValueRef.current,
+            widthNow,
+            layoutNow.windowStart + Math.max(0, Math.min(localRow, layoutNow.visibleLines.length - 1)),
+            col,
+          )
+        if ((mouse.button & 32) !== 0) {
+          const press = pressGlyphRef.current ?? glyph
+          const next = {
+            anchor: Math.min(press.start, glyph.start),
+            head: Math.max(press.end, glyph.end),
+          }
+          if (next.anchor !== next.head) publishMark(next)
+          return
+        }
+        if (mouse.action === 'press' && mouse.button === 0) {
+          selectingRef.current = true
+          pressGlyphRef.current = glyph
+          publishMark(null)
+          return
+        }
+        if (mouse.action === 'release') {
+          selectingRef.current = false
+          const press = pressGlyphRef.current
+          pressGlyphRef.current = null
+          const range = markRef.current
+          if (range !== null && range.anchor !== range.head) {
+            moveCursor(range.head)
+          } else if (press !== null) {
+            moveCursor(press.start)
+          }
+        }
+        return
+      }
+      if (parseMouseWheel(input) !== null) return
       // A bare CSI tail inside a pending-Escape window is the second half of
       // a split arrow sequence, not text: swallow it (App re-synthesizes the
       // key) so it can never pollute the draft.
@@ -1201,8 +1431,6 @@ function ImeTextInput(props: {
       // never draft content — swallow both whole and split forms.
       if (input.startsWith(']l') || input.startsWith('\x1b]l')) return
       if (
-        key.upArrow ||
-        key.downArrow ||
         key.tab ||
         (key.shift && key.tab) ||
         input === '\x1b[Z' ||
@@ -1210,52 +1438,89 @@ function ImeTextInput(props: {
       ) {
         return
       }
+      if (key.upArrow || key.downArrow) {
+        const currentValue = latestValueRef.current
+        if (currentValue === '') return
+        const currentOffset = cursorOffsetRef.current
+        const nextOffset = composerOffsetForVerticalMove(
+          currentValue,
+          wrapWidthRef.current,
+          currentOffset,
+          key.upArrow ? -1 : 1,
+        )
+        if (key.shift === true) {
+          publishMark({ anchor: markRef.current?.anchor ?? currentOffset, head: nextOffset })
+        } else {
+          publishMark(null)
+        }
+        moveCursor(nextOffset)
+        return
+      }
+      if (key.ctrl && input.toLowerCase() === 'a') {
+        const value = latestValueRef.current
+        if (value.length > 0) {
+          publishMark({ anchor: 0, head: value.length })
+          moveCursor(value.length)
+        }
+        return
+      }
+      if (key.ctrl && input.toLowerCase() === 'v') {
+        void pasteFromClipboard().then((text) => {
+          if (text === null || text === '') return
+          replaceSelection(sanitizeTerminalText(stripMouseReports(text)))
+        })
+        return
+      }
+      if (key.end || (key.ctrl && input.toLowerCase() === 'e')) {
+        publishMark(null)
+        moveCursor(latestValueRef.current.length)
+        return
+      }
       if (key.return) {
         if (key.shift === true) {
-          // Shift+Enter inserts a real newline (the composer wraps it).
-          const currentValue = latestValueRef.current
-          const currentOffset = cursorOffsetRef.current
-          const next = `${currentValue.slice(0, currentOffset)}\n${currentValue.slice(currentOffset)}`
-          commitEdit(next, currentOffset + 1)
+          replaceSelection('\n')
           return
         }
         props.onSubmit(latestValueRef.current, key.ctrl === true)
         return
       }
-      if (key.leftArrow) {
+      if (key.ctrl) return
+      if (key.leftArrow || key.rightArrow) {
         const currentValue = latestValueRef.current
-        moveCursor(previousCodePointBoundary(currentValue, cursorOffsetRef.current))
+        const currentOffset = cursorOffsetRef.current
+        const nextOffset = key.leftArrow
+          ? previousCodePointBoundary(currentValue, currentOffset)
+          : nextCodePointBoundary(currentValue, currentOffset)
+        if (key.shift === true) {
+          publishMark({ anchor: markRef.current?.anchor ?? currentOffset, head: nextOffset })
+        } else {
+          publishMark(null)
+        }
+        moveCursor(nextOffset)
         return
       }
-      if (key.rightArrow) {
-        const currentValue = latestValueRef.current
-        moveCursor(nextCodePointBoundary(currentValue, cursorOffsetRef.current))
-        return
-      }
-      if (key.home || (key.ctrl && input.toLowerCase() === 'a')) {
+      if (key.home) {
+        publishMark(null)
         moveCursor(0)
         return
       }
-      if (key.end || (key.ctrl && input.toLowerCase() === 'e')) {
-        moveCursor(latestValueRef.current.length)
-        return
-      }
       if (key.backspace || key.delete) {
+        const range = markRef.current
+        if (range !== null && range.anchor !== range.head) {
+          replaceSelection('')
+          return
+        }
         const currentValue = latestValueRef.current
         const currentOffset = cursorOffsetRef.current
         const start = previousCodePointBoundary(currentValue, currentOffset)
         if (start !== currentOffset) {
-          const next = `${currentValue.slice(0, start)}${currentValue.slice(currentOffset)}`
-          commitEdit(next, start)
+          commitEdit(`${currentValue.slice(0, start)}${currentValue.slice(currentOffset)}`, start)
         }
         return
       }
       const safeInput = sanitizeTerminalText(stripMouseReports(input))
       if (!safeInput) return
-      const currentValue = latestValueRef.current
-      const currentOffset = cursorOffsetRef.current
-      const next = `${currentValue.slice(0, currentOffset)}${safeInput}${currentValue.slice(currentOffset)}`
-      commitEdit(next, currentOffset + safeInput.length)
+      replaceSelection(safeInput)
     },
     { isActive: props.focus },
   )
@@ -1263,19 +1528,23 @@ function ImeTextInput(props: {
     (pasted: string) => {
       const safePaste = sanitizeTerminalText(stripMouseReports(pasted))
       if (!props.focus || !safePaste) return
-      const currentValue = latestValueRef.current
-      const currentOffset = cursorOffsetRef.current
-      const next = `${currentValue.slice(0, currentOffset)}${safePaste}${currentValue.slice(currentOffset)}`
-      commitEdit(next, currentOffset + safePaste.length)
+      replaceSelection(safePaste)
     },
     { isActive: props.focus },
   )
 
   return (
-    <Box ref={inputRef} width={Math.max(1, Math.floor(props.width))} flexDirection="column" overflow="hidden">
+    <Box
+      ref={inputRef}
+      width={Math.max(1, Math.floor(props.width))}
+      flexDirection="column"
+      overflow="hidden"
+      flexGrow={0}
+      flexShrink={0}
+    >
       {props.focus && origin.measured ? (
         <NativeCursor
-          x={origin.x + layout.caretColumn}
+          x={origin.x + COMPOSER_PROMPT_WIDTH + layout.caretColumn}
           y={origin.y + layout.caretLine}
         />
       ) : null}
@@ -1284,11 +1553,61 @@ function ImeTextInput(props: {
         // Focused + empty keeps the row via a non-breaking space: the
         // placeholder hides so the IME pre-edit popup never collides
         // with it, and Ink drops whitespace-only Text content.
-          ? <Text wrap="truncate">{'\u00a0'}</Text>
-          : <Text dimColor wrap="truncate">{props.placeholder}</Text>)
-        : layout.visibleLines.map((line, index) => (
-          <Text key={index} wrap="truncate">{line === '' ? ' ' : line}</Text>
-        ))}
+          ? (
+            <ComposerTextRow prefix={COMPOSER_PROMPT} text={'\u00a0'} paintWidth={paintWidth} />
+          )
+          : (
+            <ComposerTextRow prefix={COMPOSER_PROMPT} text={props.placeholder} paintWidth={paintWidth} dim />
+          ))
+        : collapsed
+          ? (
+            <>
+              {(() => {
+                const first = displayValue.split('\n')[0] ?? ''
+                const lo = mark === null ? 0 : Math.min(mark.anchor, mark.head)
+                const hi = mark === null ? 0 : Math.max(mark.anchor, mark.head)
+                const hasMark = mark !== null && mark.anchor !== mark.head && hi > 0 && lo < first.length
+                const startCol = hasMark ? stringWidth(first.slice(0, Math.max(0, lo))) : 0
+                const endCol = hasMark ? stringWidth(first.slice(0, Math.min(first.length, hi))) : 0
+                return (
+                  <ComposerTextRow
+                    prefix={COMPOSER_PROMPT}
+                    text={first}
+                    paintWidth={paintWidth}
+                    {...(hasMark ? { highlight: { startCol, endCol } } : {})}
+                  />
+                )
+              })()}
+              <ComposerTextRow
+                prefix={COMPOSER_INDENT}
+                text={props.moreLines(hardLineCount)}
+                paintWidth={paintWidth}
+                dim
+              />
+            </>
+          )
+          : layout.visibleLines.map((line, index) => {
+            const range = composerRanges[layout.windowStart + index]
+            const lo = mark === null ? 0 : Math.min(mark.anchor, mark.head)
+            const hi = mark === null ? 0 : Math.max(mark.anchor, mark.head)
+            const hasMark = mark !== null && mark.anchor !== mark.head && range !== undefined
+            && hi > range.start && lo < range.end
+            const startCol = !hasMark || range === undefined
+              ? 0
+              : stringWidth(line.slice(0, Math.max(0, lo - range.start)))
+            const endCol = !hasMark || range === undefined
+              ? 0
+              : stringWidth(line.slice(0, Math.min(line.length, hi - range.start)))
+            return (
+              <ComposerTextRow
+                key={index}
+                prefix={layout.windowStart + index === 0 ? COMPOSER_PROMPT : COMPOSER_INDENT}
+                text={line}
+                paintWidth={paintWidth}
+                {...(hasMark && range !== undefined ? { highlight: { startCol, endCol } } : {})}
+              />
+            )
+          })}
     </Box>
   )
 }
@@ -1311,33 +1630,35 @@ function Composer(props: {
   placeholder: string
   mask?: string
   theme: 'dark' | 'light'
+  markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
+  clearSeq?: number
+  locale: Locale
 }): React.ReactElement {
   const safeValue = sanitizeTerminalText(props.draft)
-  const inputWidth = Math.max(1, props.width - 4)
+  const boxWidth = Math.max(1, props.width - 2)
+  const moreLines = COPY[props.locale].composerMoreLines
   return (
     <Box flexDirection="column">
       <Text dimColor>{'─'.repeat(Math.max(1, props.width))}</Text>
-      <Box paddingX={1}>
-        <Box flexDirection="row">
-          <Text dimColor color={themed('gray', props.theme, 'gray')}>{'› '}</Text>
-          <Box flexGrow={1} flexDirection="column">
-            {props.disabled
-              ? (
-                <DisabledComposerLines value={safeValue} placeholder={props.placeholder} width={inputWidth} />
-              )
-              : (
-                <ImeTextInput
-                  value={safeValue}
-                  onChange={next => props.onDraftChange(sanitizeTerminalText(stripMouseReports(next)))}
-                  onSubmit={props.onSubmit}
-                  placeholder={props.placeholder}
-                  focus={props.focused}
-                  width={inputWidth}
-                  {...(props.mask !== undefined ? { mask: props.mask } : {})}
-                />
-              )}
-          </Box>
-        </Box>
+      <Box paddingX={1} flexShrink={0}>
+        {props.disabled
+          ? (
+            <DisabledComposerLines value={safeValue} placeholder={props.placeholder} width={boxWidth} />
+          )
+          : (
+            <ImeTextInput
+              value={safeValue}
+              onChange={next => props.onDraftChange(sanitizeTerminalText(stripMouseReports(next)))}
+              onSubmit={props.onSubmit}
+              placeholder={props.placeholder}
+              focus={props.focused}
+              width={boxWidth}
+              {...(props.mask !== undefined ? { mask: props.mask } : {})}
+              {...(props.markOutRef !== undefined ? { markOutRef: props.markOutRef } : {})}
+              {...(props.clearSeq !== undefined ? { clearSeq: props.clearSeq } : {})}
+              moreLines={moreLines}
+            />
+          )}
       </Box>
     </Box>
   )
@@ -1345,12 +1666,22 @@ function Composer(props: {
 
 /** The wrapped read-only draft shown while the composer is disabled. */
 function DisabledComposerLines(props: { value: string; placeholder: string; width: number }): React.ReactElement {
-  const layout = selectComposerLayout(props.value, props.value.length, props.width, MAX_COMPOSER_LINES)
-  if (props.value === '') return <Text dimColor wrap="truncate">{props.placeholder}</Text>
+  const paintWidth = composerTextPaintWidth(props.width)
+  const textWidth = composerTextWrapWidth(props.width)
+  if (props.value === '') {
+    return <ComposerTextRow prefix={COMPOSER_PROMPT} text={props.placeholder} paintWidth={paintWidth} dim />
+  }
+  const layout = selectComposerLayout(props.value, props.value.length, textWidth, MAX_COMPOSER_LINES)
   return (
     <>
       {layout.visibleLines.map((line, index) => (
-        <Text key={index} dimColor wrap="truncate">{line === '' ? ' ' : line}</Text>
+        <ComposerTextRow
+          key={index}
+          prefix={layout.windowStart + index === 0 ? COMPOSER_PROMPT : COMPOSER_INDENT}
+          text={line}
+          paintWidth={paintWidth}
+          dim
+        />
       ))}
     </>
   )
@@ -1586,15 +1917,20 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
     }])
   }
   if (props.dockLines.length > 0) tailBlocks.push([...props.dockLines])
+  const blocks = [...props.settledBlocks, ...tailBlocks]
+  const allLines: TranscriptLine[] = []
+  for (const block of blocks) {
+    for (const line of block) allLines.push(line)
+  }
   const windowed = selectTranscriptBlocksWindow(
-    [...props.settledBlocks, ...tailBlocks],
+    blocks,
     props.height,
     props.offset,
     TRANSCRIPT_LINE_OVERSCAN,
     props.backButton === true ? 1 : 0,
   )
-  props.linesRef.current = windowed.lines
-  props.windowOffsetRef.current = windowed.relativeOffset
+  props.linesRef.current = allLines
+  props.windowOffsetRef.current = windowed.windowStart
   return (
     <Transcript
       lines={windowed.lines}
@@ -1603,6 +1939,7 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
       offset={windowed.relativeOffset}
       scrollOffset={windowed.offset}
       lineCount={windowed.totalCount}
+      windowStart={windowed.windowStart}
       onMaximumOffsetChange={props.onMaximumOffsetChange}
       theme={props.theme}
       locale={props.locale}
@@ -1683,6 +2020,11 @@ export function App(props: {
   const [textSelection, setTextSelection] = useState<TextSelection | null>(null)
   const textSelectionRef = useRef<TextSelection | null>(null)
   const selectingRef = useRef(false)
+  const composerMarkRef = useRef<{ anchor: number; head: number } | null>(null)
+  const [composerClearSeq, setComposerClearSeq] = useState(0)
+  const selectPressRef = useRef<GlyphAnchor | null>(null)
+  const selectPointerRef = useRef<{ row: number; column: number } | null>(null)
+  const selectScrollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const pendingApproval = snapshot.pendingApproval
   const pendingQuestion = snapshot.pendingQuestion
@@ -1820,7 +2162,12 @@ export function App(props: {
     MAX_COMPOSER_LINES,
     Math.max(
       1,
-      selectComposerLayout(composerDisplay, composerDisplay.length, Math.max(1, width - 4), MAX_COMPOSER_LINES).visibleLines.length,
+      composerVisibleRowCount(
+        composerDisplay,
+        composerDisplay.length,
+        composerTextWrapWidth(Math.max(1, width - 2)),
+        MAX_COMPOSER_LINES,
+      ),
     ),
   )
   // The frame must always fill the physical rows exactly. Ink derives the
@@ -1835,6 +2182,62 @@ export function App(props: {
   const fixedRows = reserved + takeoverH + paletteH
   const transcriptHeight = Math.max(1, rowCount - fixedRows)
   const panelHeight = Math.max(1, transcriptHeight - 1 - (panelNoticeVisible ? 1 : 0))
+  const extendTranscriptSelection = useEffectEvent((terminalRow: number, terminalColumn: number): void => {
+    let offset = transcriptScrollOffsetRef.current
+    const maximum = transcriptMaximumOffset.current
+    if (terminalRow <= 5) offset = Math.min(maximum, offset + SELECT_SCROLL_LINES)
+    else if (terminalRow >= 4 + transcriptHeight) offset = Math.max(0, offset - SELECT_SCROLL_LINES)
+    if (offset !== transcriptScrollOffsetRef.current) applyTranscriptScroll(offset)
+    const reserved = offset > 0 ? 1 : 0
+    const contentHeight = Math.max(1, transcriptHeight - reserved)
+    const clampedRow = Math.max(0, Math.min(contentHeight - 1, terminalRow - 5))
+    const cell = transcriptCellAt(
+      transcriptLinesRef.current,
+      transcriptHeight,
+      offset,
+      reserved,
+      clampedRow,
+      terminalColumn,
+    )
+    const press = selectPressRef.current
+    if (cell === undefined || press === null) return
+    const span = glyphSpanAt(cell.line.text, cell.column)
+    // Spacer rows can start a drag, but the pointer sitting on one must not
+    // extend the head onto that empty row (which would select the rest of
+    // the previous line from a one-row jitter). A zero-width span on a
+    // content row is the exclusive end of that line, not a spacer.
+    if (span.start === span.end && lineSelectableWidth(cell.line.text) <= 0) return
+    const next = selectionFromGlyphs(press, {
+      lineIndex: cell.lineIndex,
+      start: span.start,
+      end: span.end,
+    })
+    textSelectionRef.current = next
+    if (selectionIsDrag(next)) setTextSelection(next)
+  })
+  const stopSelectScroll = useCallback((): void => {
+    selectPointerRef.current = null
+    if (selectScrollTimerRef.current !== null) {
+      clearInterval(selectScrollTimerRef.current)
+      selectScrollTimerRef.current = null
+    }
+  }, [])
+  const armSelectScroll = useEffectEvent((row: number, column: number): void => {
+    selectPointerRef.current = { row, column }
+    const atEdge = row <= 5 || row >= 4 + transcriptHeight
+    if (atEdge) {
+      if (selectScrollTimerRef.current === null) {
+        selectScrollTimerRef.current = setInterval(() => {
+          const pointer = selectPointerRef.current
+          if (pointer === null || !selectingRef.current) return
+          extendTranscriptSelection(pointer.row, pointer.column)
+        }, SELECT_SCROLL_MS)
+      }
+    } else if (selectScrollTimerRef.current !== null) {
+      clearInterval(selectScrollTimerRef.current)
+      selectScrollTimerRef.current = null
+    }
+  })
   const settingsChromeRows = panel?.kind === 'settings' ? SETTINGS_CHROME_ROWS : 0
   const panelListHeight = Math.max(1, panelHeight - settingsChromeRows)
 
@@ -2498,10 +2901,18 @@ export function App(props: {
   // Every Escape action funnels through here so the 60ms phantom-Escape
   // confirmation window can drop split-CSI artifacts without side effects.
   const handleEscape = useEffectEvent(() => {
+    const composerMark = composerMarkRef.current
+    if (composerMark !== null && composerMark.anchor !== composerMark.head) {
+      composerMarkRef.current = null
+      setComposerClearSeq(seq => seq + 1)
+      return
+    }
     if (textSelection !== null) {
       textSelectionRef.current = null
       setTextSelection(null)
       selectingRef.current = false
+      selectPressRef.current = null
+      stopSelectScroll()
       return
     }
     if (pluginEdit !== null) {
@@ -2555,7 +2966,10 @@ export function App(props: {
     if (draft !== '') setDraft('')
     else if (snapshot.busy) props.host.cancel()
   })
-  useEffect(() => () => { escapeArbiter.cancel() }, [])
+  useEffect(() => () => {
+    escapeArbiter.cancel()
+    stopSelectScroll()
+  }, [stopSelectScroll])
 
   useInput((input, key) => {
     // The terminal's title report (the `ESC]l<title>ESC\` answer to our
@@ -2586,6 +3000,24 @@ export function App(props: {
     // swallow the next invocation.
     if (input === '/') setPaletteDismissedInput(null)
     if (key.ctrl && input.toLowerCase() === 'c') {
+      const mark = composerMarkRef.current
+      if (
+        pluginEdit?.kind !== 'secret'
+        && pendingApproval === null
+        && pendingQuestion === null
+        && !panelOpen
+        && mark !== null
+        && mark.anchor !== mark.head
+      ) {
+        const value = pluginEdit !== null ? pluginEditText : settingsEdit !== null ? settingsEditText : draft
+        const selected = value.slice(Math.min(mark.anchor, mark.head), Math.max(mark.anchor, mark.head))
+        if (selected !== '') {
+          void copyToClipboard(selected, stdout).then((outcome) => {
+            setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
+          })
+        }
+        return
+      }
       const now = Date.now()
       if (now - lastCtrlCAt.current <= CTRL_C_EXIT_WINDOW_MS) {
         exitApp()
@@ -2613,10 +3045,10 @@ export function App(props: {
     // Panels anchor to the TOP, so wheel-up walks toward older rows.
     const wheel = parseMouseWheel(input)
     if (wheel !== null) {
+      if (selectingRef.current) return
       if (textSelection !== null) {
         textSelectionRef.current = null
         setTextSelection(null)
-        selectingRef.current = false
       }
       if (panelOpen) {
         const delta = wheel === 'up' ? -3 : 3
@@ -2648,24 +3080,37 @@ export function App(props: {
             applyTranscriptScroll(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
           }
         } else if (selectingRef.current && !panelOpen) {
-          const backButtonVisible = transcriptScrollOffset > 0
-          const cell = transcriptCellAt(
-            transcriptLinesRef.current,
-            transcriptHeight,
-            transcriptWindowOffsetRef.current,
-            backButtonVisible ? 1 : 0,
-            click.row - 5,
-            click.column,
-          )
-          if (cell !== undefined) {
-            const previous = textSelectionRef.current
-            const next: TextSelection = previous === null
-              ? { anchor: { lineIndex: cell.lineIndex, column: cell.column }, head: { lineIndex: cell.lineIndex, column: cell.column } }
-              : { ...previous, head: { lineIndex: cell.lineIndex, column: cell.column } }
-            textSelectionRef.current = next
-            setTextSelection(next)
+          armSelectScroll(click.row, click.column)
+          extendTranscriptSelection(click.row, click.column)
+        }
+        return
+      }
+      if (click.action === 'release') {
+        scrollbarDragRef.current = false
+        stopSelectScroll()
+        if (selectingRef.current) {
+          selectingRef.current = false
+          const current = textSelectionRef.current
+          textSelectionRef.current = null
+          selectPressRef.current = null
+          setTextSelection(null)
+          if (current !== null && selectionIsDrag(current)) {
+            const selected = extractSelectedText(transcriptLinesRef.current, current)
+            if (selected !== '') {
+              void copyToClipboard(selected, stdout).then((outcome) => {
+                setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
+              })
+            }
           }
         }
+        return
+      }
+      if (click.row >= 5 + transcriptHeight) {
+        textSelectionRef.current = null
+        setTextSelection(null)
+        selectingRef.current = false
+        selectPressRef.current = null
+        stopSelectScroll()
         return
       }
       if (click.action === 'press' && panelOpen && click.button === 0 && panel?.kind === 'settings') {
@@ -2717,7 +3162,7 @@ export function App(props: {
           const line = transcriptLineAtRow(
             transcriptLinesRef.current,
             transcriptHeight,
-            transcriptWindowOffsetRef.current,
+            transcriptScrollOffsetRef.current,
             backButtonVisible ? 1 : 0,
             click.row - 5,
           )
@@ -2743,81 +3188,29 @@ export function App(props: {
           const cell = transcriptCellAt(
             transcriptLinesRef.current,
             transcriptHeight,
-            transcriptWindowOffsetRef.current,
+            transcriptScrollOffsetRef.current,
             backButtonVisible ? 1 : 0,
             click.row - 5,
             click.column,
           )
           if (cell !== undefined) {
+            const span = glyphSpanAt(cell.line.text, cell.column)
             selectingRef.current = true
-            const next = {
-              anchor: { lineIndex: cell.lineIndex, column: cell.column },
-              head: { lineIndex: cell.lineIndex, column: cell.column },
+            selectPressRef.current = {
+              lineIndex: cell.lineIndex,
+              start: span.start,
+              end: span.end,
             }
-            textSelectionRef.current = next
-            setTextSelection(next)
+            textSelectionRef.current = {
+              anchor: { lineIndex: cell.lineIndex, column: span.start },
+              head: { lineIndex: cell.lineIndex, column: span.start },
+            }
+            setTextSelection(null)
           } else {
+            selectingRef.current = false
+            selectPressRef.current = null
             textSelectionRef.current = null
             setTextSelection(null)
-          }
-        }
-      }
-      if (click.action === 'release') {
-        scrollbarDragRef.current = false
-        if (selectingRef.current) {
-          selectingRef.current = false
-          const current = textSelectionRef.current
-          if (current !== null && selectionMoved(current)) {
-            const selected = extractSelectedText(transcriptLinesRef.current, current)
-            if (selected !== '') {
-              void copyToClipboard(selected, stdout).then((outcome) => {
-                setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
-              })
-            }
-          } else {
-            const cell = transcriptCellAt(
-              transcriptLinesRef.current,
-              transcriptHeight,
-              transcriptWindowOffsetRef.current,
-              transcriptScrollOffset > 0 ? 1 : 0,
-              click.row - 5,
-              click.column,
-            )
-            const nodeId = cell?.line.copyNodeId
-            if (nodeId !== undefined) {
-              const node = snapshot.nodes.find(entry => entry.id === nodeId)
-              const semantic = node === undefined ? null : extractCopyText(node)
-              if (semantic !== null && semantic !== '') {
-                void copyToClipboard(semantic, stdout).then((outcome) => {
-                  setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
-                })
-                const rows = transcriptLinesRef.current
-                let first = -1
-                let last = -1
-                for (let index = 0; index < rows.length; index += 1) {
-                  if (rows[index]?.copyNodeId === nodeId) {
-                    if (first === -1) first = index
-                    last = index
-                  }
-                }
-                if (first >= 0 && last >= 0) {
-                  const lastLine = rows[last]
-                  const next: TextSelection = {
-                    anchor: { lineIndex: first, column: 0 },
-                    head: { lineIndex: last, column: lastLine === undefined ? 0 : stringWidth(lastLine.text) },
-                  }
-                  textSelectionRef.current = next
-                  setTextSelection(next)
-                }
-              }
-            } else if (cell?.line.key.startsWith('live-text-') === true) {
-              const live = snapshot.live?.text ?? ''
-              if (live !== '') {
-                void copyToClipboard(live, stdout).then((outcome) => {
-                  setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
-                })
-              }
-            }
           }
         }
       }
@@ -2902,6 +3295,7 @@ export function App(props: {
     }
     const history = historyRef.current
     if (key.upArrow) {
+      if (draft !== '') return
       if (history.length === 0) return
       if (historyIndex === -1) historyScratchRef.current = draft
       const nextIndex = historyIndex === -1
@@ -2913,6 +3307,7 @@ export function App(props: {
       return
     }
     if (key.downArrow) {
+      if (draft !== '') return
       if (historyIndex === -1) return
       const nextIndex = historyIndex + 1
       if (nextIndex >= history.length) {
@@ -3031,7 +3426,7 @@ export function App(props: {
               // palette can never stay suppressed after an Escape, and
               // edits a recalled history line (leaving history browsing).
               setPaletteDismissedInput(null)
-              if (historyIndex !== -1) setHistoryIndex(-1)
+              if (historyIndex !== -1 && value !== '') setHistoryIndex(-1)
               setDraft(value)
             }}
         onSubmit={submitComposer}
@@ -3044,6 +3439,9 @@ export function App(props: {
           ? (pluginEdit.kind === 'secret' ? copy.secretPlaceholder : pluginEdit.kind === 'number' ? copy.numberPlaceholder : copy.stringPlaceholder)
           : settingsEdit !== null ? copy.credentialPlaceholder : copy.placeholder}
         theme={theme}
+        locale={locale}
+        markOutRef={composerMarkRef}
+        clearSeq={composerClearSeq}
         {...(pluginEdit?.kind === 'secret' ? { mask: '•' } : {})}
       />
       <StatusBar

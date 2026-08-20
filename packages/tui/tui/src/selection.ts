@@ -7,7 +7,7 @@
  */
 
 import stringWidth from 'string-width'
-import type { TranscriptLine } from './viewport'
+import { lineSelectableWidth, type TranscriptLine } from './viewport'
 
 /** One cell inside the already-windowed transcript lines. */
 export interface TranscriptCell {
@@ -18,16 +18,71 @@ export interface TranscriptCell {
   line: TranscriptLine
 }
 
-/** A drag-select range in windowed line indices and display columns. */
+/** A drag-select range in absolute transcript line indices and display columns. */
 export interface TextSelection {
   anchor: { lineIndex: number; column: number }
   head: { lineIndex: number; column: number }
 }
 
+/** One glyph under the pointer, as an inclusive start and exclusive end column. */
+export interface GlyphAnchor {
+  lineIndex: number
+  start: number
+  end: number
+}
+
+/**
+ * Display-column span of the glyph that owns `column`. Trailing pad is not a
+ * glyph: a click past the last character returns an empty span at the
+ * selectable end so a drag can still reach the line end.
+ * @param text - one painted row.
+ * @param column - 0-based display column.
+ * @returns inclusive start and exclusive end display columns.
+ */
+export function glyphSpanAt(text: string, column: number): { start: number; end: number } {
+  const selectable = lineSelectableWidth(text)
+  if (selectable <= 0) return { start: 0, end: 0 }
+  const target = Math.max(0, Math.floor(column))
+  if (target >= selectable) return { start: selectable, end: selectable }
+  let col = 0
+  for (const character of text) {
+    const width = Math.max(1, stringWidth(character))
+    const next = col + width
+    if (col >= selectable) break
+    if (target < next) return { start: col, end: Math.min(selectable, next) }
+    col = next
+  }
+  return { start: selectable, end: selectable }
+}
+
+/**
+ * Build an ordered selection that includes both the press glyph and the
+ * glyph under the pointer, whether the drag runs forward or backward.
+ * @param press - glyph at mouse-down.
+ * @param head - glyph under the pointer.
+ * @returns an ordered range whose exclusive end is the last glyph's end.
+ */
+export function selectionFromGlyphs(press: GlyphAnchor, head: GlyphAnchor): TextSelection {
+  if (press.lineIndex === head.lineIndex && press.start === head.start && press.end === head.end) {
+    return {
+      anchor: { lineIndex: press.lineIndex, column: press.start },
+      head: { lineIndex: press.lineIndex, column: press.start },
+    }
+  }
+  const pressFirst = press.lineIndex < head.lineIndex
+    || (press.lineIndex === head.lineIndex && press.start <= head.start)
+  const start = pressFirst ? press : head
+  const end = pressFirst ? head : press
+  return {
+    anchor: { lineIndex: start.lineIndex, column: start.start },
+    head: { lineIndex: end.lineIndex, column: end.end },
+  }
+}
+
 /**
  * Slice `text` by terminal display columns (`string-width`), so CJK and
- * emoji stay on character boundaries. A 2-cell glyph that straddles `start`
- * is included.
+ * emoji stay on character boundaries. A 2-cell glyph that overlaps `[start, end)`
+ * is included, so a clipboard range that starts mid-glyph still copies it.
  * @param text - one painted row.
  * @param startCol - 0-based display column, inclusive.
  * @param endCol - 0-based display column, exclusive.
@@ -46,6 +101,60 @@ export function sliceDisplayRange(text: string, startCol: number, endCol: number
     if (column >= end) break
   }
   return out
+}
+
+/**
+ * Partition `text` by display columns without overlap. A glyph belongs to the
+ * segment that contains its start column, so adjacent before/mid/after slices
+ * concatenate to the original row and keep the same display width.
+ * @param text - one painted row.
+ * @param startCol - 0-based display column, inclusive.
+ * @param endCol - 0-based display column, exclusive.
+ * @returns the characters whose start column lies in `[startCol, endCol)`.
+ */
+export function sliceDisplaySegment(text: string, startCol: number, endCol: number): string {
+  const start = Math.max(0, startCol)
+  const end = Math.max(start, endCol)
+  let column = 0
+  let out = ''
+  for (const character of text) {
+    const width = Math.max(1, stringWidth(character))
+    if (column >= end) break
+    if (column >= start) out += character
+    column += width
+  }
+  return out
+}
+
+/**
+ * Split one painted row into unselected prefix, overlapping mid-span, and
+ * unselected suffix. A 2-cell glyph that straddles `startCol` goes entirely
+ * into `mid` so a backward drag does not drop the first selected character.
+ * @param text - one painted row.
+ * @param startCol - 0-based display column, inclusive.
+ * @param endCol - 0-based display column, exclusive.
+ * @returns unselected prefix, overlapping highlight, and unselected suffix.
+ */
+export function sliceDisplayParts(
+  text: string,
+  startCol: number,
+  endCol: number,
+): { before: string; mid: string; after: string } {
+  const start = Math.max(0, startCol)
+  const end = Math.max(start, endCol)
+  let column = 0
+  let before = ''
+  let mid = ''
+  let after = ''
+  for (const character of text) {
+    const width = Math.max(1, stringWidth(character))
+    const next = column + width
+    if (next <= start) before += character
+    else if (column >= end) after += character
+    else mid += character
+    column = next
+  }
+  return { before, mid, after }
 }
 
 /** Ordered start/end of one selection. */
@@ -68,10 +177,23 @@ export function selectionMoved(selection: TextSelection): boolean {
 }
 
 /**
+ * True when the range is a drag, not a click. A one-row, one-column move is
+ * click jitter at a row boundary and must not highlight a block.
+ * @param selection - the current range.
+ */
+export function selectionIsDrag(selection: TextSelection): boolean {
+  const { start, end } = orderedSelection(selection)
+  const lineDelta = Math.abs(end.lineIndex - start.lineIndex)
+  const columnDelta = Math.abs(end.column - start.column)
+  if (lineDelta === 0) return columnDelta > 0
+  return Math.max(lineDelta, columnDelta) >= 2
+}
+
+/**
  * Display-column span of `lineIndex` inside `selection`, or null when the
  * line is outside the range.
  * @param selection - the current range.
- * @param lineIndex - windowed line index.
+ * @param lineIndex - absolute transcript line index.
  * @param lineWidth - display width of that line.
  */
 export function selectionSpanOnLine(
@@ -100,7 +222,7 @@ function stripLineChrome(text: string, fromLineStart: boolean): string {
 /**
  * Clipboard text for a drag range over painted rows. Chrome prefixes (`▸ `,
  * `● `, think bars) drop only when the range includes the start of the line.
- * @param lines - windowed transcript rows.
+ * @param lines - absolute transcript rows.
  * @param selection - the drag range.
  * @returns the joined text, or '' when the range is empty.
  */
@@ -113,7 +235,8 @@ export function extractSelectedText(
   for (let index = start.lineIndex; index <= end.lineIndex; index += 1) {
     const line = lines[index]
     if (line === undefined) continue
-    const width = stringWidth(line.text)
+    const width = lineSelectableWidth(line.text)
+    if (width <= 0) continue
     const spanStart = index === start.lineIndex ? start.column : 0
     const spanEnd = index === end.lineIndex ? end.column : width
     const sliced = sliceDisplayRange(line.text, spanStart, spanEnd)

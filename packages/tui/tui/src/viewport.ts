@@ -37,8 +37,6 @@ export interface TranscriptLine {
   disclosureNodeId?: number
   /** Thinking arrows toggle the global display; other arrows toggle one node. */
   disclosureKind?: 'thinking' | 'node'
-  /** Fold node whose body this row copies on a click (user/assistant/think/tool). */
-  copyNodeId?: number
 }
 
 /** The visible slice plus its scroll bookkeeping. */
@@ -97,6 +95,8 @@ export interface TranscriptBlocksWindow {
   maximumOffset: number
   /** Sum of every block's length. */
   totalCount: number
+  /** Absolute index of {@link lines}[0] in the full transcript. */
+  windowStart: number
 }
 
 /**
@@ -153,6 +153,7 @@ export function selectTranscriptBlocksWindow(
     offset,
     maximumOffset,
     totalCount: total,
+    windowStart,
   }
 }
 
@@ -186,6 +187,16 @@ export function transcriptLineAtRow(
 }
 
 /**
+ * Display width of a painted row excluding trailing pad spaces. A click on
+ * the empty gray tail of a user prompt must not become a full-width range.
+ * @param text - one painted row, possibly padded with `padEndDisplay`.
+ * @returns the selectable display-column count.
+ */
+export function lineSelectableWidth(text: string): number {
+  return stringWidth(text.replace(/[ \t]+$/u, ''))
+}
+
+/**
  * Map a mouse row/column onto one cell of the windowed transcript, honoring
  * flex-end padding and the left content pad (terminal column 2).
  * @param lines - windowed transcript lines.
@@ -194,7 +205,9 @@ export function transcriptLineAtRow(
  * @param bottomReserved - rows pinned below the scrolling content.
  * @param row - zero-based row inside the complete transcript box.
  * @param terminalColumn - 1-based terminal column of the click.
- * @returns the cell, or `undefined` for padding, reserved rows, or the gutter.
+ * @returns the cell, or `undefined` for flex-end padding, reserved rows, or the gutter.
+ * Blank spacer rows still return a cell (column 0) so a drag can start or
+ * pass through them; copy skips those rows.
  */
 export function transcriptCellAt(
   lines: readonly TranscriptLine[],
@@ -214,6 +227,7 @@ export function transcriptCellAt(
   const visibleIndex = position - padding
   const line = viewport.lines[visibleIndex]
   if (line === undefined) return undefined
+  const selectable = lineSelectableWidth(line.text)
   const capacity = Math.max(1, contentHeight)
   const normalizedOffset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0
   const maximumOffset = Math.max(0, lines.length - capacity)
@@ -221,7 +235,9 @@ export function transcriptCellAt(
   const end = Math.max(0, lines.length - offset)
   const start = Math.max(0, end - capacity)
   const lineIndex = start + visibleIndex
-  const column = Math.max(0, Math.min(stringWidth(line.text), Math.floor(terminalColumn) - 2))
+  const column = selectable <= 0
+    ? 0
+    : Math.max(0, Math.min(selectable, Math.floor(terminalColumn) - 2))
   return { lineIndex, column, line }
 }
 
@@ -289,6 +305,8 @@ export interface ComposerLayout {
   caretLine: number
   /** Caret column in terminal cells on the caret row. */
   caretColumn: number
+  /** Index into the full wrap of the first visible line. */
+  windowStart: number
 }
 
 /**
@@ -328,32 +346,193 @@ export function selectComposerLayout(
   const windowMax = Math.max(1, maxLines)
   const start = Math.max(0, Math.min(caretLineIndex - windowMax + 1, Math.max(0, lines.length - windowMax)))
   const visibleLines = lines.slice(start, start + windowMax)
-  return { visibleLines, caretLine: caretLineIndex - start, caretColumn }
+  return { visibleLines, caretLine: caretLineIndex - start, caretColumn, windowStart: start }
+}
+
+/** One wrapped composer row and its source offsets. */
+export interface ComposerLineRange {
+  text: string
+  start: number
+  end: number
+}
+
+/**
+ * Hard-wrap one composer value by cells, keeping empty lines, and record the
+ * source offsets of each painted row so mouse hits can set the caret.
+ * @param value - the full input value (may contain newlines).
+ * @param width - wrap budget in terminal cells.
+ * @returns wrapped rows with `[start, end)` offsets into `value`.
+ */
+export function wrapComposerRanges(value: string, width: number): ComposerLineRange[] {
+  const lineWidth = Math.max(1, Math.floor(width))
+  const out: ComposerLineRange[] = []
+  let offset = 0
+  const parts = value.split('\n')
+  for (let partIndex = 0; partIndex < parts.length; partIndex += 1) {
+    const source = parts[partIndex] ?? ''
+    if (source === '') {
+      out.push({ text: '', start: offset, end: offset })
+      offset += partIndex === parts.length - 1 ? 0 : 1
+      continue
+    }
+    let current = ''
+    let currentStart = offset
+    let currentWidth = 0
+    let index = 0
+    while (index < source.length) {
+      const next = nextCodePointBoundary(source, index)
+      const character = source.slice(index, next)
+      const characterWidth = Math.max(1, stringWidth(character))
+      if (currentWidth > 0 && currentWidth + characterWidth > lineWidth) {
+        out.push({ text: current, start: currentStart, end: offset + index })
+        current = ''
+        currentStart = offset + index
+        currentWidth = 0
+        continue
+      }
+      current += character
+      currentWidth += characterWidth
+      index = next
+    }
+    out.push({ text: current, start: currentStart, end: offset + source.length })
+    offset += source.length + (partIndex === parts.length - 1 ? 0 : 1)
+  }
+  return out.length === 0 ? [{ text: '', start: 0, end: 0 }] : out
 }
 
 /** Hard-wrap one composer value by cells, keeping empty lines (multi-line input). */
 function wrapComposerText(value: string, width: number): string[] {
-  const lines: string[] = []
-  for (const source of value.split('\n')) {
-    if (source === '') {
-      lines.push('')
-      continue
-    }
-    let current = ''
-    let currentWidth = 0
-    for (const character of source) {
-      const characterWidth = Math.max(1, stringWidth(character))
-      if (currentWidth + characterWidth > width) {
-        lines.push(current)
-        current = ''
-        currentWidth = 0
-      }
-      current += character
-      currentWidth += characterWidth
-    }
-    lines.push(current)
+  return wrapComposerRanges(value, width).map(range => range.text)
+}
+
+/** Display cells taken by `› ` on wrap line 0 and the matching indent on later rows. */
+export const COMPOSER_PROMPT_WIDTH = 2
+/**
+ * Empty cell at the end of each composer wrap row. A line that fills the
+ * painted box clips its last glyph under Ink `truncate` (width `>=` box)
+ * and Windows Terminal pending-wrap; wrap one cell sooner than paint.
+ */
+export const COMPOSER_WRAP_GUTTER = 1
+
+/**
+ * Painted text cells after the prompt prefix (includes {@link COMPOSER_WRAP_GUTTER}).
+ * @param boxWidth - inner width of the composer input box, including the prefix.
+ * @returns cells in the text box to the right of `› `/indent.
+ */
+export function composerTextPaintWidth(boxWidth: number): number {
+  return Math.max(1, Math.floor(boxWidth) - COMPOSER_PROMPT_WIDTH)
+}
+
+/**
+ * Wrap budget for composer text after the prompt prefix.
+ * @param boxWidth - inner width of the composer input box, including the prefix.
+ * @returns cells available for wrapped draft text.
+ */
+export function composerTextWrapWidth(boxWidth: number): number {
+  return Math.max(1, composerTextPaintWidth(boxWidth) - COMPOSER_WRAP_GUTTER)
+}
+
+/**
+ * Map a visible composer cell to a source offset.
+ * @param value - the full input value.
+ * @param width - wrap budget in terminal cells.
+ * @param lineIndex - 0-based row in the full wrap (not the sliding window).
+ * @param column - 0-based display column on that row.
+ * @returns a code-unit offset into `value`.
+ */
+export function composerOffsetAt(value: string, width: number, lineIndex: number, column: number): number {
+  const ranges = wrapComposerRanges(value, width)
+  if (ranges.length === 0) return 0
+  const row = ranges[Math.max(0, Math.min(lineIndex, ranges.length - 1))]
+  if (row === undefined) return value.length
+  const target = Math.max(0, column)
+  let used = 0
+  let index = row.start
+  while (index < row.end) {
+    const next = nextCodePointBoundary(value, index)
+    const character = value.slice(index, next)
+    const characterWidth = Math.max(1, stringWidth(character))
+    if (used + characterWidth > target) return index
+    used += characterWidth
+    index = next
   }
-  return lines
+  return row.end
+}
+
+/**
+ * Source offsets of the glyph under a composer cell. The exclusive end is the
+ * next code-point boundary so a drag includes the character under the pointer
+ * in both directions.
+ * @param value - the full input value.
+ * @param width - wrap budget in terminal cells.
+ * @param lineIndex - 0-based row in the full wrap (not the sliding window).
+ * @param column - 0-based display column on that row.
+ * @returns inclusive start and exclusive end offsets of that glyph.
+ */
+export function composerGlyphAt(
+  value: string,
+  width: number,
+  lineIndex: number,
+  column: number,
+): { start: number; end: number } {
+  const start = composerOffsetAt(value, width, lineIndex, column)
+  if (start >= value.length) return { start: value.length, end: value.length }
+  return { start, end: nextCodePointBoundary(value, start) }
+}
+
+/**
+ * Move the composer caret by one wrap row, keeping the display column.
+ * First-row up and last-row down leave the offset unchanged.
+ * @param value - the full input value.
+ * @param width - wrap budget in terminal cells.
+ * @param cursorOffset - caret offset in code units.
+ * @param direction - `-1` up, `1` down.
+ * @returns the caret offset after the move.
+ */
+export function composerOffsetForVerticalMove(
+  value: string,
+  width: number,
+  cursorOffset: number,
+  direction: -1 | 1,
+): number {
+  if (value === '') return 0
+  const ranges = wrapComposerRanges(value, width)
+  const layout = selectComposerLayout(value, cursorOffset, width, Math.max(1, ranges.length))
+  const nextLine = layout.windowStart + layout.caretLine + direction
+  if (nextLine < 0 || nextLine >= ranges.length) return cursorOffset
+  return composerOffsetAt(value, width, nextLine, layout.caretColumn)
+}
+
+/** Hard-newline count at which the composer collapses to a preview plus a line-count row. */
+export const COMPOSER_COLLAPSE_HARD_LINES = 4
+
+/**
+ * Number of hard-newline lines in a composer value. An empty value is one line.
+ * @param value - the composer draft.
+ * @returns the line count.
+ */
+export function countComposerHardLines(value: string): number {
+  return value === '' ? 1 : value.split('\n').length
+}
+
+/**
+ * Rows the composer paints: 2 when the draft has at least
+ * {@link COMPOSER_COLLAPSE_HARD_LINES} hard lines, otherwise the wrapped
+ * caret window capped at `maxLines`.
+ * @param value - the composer draft.
+ * @param cursorOffset - caret offset in code units.
+ * @param width - wrap budget in terminal cells.
+ * @param maxLines - the tallest expanded composer.
+ * @returns the painted row count.
+ */
+export function composerVisibleRowCount(
+  value: string,
+  cursorOffset: number,
+  width: number,
+  maxLines: number,
+): number {
+  if (countComposerHardLines(value) >= COMPOSER_COLLAPSE_HARD_LINES) return 2
+  return selectComposerLayout(value, cursorOffset, width, maxLines).visibleLines.length
 }
 
 /**

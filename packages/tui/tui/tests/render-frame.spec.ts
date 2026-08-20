@@ -17,7 +17,12 @@ import { marked } from 'marked'
 import xtermHeadless from '@xterm/headless'
 import { App, brandGlyph, permissionColor, permissionLabel, traceLineColor } from '../src/render'
 import { settingsTabCell } from '../src/settings-chrome'
-import { selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
+import { composerTextWrapWidth, selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
+
+/** Composer wrap budget: frame minus padding, prompt, and the wrap gutter. */
+function composerWrapWidth(columns: number): number {
+  return composerTextWrapWidth(selectTerminalFrameWidth(columns) - 2)
+}
 import type { TuiHost } from '../src/render'
 import { createTuiStore } from '../src/store'
 import type { TuiStore } from '../src/store'
@@ -100,6 +105,19 @@ function expectScrollbarColumn(capture: Capture): void {
     expect((line?.getCell(safetyColumn)?.getChars() ?? '').trim()).toBe('')
   }
   expect(scrollbarRows).toBeGreaterThan(3)
+}
+
+/** True when any cell of the row containing `needle` is inverse-highlighted. */
+function promptRowHasInverse(capture: Capture, needle: string): boolean {
+  const buffer = capture.terminal.buffer.active
+  for (let row = 0; row < capture.rows; row += 1) {
+    const line = buffer.getLine(buffer.viewportY + row)
+    if (line === undefined || !line.translateToString(true).includes(needle)) continue
+    for (let column = 0; column < capture.columns; column += 1) {
+      if ((line.getCell(column)?.isInverse() ?? 0) !== 0) return true
+    }
+  }
+  return false
 }
 
 /** Build an SGR left-click report for one rendered trailing disclosure arrow. */
@@ -389,16 +407,16 @@ describe('Ink 7 full-screen render', () => {
       const rapidDraft = `${draftBeforeRapid}${rapid}`
       mounted.stdin.write(rapid)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      assertCaretRow(selectComposerLayout(rapidDraft, rapidDraft.length, selectTerminalFrameWidth(COLUMNS) - 4, 5).caretLine)
+      assertCaretRow(selectComposerLayout(rapidDraft, rapidDraft.length, composerWrapWidth(COLUMNS), 5).caretLine)
 
       mounted.capture.columns = 80
       mounted.capture.rows = 24
       mounted.capture.emit('resize')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      assertCaretRow(selectComposerLayout(rapidDraft, rapidDraft.length, selectTerminalFrameWidth(80) - 4, 5).caretLine)
+      assertCaretRow(selectComposerLayout(rapidDraft, rapidDraft.length, composerWrapWidth(80), 5).caretLine)
       await mounted.type(' after resize')
       const resizedDraft = `${rapidDraft} after resize`
-      assertCaretRow(selectComposerLayout(resizedDraft, resizedDraft.length, selectTerminalFrameWidth(80) - 4, 5).caretLine)
+      assertCaretRow(selectComposerLayout(resizedDraft, resizedDraft.length, composerWrapWidth(80), 5).caretLine)
     } finally {
       mounted.unmount()
     }
@@ -1025,10 +1043,17 @@ describe('Ink 7 full-screen render', () => {
     try {
       await type('a'.repeat(150))
       const lines = lastFrameLines(capture.output)
-      // 150 cells in a 96-cell input wrap into TWO lines; a truncated
+      // 150 cells wrap onto at least two composer rows; a truncated
       // single-line input could only ever render one row of ≥40 `a`s.
       expect(lines.filter(line => line.includes('a'.repeat(40))).length).toBeGreaterThanOrEqual(2)
       expect(lines.some(line => line.includes('a'.repeat(40)) && line.trimStart().startsWith('›'))).toBe(true)
+      // Every wrap row shares the prompt-indented budget, so line 0 cannot
+      // clip the last glyphs of a full wrap (those glyphs would vanish from
+      // both paint and a drag copy).
+      const paintedAs = lines
+        .filter(line => /a{20,}/.test(line))
+        .reduce((sum, line) => sum + (line.match(/a/g)?.length ?? 0), 0)
+      expect(paintedAs).toBe(150)
     } finally {
       unmount()
     }
@@ -1193,14 +1218,24 @@ describe('Ink 7 full-screen render', () => {
       await type('\x1b[A')
       let lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('› second task'))).toBe(true)
-      // ↑ again goes one further back.
+      // A nonempty draft owns ↑/↓ as caret motion, so a second ↑ stays on
+      // the recalled line instead of walking to `first task`.
+      await type('\x1b[A')
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('› second task'))).toBe(true)
+      expect(lines.some(line => line.includes('› first task'))).toBe(false)
+      // Ctrl+L empties the composer and keeps the history cursor, so the
+      // next ↑ on an empty draft walks one further back.
+      await type('\x0c')
       await type('\x1b[A')
       lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('› first task'))).toBe(true)
       // ↓ walks forward again; past the newest it restores the empty draft.
+      await type('\x0c')
       await type('\x1b[B')
       lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('› second task'))).toBe(true)
+      await type('\x0c')
       await type('\x1b[B')
       lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('› second task'))).toBe(false)
@@ -1208,6 +1243,51 @@ describe('Ink 7 full-screen render', () => {
       await type('\x1b[A')
       await type('\r')
       expect(submissions).toEqual(['first task', 'second task', 'second task'])
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('moves the caret with arrows when the composer has text instead of recalling history', async () => {
+    const { capture, unmount, type } = await mount([], {
+      submit: () => {},
+    })
+    try {
+      await type('hello')
+      expect(lastCursorSuffix(capture.output).column).toBe(9)
+      await type('\x1b[D')
+      expect(lastCursorSuffix(capture.output).column).toBe(8)
+      await type('\x1b[C')
+      expect(lastCursorSuffix(capture.output).column).toBe(9)
+      await type('\x1b[A')
+      let lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('› hello'))).toBe(true)
+      await type('\r')
+      await type('keep')
+      await type('\x1b[A')
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('› keep'))).toBe(true)
+      expect(lines.some(line => line.includes('› hello'))).toBe(false)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('moves the caret between wrapped composer rows with ↑/↓', async () => {
+    const { capture, unmount, type } = await mount()
+    try {
+      const draft = 'a'.repeat(150)
+      await type(draft)
+      const wrapWidth = composerWrapWidth(COLUMNS)
+      expect(selectComposerLayout(draft, draft.length, wrapWidth, 5).caretLine).toBeGreaterThan(0)
+      const endY = capture.terminal.buffer.active.cursorY
+      const endColumn = lastCursorSuffix(capture.output).column
+      await type('\x1b[A')
+      expect(capture.terminal.buffer.active.cursorY).toBe(endY - 1)
+      expect(lastCursorSuffix(capture.output).column).toBe(endColumn)
+      await type('\x1b[B')
+      expect(capture.terminal.buffer.active.cursorY).toBe(endY)
+      expect(lastCursorSuffix(capture.output).column).toBe(endColumn)
     } finally {
       unmount()
     }
@@ -1615,7 +1695,7 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 30_000)
 
-  it('copies a user prompt on click and a dragged span on mouse-up', async () => {
+  it('copies a dragged span on mouse-up and does not copy on a bare click', async () => {
     const { capture, unmount, type } = await mount([
       { kind: 'user', id: 1, text: 'hi there' },
       { kind: 'assistant', id: 2, text: 'const value = 123', messageId: 'm2' },
@@ -1627,10 +1707,13 @@ describe('Ink 7 full-screen render', () => {
       expect(promptRow).toBeGreaterThanOrEqual(0)
       const row = promptRow + 1
       await type(`\x1b[<0;4;${row}M`)
+      await type(`\x1b[<32;4;${row}M`)
+      await type(`\x1b[<32;4;${row + 1}M`)
       await type(`\x1b[<0;4;${row}m`)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       expect(lastFrameLines(capture.output).some(line =>
-        line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
+        line.includes('已复制') || line.includes('Copied'))).toBe(false)
+      expect(promptRowHasInverse(capture, 'hi there')).toBe(false)
       const replyRow = lastFrameLines(capture.output).findIndex(line => line.includes('const value = 123'))
       expect(replyRow).toBeGreaterThanOrEqual(0)
       const reply = replyRow + 1
@@ -1638,9 +1721,81 @@ describe('Ink 7 full-screen render', () => {
       await type(`\x1b[<32;18;${reply}M`)
       await type(`\x1b[<0;18;${reply}m`)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
+      expect(lastFrameLines(capture.output).some(line =>
+        line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
+      expect(promptRowHasInverse(capture, 'const value = 123')).toBe(false)
       expect(capture.output).toContain('\x1b[?1000h')
       await type('\x1b[<64;10;5M')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('keeps transcript rows still while dragging vertically and does not duplicate a split line', async () => {
+    const { capture, unmount, type } = await mount([
+      { kind: 'user', id: 1, text: 'UNIQUE_PROMPT_LINE' },
+      { kind: 'assistant', id: 2, text: 'UNIQUE_ALPHA_LINE\nUNIQUE_BETA_LINE', messageId: 'm2' },
+    ])
+    try {
+      const before = capture.screenLines()
+      const alphaRow = before.findIndex(line => line.includes('UNIQUE_ALPHA_LINE'))
+      const promptRow = before.findIndex(line => line.includes('UNIQUE_PROMPT_LINE'))
+      expect(alphaRow).toBeGreaterThanOrEqual(0)
+      expect(promptRow).toBeGreaterThanOrEqual(0)
+      expect(before.filter(line => line.includes('UNIQUE_ALPHA_LINE')).length).toBe(1)
+      const start = alphaRow + 1
+      const end = before.findIndex(line => line.includes('UNIQUE_BETA_LINE')) + 1
+      expect(end).toBeGreaterThan(start)
+      await type(`\x1b[<0;4;${start}M`)
+      await type(`\x1b[<32;18;${end}M`)
+      const mid = capture.screenLines()
+      expect(mid.findIndex(line => line.includes('UNIQUE_PROMPT_LINE'))).toBe(promptRow)
+      expect(mid.findIndex(line => line.includes('UNIQUE_ALPHA_LINE'))).toBe(alphaRow)
+      expect(mid.filter(line => line.includes('UNIQUE_ALPHA_LINE')).length).toBe(1)
+      expect(mid.filter(line => line.includes('UNIQUE_BETA_LINE')).length).toBe(1)
+      await type(`\x1b[<0;18;${end}m`)
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      expect(promptRowHasInverse(capture, 'UNIQUE_ALPHA_LINE')).toBe(false)
+      expect(lastFrameLines(capture.output).some(line =>
+        line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('scrolls older history into view when a drag holds at the transcript top edge', async () => {
+    const nodes: TuiNode[] = [
+      { kind: 'user', id: 0, text: 'UNIQUE_TOP_PROMPT' },
+      ...Array.from({ length: 80 }, (_, index) => ({
+        kind: 'assistant' as const, id: 10 + index, text: `assistant row ${index}`, messageId: `m${index}`,
+      })),
+    ]
+    const { capture, unmount, type } = await mount(nodes)
+    try {
+      expect(capture.screenLines().some(line => line.includes('UNIQUE_TOP_PROMPT'))).toBe(false)
+      const startRow = capture.screenLines().findIndex(line => line.includes('assistant row 79')) + 1
+      expect(startRow).toBeGreaterThan(0)
+      await type(`\x1b[<0;4;${startRow}M`)
+      for (let tick = 0; tick < 8; tick += 1) await type('\x1b[<32;4;5M')
+      expect(capture.screenLines().some(line => line.includes('UNIQUE_TOP_PROMPT'))).toBe(true)
+      await type('\x1b[<0;4;5m')
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('replaces the composer selection when Ctrl+A is followed by typing', async () => {
+    const { capture, unmount, type } = await mount()
+    try {
+      await type('hello')
+      await type('\x01')
+      await type('x')
+      const lines = capture.screenLines()
+      const composer = lines.find(line => line.includes('›'))
+      expect(composer).toBeDefined()
+      expect(composer).toContain('x')
+      expect(composer).not.toContain('hello')
     } finally {
       unmount()
     }

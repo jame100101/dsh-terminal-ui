@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import { spawn } from 'node:child_process'
 import { Writable } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { copyToClipboard, copyViaOsc52 } from '../src/clipboard'
+import { clipboardStdinPayload, copyToClipboard, copyViaOsc52, pasteFromClipboard } from '../src/clipboard'
 
 vi.mock('node:child_process', () => ({
   spawn: vi.fn(),
@@ -54,15 +54,22 @@ describe('clipboard backend', () => {
     expect(outcome.error).toContain('write EPIPE')
   })
 
+  it('encodes clip.exe stdin as UTF-16 LE with BOM so CJK is not mojibake', () => {
+    const encoded = clipboardStdinPayload('clip', '你好 cache-safety')
+    expect(Buffer.isBuffer(encoded)).toBe(true)
+    expect(Buffer.from(encoded).toString('utf16le')).toBe('\ufeff你好 cache-safety')
+    expect(clipboardStdinPayload('pbcopy', '你好')).toBe('你好')
+  })
+
   it('pipes user text to clipboard-tool stdin and does not exec-concat it', async () => {
     Object.defineProperty(process, 'platform', { value: 'win32' })
     const payload = 'hello "quotes" & | $ ` \' <>\n中文 🎉'
-    let received = ''
+    let received = Buffer.alloc(0)
     vi.mocked(spawn).mockImplementation((command, args) => {
       const child = new EventEmitter() as EventEmitter & { stdin: Writable }
       child.stdin = new Writable({
         write(chunk, _encoding, callback) {
-          received += String(chunk)
+          received = Buffer.concat([received, Buffer.from(chunk)])
           callback()
         },
       })
@@ -74,7 +81,22 @@ describe('clipboard backend', () => {
     const capture = new Capture()
     const outcome = await copyToClipboard(payload, capture as never)
     expect(outcome).toEqual({ ok: true, via: 'system' })
-    expect(received).toBe(payload)
+    expect(received.toString('utf16le')).toBe(`\ufeff${payload}`)
     expect(capture.output).toBe('')
+  })
+
+  it('reads the clipboard from the system tool stdout', async () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    vi.mocked(spawn).mockImplementation((command) => {
+      const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter }
+      child.stdout = new EventEmitter()
+      expect(command).toBe('pbpaste')
+      queueMicrotask(() => {
+        child.stdout.emit('data', Buffer.from('pasted 中文', 'utf8'))
+        child.emit('close', 0)
+      })
+      return child as never
+    })
+    await expect(pasteFromClipboard()).resolves.toBe('pasted 中文')
   })
 })

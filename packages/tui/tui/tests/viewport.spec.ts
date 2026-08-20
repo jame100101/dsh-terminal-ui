@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow, selectComposerLayout, selectInputViewport,
-  selectPanelViewport, selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport,
-  transcriptLineAtRow,
+  COMPOSER_COLLAPSE_HARD_LINES, COMPOSER_PROMPT_WIDTH, COMPOSER_WRAP_GUTTER, composerGlyphAt, composerOffsetAt,
+  composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth, composerVisibleRowCount,
+  countComposerHardLines,
+  lineSelectableWidth, nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow,
+  selectComposerLayout, selectInputViewport, selectPanelViewport, selectScrollbar, selectTerminalFrameWidth,
+  selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt, transcriptLineAtRow, wrapComposerRanges,
 } from '../src/viewport'
 import type { TranscriptLine } from '../src/viewport'
 
@@ -98,6 +101,7 @@ describe('selectTranscriptBlocksWindow', () => {
     expect(windowed.offset).toBe(10)
     expect(windowed.lines.length).toBe(6 + 3 + 3)
     expect(windowed.lines[0]?.text).toBe('b5-1')
+    expect(windowed.windowStart).toBe(21)
   })
 })
 
@@ -121,6 +125,23 @@ describe('transcriptLineAtRow', () => {
     const lines = Array.from({ length: 10 }, (_, index) => line(`l${index}`))
     expect(transcriptLineAtRow(lines, 5, 3, 0, 0)?.key).toBe('l2')
     expect(transcriptLineAtRow(lines, 5, 3, 0, 4)?.key).toBe('l6')
+  })
+})
+
+describe('transcriptCellAt', () => {
+  it('clamps to unpadded content and maps blank spacer rows to column 0', () => {
+    const lines = [
+      line('pad', ' '),
+      { key: 'user', text: '▸ hi there          ' },
+    ]
+    expect(lineSelectableWidth('▸ hi there          ')).toBe(10)
+    expect(transcriptCellAt(lines, 5, 0, 0, 0, 4)).toBeUndefined()
+    expect(transcriptCellAt(lines, 5, 0, 0, 3, 4)?.line.key).toBe('pad')
+    expect(transcriptCellAt(lines, 5, 0, 0, 3, 4)?.column).toBe(0)
+    const cell = transcriptCellAt(lines, 5, 0, 0, 4, 80)
+    expect(cell?.line.key).toBe('user')
+    expect(cell?.column).toBe(10)
+    expect(transcriptCellAt(lines, 5, 0, 0, 4, 4)?.column).toBe(2)
   })
 })
 
@@ -340,5 +361,59 @@ describe('selectComposerLayout', () => {
     expect(layout.visibleLines).toEqual([''])
     expect(layout.caretLine).toBe(0)
     expect(layout.caretColumn).toBe(0)
+    expect(layout.windowStart).toBe(0)
+  })
+
+  it('keeps wrap-boundary offsets adjacent so a glyph is never skipped', () => {
+    const ranges = wrapComposerRanges('abcdefgh', 4)
+    expect(ranges.map(range => range.text)).toEqual(['abcd', 'efgh'])
+    expect(ranges[0]?.end).toBe(ranges[1]?.start)
+    expect(composerOffsetAt('abcdefgh', 4, 0, 3)).toBe(3)
+    expect(composerOffsetAt('abcdefgh', 4, 1, 0)).toBe(4)
+  })
+
+  it('maps a composer cell to a source offset including CJK wrap', () => {
+    expect(composerOffsetAt('hello', 20, 0, 2)).toBe(2)
+    expect(composerOffsetAt('中文测试文本', 4, 0, 2)).toBe(1)
+    expect(composerOffsetAt('中文测试文本', 4, 1, 0)).toBe(2)
+    expect(composerOffsetAt('ab\ncd', 20, 1, 1)).toBe(4)
+    expect(wrapComposerRanges('中文测试', 4).map(range => range.text)).toEqual(['中文', '测试'])
+  })
+
+  it('maps a composer cell to a glyph range that includes the character under the pointer', () => {
+    expect(composerGlyphAt('hello', 20, 0, 2)).toEqual({ start: 2, end: 3 })
+    expect(composerGlyphAt('中文测试文本', 4, 0, 2)).toEqual({ start: 1, end: 2 })
+    expect(composerGlyphAt('ab\ncd', 20, 1, 1)).toEqual({ start: 4, end: 5 })
+  })
+
+  it('reserves a two-cell prompt prefix and a one-cell wrap gutter', () => {
+    expect(COMPOSER_PROMPT_WIDTH).toBe(2)
+    expect(COMPOSER_WRAP_GUTTER).toBe(1)
+    expect(composerTextPaintWidth(20)).toBe(18)
+    expect(composerTextWrapWidth(20)).toBe(17)
+    expect(composerTextWrapWidth(20)).toBeLessThan(composerTextPaintWidth(20))
+    expect(composerTextWrapWidth(3)).toBe(1)
+    expect(composerTextWrapWidth(2)).toBe(1)
+    expect(composerTextWrapWidth(1)).toBe(1)
+  })
+
+  it('moves the composer caret by wrap row without leaving the draft', () => {
+    const value = 'abcdefgh'
+    const down = composerOffsetForVerticalMove(value, 4, 1, 1)
+    expect(down).toBe(5)
+    expect(composerOffsetForVerticalMove(value, 4, down, -1)).toBe(1)
+    expect(composerOffsetForVerticalMove(value, 4, 1, -1)).toBe(1)
+    expect(composerOffsetForVerticalMove(value, 4, 7, 1)).toBe(7)
+    expect(composerOffsetForVerticalMove('', 4, 0, -1)).toBe(0)
+  })
+
+  it('collapses the composer to two rows once hard-newline lines reach the cap', () => {
+    expect(COMPOSER_COLLAPSE_HARD_LINES).toBe(4)
+    expect(countComposerHardLines('a')).toBe(1)
+    expect(countComposerHardLines('a\nb\nc')).toBe(3)
+    expect(countComposerHardLines('a\nb\nc\nd')).toBe(4)
+    expect(composerVisibleRowCount('a\nb\nc', 0, 20, 5)).toBe(3)
+    expect(composerVisibleRowCount('a\nb\nc\nd', 0, 20, 5)).toBe(2)
+    expect(composerVisibleRowCount('a\nb\nc\nd\ne\nf', 0, 20, 5)).toBe(2)
   })
 })

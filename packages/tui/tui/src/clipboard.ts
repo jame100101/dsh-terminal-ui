@@ -52,6 +52,19 @@ function systemClipboardCommands(): readonly ClipboardCommand[] {
 }
 
 /**
+ * Bytes piped to a clipboard tool's stdin. Windows `clip.exe` reads the
+ * console OEM code page unless the payload is UTF-16 LE with BOM — UTF-8
+ * Chinese becomes mojibake. macOS/Linux tools take UTF-8.
+ * @param command - the executable name (`clip`, `pbcopy`, `xclip`, `wl-copy`).
+ * @param text - the exact text to copy.
+ * @returns a Buffer for `clip`, otherwise the UTF-8 string.
+ */
+export function clipboardStdinPayload(command: string, text: string): Buffer | string {
+  if (command === 'clip') return Buffer.from(`\ufeff${text}`, 'utf16le')
+  return text
+}
+
+/**
  * Copy one text through a single clipboard executable by piping it to stdin.
  * @param command - the executable name.
  * @param args - argv after the executable (never includes user text).
@@ -80,7 +93,7 @@ function copyViaCommand(command: string, args: readonly string[], text: string):
       settle(code === 0 ? { ok: true, via: 'system' } : { ok: false, via: 'system', error: `clipboard tool exited ${code ?? 'unknown'}` })
     })
     try {
-      child.stdin?.end(text)
+      child.stdin?.end(clipboardStdinPayload(command, text))
     } catch (error) {
       settle({ ok: false, via: 'system', error: error instanceof Error ? error.message : String(error) })
     }
@@ -143,6 +156,88 @@ export async function copyToClipboard(
   const osc52 = copyViaOsc52(text, stdout)
   if (osc52.ok) return osc52
   return { ok: false, via: 'osc52', error: `${system.error ?? 'system clipboard unavailable'}；${osc52.error ?? 'OSC 52 write failed'}` }
+}
+
+/**
+ * Commands that print the desktop clipboard to stdout, tried in order.
+ * @returns the commands to try.
+ */
+function systemClipboardReadCommands(): readonly ClipboardCommand[] {
+  switch (process.platform) {
+    case 'win32':
+      return [{
+        command: 'powershell',
+        args: [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; Get-Clipboard -Raw',
+        ],
+      }]
+    case 'darwin':
+      return [{ command: 'pbpaste', args: [] }]
+    case 'linux': {
+      const xclip: ClipboardCommand = { command: 'xclip', args: ['-selection', 'clipboard', '-o'] }
+      const wlPaste: ClipboardCommand = { command: 'wl-paste', args: ['-n'] }
+      return process.env.WAYLAND_DISPLAY !== undefined && process.env.WAYLAND_DISPLAY !== ''
+        ? [wlPaste, xclip]
+        : [xclip, wlPaste]
+    }
+    default:
+      return []
+  }
+}
+
+/**
+ * Read the desktop clipboard through a single tool's stdout.
+ * @param command - the executable name.
+ * @param args - argv after the executable.
+ * @returns the clipboard text, or null when the tool fails.
+ */
+function readViaCommand(command: string, args: readonly string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    let settled = false
+    const settle = (text: string | null): void => {
+      if (settled) return
+      settled = true
+      resolve(text)
+    }
+    let child: ReturnType<typeof spawn>
+    try {
+      child = spawn(command, [...args], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
+    } catch {
+      settle(null)
+      return
+    }
+    const chunks: Buffer[] = []
+    child.stdout?.on('data', (chunk: Buffer) => {
+      chunks.push(chunk)
+    })
+    child.once('error', () => {
+      settle(null)
+    })
+    child.once('close', (code) => {
+      if (code !== 0) {
+        settle(null)
+        return
+      }
+      settle(Buffer.concat(chunks).toString('utf8'))
+    })
+  })
+}
+
+/**
+ * Read the desktop clipboard. Never throws.
+ * @returns the clipboard text, or null when every tool failed.
+ */
+export async function pasteFromClipboard(): Promise<string | null> {
+  const commands = systemClipboardReadCommands()
+  if (commands.length === 0) return null
+  for (const entry of commands) {
+    const text = await readViaCommand(entry.command, entry.args)
+    if (text !== null) return text
+  }
+  return null
 }
 
 export type { WriteStream }
