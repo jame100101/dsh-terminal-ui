@@ -74,6 +74,7 @@ import type { FoldState } from './types'
 import { renderAssistantResultPlain, renderNodePlain } from './plain'
 import { collectCredentialRefs, collectPluginFields, groupProviders, sessionTitlesById } from './settings-data'
 import { createTuiStore } from './store'
+import { compactCallCard, compactResultCard } from './card-project'
 import { createUiPublishScheduler, shouldCoalesceSessionEvent } from './ui-publish'
 import { buildTuiStartupProgram, parseTuiStartupIntent } from './startup-args'
 import type { StartupIntent } from './startup-args'
@@ -279,7 +280,12 @@ async function loadSessionRows(ctx: Context, liveRows: readonly SessionEntry[]):
   }
 }
 
-/** Attach the tool's presentCall/presentResult card to the folded tool row. */
+/**
+ * Attach the tool's presentCall/presentResult card to the folded tool row.
+ * `tool/call` runs after `applyEvent` (the new running row is last).
+ * `tool/result` runs before `applyEvent` so `presentResult` can still read
+ * `args` on the running row; `applyEvent` then drops `args` and the call view.
+ */
 function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): void {
   if (event.type !== 'tool/call' && event.type !== 'tool/result') return
   const tools = ctx.get('tools')
@@ -290,17 +296,17 @@ function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): vo
     const definition = tools.get(event.data.name)
     if (definition !== undefined && definition.presentCall !== undefined) {
       try {
-        node.callCard = definition.presentCall(node.args) ?? null
+        node.callCard = compactCallCard(definition.presentCall(node.args) ?? null)
       } catch {
         node.callCard = null
       }
     }
     return
   }
-  // tool/result: enrich the just-settled row (the newest non-running tool).
+  // tool/result: still running; applyEvent has not settled the row yet.
   for (let index = fold.nodes.length - 1; index >= 0; index--) {
     const node = fold.nodes[index]
-    if (node === undefined || node.kind !== 'tool' || node.status === 'running') continue
+    if (node === undefined || node.kind !== 'tool' || node.status !== 'running') continue
     const definition = tools.get(node.detail.split(' ')[0] ?? '')
     if (definition !== undefined && definition.presentResult !== undefined) {
       try {
@@ -309,7 +315,7 @@ function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): vo
           ...(event.data.error === undefined ? {} : { error: event.data.error }),
           ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
         } as unknown as Parameters<NonNullable<typeof definition.presentResult>>[1]
-        node.resultCard = definition.presentResult(node.args, result) ?? null
+        node.resultCard = compactResultCard(definition.presentResult(node.args, result) ?? null)
       } catch {
         node.resultCard = null
       }
@@ -542,8 +548,10 @@ function subscribe(
       const session = (args as unknown[])[0] as Session | undefined
       if (session !== surface.agent.session) return
       const event = (args as unknown[])[1] as SessionEvent
+      // presentResult needs the running row's args; applyEvent drops them.
+      if (event.type === 'tool/result') enrichToolCards(ctx, event, surface.fold)
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
-      enrichToolCards(ctx, event, surface.fold)
+      if (event.type === 'tool/call') enrichToolCards(ctx, event, surface.fold)
       anchorRetry(surface.fold, event)
       if (shouldCoalesceSessionEvent(event)) uiPublish.request(false)
       else {

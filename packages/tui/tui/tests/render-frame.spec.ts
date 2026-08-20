@@ -1614,4 +1614,52 @@ describe('Ink 7 full-screen render', () => {
       unmount()
     }
   }, 30_000)
+
+  it('enters Copy Mode with Ctrl+Y, disables mouse tracking, and Esc restores it without clearing draft', async () => {
+    const { capture, unmount, type } = await mount([
+      { kind: 'user', id: 1, text: 'hi' },
+      { kind: 'assistant', id: 2, text: 'const value = 123', messageId: 'm2' },
+    ])
+    try {
+      expect(capture.output).toContain('\x1b[?1000h')
+      await type('keep this draft')
+      await type('\x19')
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      expect(capture.output).toContain('\x1b[?1006l')
+      let lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('COPY MODE'))).toBe(true)
+      expect(lines.some(line => line.includes('keep this draft'))).toBe(true)
+      await type('\x1b')
+      await new Promise<void>(resolve => setTimeout(resolve, 400))
+      const after = capture.output
+      const disableAt = after.lastIndexOf('\x1b[?1006l')
+      const enableAt = after.lastIndexOf('\x1b[?1000h')
+      expect(enableAt).toBeGreaterThan(disableAt)
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('COPY MODE'))).toBe(false)
+      expect(lines.some(line => line.includes('keep this draft'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('copies semantic assistant text with /copy last and does not submit a model turn', async () => {
+    const submissions: string[] = []
+    const { capture, unmount, type } = await mount([
+      { kind: 'user', id: 1, text: 'hi' },
+      { kind: 'assistant', id: 2, text: 'const value = 123\nconsole.log(value)', messageId: 'm2' },
+    ], {
+      submit: (text) => { submissions.push(text) },
+    })
+    try {
+      await type('/copy last')
+      await type('\r')
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      expect(submissions).toEqual([])
+      const lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
 })

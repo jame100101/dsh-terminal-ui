@@ -42,6 +42,8 @@ import {
   TRANSCRIPT_LINE_OVERSCAN,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
+import { copyToClipboard } from './clipboard'
+import { extractCopyText, resolveCopyTarget } from './copy-text'
 import { countUiRender } from './tui-perf'
 import { padEndDisplay, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
 import type { LiveWrapState } from './wrap'
@@ -138,6 +140,13 @@ interface Copy {
   permissionChip: (label: string) => string
   permissionHint: string
   backToBottom: string
+  copyUsage: string
+  copyEmpty: string
+  copyRange: (n: string, total: number) => string
+  copyDone: string
+  copyFailed: (reason: string) => string
+  copyModeHint: string
+  copyModeUnavailable: string
 }
 
 /** The chrome copy table. */
@@ -222,6 +231,13 @@ const COPY: Record<Locale, Copy> = {
     permissionChip: label => `权限 ${label}`,
     permissionHint: ' · Shift+Tab 切换',
     backToBottom: '▼ 回到底部',
+    copyUsage: '用法：/copy last 或 /copy <序号>',
+    copyEmpty: '没有可复制的消息',
+    copyRange: (n, total) => `没有第 ${n} 条可复制消息（共 ${total} 条）`,
+    copyDone: '已复制',
+    copyFailed: reason => `复制失败：${reason}`,
+    copyModeHint: 'COPY MODE · 拖选文本 · Esc 返回',
+    copyModeUnavailable: '请先关闭面板或对话框再进入 Copy Mode',
   },
   en: {
     idle: '▣ idle · Enter send · /help',
@@ -303,6 +319,13 @@ const COPY: Record<Locale, Copy> = {
     permissionChip: label => `permission ${label}`,
     permissionHint: ' · Shift+Tab to switch',
     backToBottom: '▼ back to bottom',
+    copyUsage: 'Usage: /copy last or /copy <n>',
+    copyEmpty: 'No copyable message',
+    copyRange: (n, total) => `No copyable message ${n} (${total} available)`,
+    copyDone: 'Copied',
+    copyFailed: reason => `Copy failed: ${reason}`,
+    copyModeHint: 'COPY MODE · drag to select text · Esc to return',
+    copyModeUnavailable: 'Close the panel or dialog before entering Copy Mode',
   },
 }
 
@@ -525,6 +548,8 @@ function localCommands(locale: Locale): PaletteItem[] {
   return [
     { name: 'help', description: zh ? '显示帮助' : 'show this help', needsArgs: false },
     { name: 'clear', description: zh ? '清空显示（保留会话）' : 'clear the display (session kept)', needsArgs: false },
+    { name: 'copy', description: zh ? '复制第 n 条或最后一条消息（语义文本）' : 'copy message n or last (semantic text)', needsArgs: true },
+    { name: 'select', description: zh ? '进入 Copy Mode（终端原生拖选）' : 'enter Copy Mode (terminal native drag-select)', needsArgs: false },
     { name: 'trajectory', description: zh ? '切换结构化轨迹视图' : 'toggle the structured trajectory view', needsArgs: false },
     { name: 'model', description: zh ? '选择模型' : 'pick a model', needsArgs: false },
     { name: 'settings', description: zh ? '设置（Tab / 点击切换分页）' : 'settings (Tab / click to switch pages)', needsArgs: false },
@@ -1168,6 +1193,7 @@ function ImeTextInput(props: {
         (key.shift && key.tab) ||
         input === '\x1b[Z' ||
         (key.ctrl && input.toLowerCase() === 'c')
+        || (key.ctrl && (input.toLowerCase() === 'y' || input === '\x19'))
       ) {
         return
       }
@@ -1639,6 +1665,7 @@ export function App(props: {
   const historyRef = useRef<string[]>([])
   const historyScratchRef = useRef('')
   const [historyIndex, setHistoryIndex] = useState(-1)
+  const [copyMode, setCopyMode] = useState(false)
 
   const pendingApproval = snapshot.pendingApproval
   const pendingQuestion = snapshot.pendingQuestion
@@ -1655,9 +1682,9 @@ export function App(props: {
   }, [refreshTerminalSize, stdout])
 
   useEffect(() => {
-    stdout.write(ENABLE_WHEEL_MOUSE)
+    stdout.write(copyMode ? DISABLE_WHEEL_MOUSE : ENABLE_WHEEL_MOUSE)
     return () => { stdout.write(DISABLE_WHEEL_MOUSE) }
-  }, [stdout])
+  }, [stdout, copyMode])
   const exitApp = useCallback((): void => {
     // Reset app-owned mouse modes while Ink still has a writable terminal;
     // alternate-screen teardown intentionally discards effect-cleanup output.
@@ -1869,6 +1896,9 @@ export function App(props: {
       : historyBlocks
   const dockLines = useMemo((): TranscriptLine[] => {
     const lines: TranscriptLine[] = []
+    if (copyMode) {
+      lines.push({ key: 'copy-mode', text: fitDisplayText(copy.copyModeHint, transcriptContentWidth), color: 'cyan' })
+    }
     if (notice !== '') {
       wrapText(notice, transcriptContentWidth).forEach((line, index) => {
         lines.push({ key: `notice-${index}`, text: line, color: 'gray' })
@@ -1902,6 +1932,7 @@ export function App(props: {
     return lines
   }, [
     notice, transcriptContentWidth, snapshot.queued, snapshot.todos, snapshot.goal, snapshot.attachmentCount, copy,
+    copyMode,
   ])
 
   // The view stays on the same CONTENT while new lines stream in at the
@@ -2000,6 +2031,35 @@ export function App(props: {
     }
     if (text === '/clear') {
       setNotice('')
+      return
+    }
+    if (text === '/copy' || text.startsWith('/copy ')) {
+      const argument = text === '/copy' ? '' : text.slice('/copy '.length)
+      const resolved = resolveCopyTarget(snapshot.nodes, argument)
+      if (!resolved.ok) {
+        setNotice(resolved.error === 'empty' ? copy.copyEmpty
+          : resolved.error === 'range' ? copy.copyRange(argument.trim(), snapshot.nodes.filter(node => extractCopyText(node) !== null).length)
+            : copy.copyUsage)
+        return
+      }
+      const semantic = extractCopyText(resolved.target.node)
+      if (semantic === null) {
+        setNotice(copy.copyEmpty)
+        return
+      }
+      void copyToClipboard(semantic, stdout).then((outcome) => {
+        setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
+      })
+      return
+    }
+    if (text === '/select') {
+      const blocked = panelOpen || pendingApproval !== null || pendingQuestion !== null
+        || pluginEdit !== null || settingsEdit !== null || settingsConfirm !== null
+      if (blocked) {
+        setNotice(copy.copyModeUnavailable)
+        return
+      }
+      setCopyMode(true)
       return
     }
     if (text === '/trajectory') {
@@ -2115,7 +2175,10 @@ export function App(props: {
     // dispatch without a model turn; unknown lines become model messages.
     props.host.submit(text, false)
     setNotice('')
-  }, [exitApp, viewMode, snapshot, props.host, openPanel, locale, copy])
+  }, [
+    exitApp, viewMode, snapshot, props.host, openPanel, locale, copy, stdout,
+    panelOpen, pendingApproval, pendingQuestion, pluginEdit, settingsEdit, settingsConfirm,
+  ])
 
   const submit = useCallback((value: string, steer = false): void => {
     const trimmed = value.trim()
@@ -2435,6 +2498,11 @@ export function App(props: {
   // Every Escape action funnels through here so the 60ms phantom-Escape
   // confirmation window can drop split-CSI artifacts without side effects.
   const handleEscape = useEffectEvent(() => {
+    if (copyMode) {
+      setCopyMode(false)
+      setNotice('')
+      return
+    }
     if (pluginEdit !== null) {
       setPluginEdit(null)
       setPluginEditText('')
@@ -2516,6 +2584,16 @@ export function App(props: {
     // left behind by an earlier Escape at the same input value must not
     // swallow the next invocation.
     if (input === '/') setPaletteDismissedInput(null)
+    if (key.ctrl && (input.toLowerCase() === 'y' || input === '\x19')) {
+      const blocked = panelOpen || pendingApproval !== null || pendingQuestion !== null
+        || pluginEdit !== null || settingsEdit !== null || settingsConfirm !== null || palette !== null
+      if (blocked) {
+        setNotice(copy.copyModeUnavailable)
+        return
+      }
+      setCopyMode(true)
+      return
+    }
     if (key.ctrl && input.toLowerCase() === 'c') {
       const now = Date.now()
       if (now - lastCtrlCAt.current <= CTRL_C_EXIT_WINDOW_MS) {
@@ -2544,6 +2622,7 @@ export function App(props: {
     // Panels anchor to the TOP, so wheel-up walks toward older rows.
     const wheel = parseMouseWheel(input)
     if (wheel !== null) {
+      if (copyMode) return
       if (panelOpen) {
         const delta = wheel === 'up' ? -3 : 3
         setSettingsTop(current => Math.max(0, Math.min(settingsViewport.maximumOffset, current + delta)))
@@ -2560,6 +2639,7 @@ export function App(props: {
     // 5..4+height; its text begins at column 2 after the left padding cell.
     const click = parseMouseReport(input)
     if (click !== null && (click.button & 64) === 0) {
+      if (copyMode) return
       if ((click.button & 32) !== 0) {
         // Drag motion: follow the pointer along the scrollbar gutter.
         if (scrollbarDragRef.current && !panelOpen) {
@@ -2864,9 +2944,9 @@ export function App(props: {
               setDraft(value)
             }}
         onSubmit={submitComposer}
-        disabled={pluginEdit !== null || settingsEdit !== null
+        disabled={copyMode || (pluginEdit !== null || settingsEdit !== null
           ? false
-          : (pendingApproval !== null || pendingQuestion !== null || panelOpen)}
+          : (pendingApproval !== null || pendingQuestion !== null || panelOpen))}
         focused={composerFocused}
         width={width}
         placeholder={pluginEdit !== null

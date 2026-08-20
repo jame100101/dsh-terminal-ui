@@ -593,6 +593,8 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
     ? [
       '/help        show this help',
       '/clear       clear the display (session context kept)',
+      '/copy        copy message last|n (semantic text, no glyphs)',
+      '/select      Copy Mode: terminal drag-select; Esc restores TUI mouse',
       '/trajectory  toggle the structured trajectory view',
       '/settings    five pages: general/models/plugins/inventory/presets (Tab to switch)',
       '/jobs        background jobs panel (Enter kills the selected job)',
@@ -607,10 +609,13 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       'Shift+Tab cycle the file permission · PgUp/PgDn scroll history · ↑/↓ input history',
       'Click disclosure arrows to expand/collapse; any Thinking arrow toggles all Thinking rows',
       'Click the ▼ button to jump back to the newest lines · Ctrl+L clear · Ctrl+D exit when idle',
+      'Ctrl+Y Copy Mode · /copy last|<n> copy a message · Esc leaves Copy Mode (does not cancel the agent)',
     ].join('\n')
     : [
       '/help        显示本帮助',
       '/clear       清空显示（保留会话上下文）',
+      '/copy        复制最后一条或第 n 条消息（语义文本，不含字形）',
+      '/select      Copy Mode：终端原生拖选；Esc 恢复 TUI 鼠标',
       '/trajectory  切换结构化轨迹视图',
       '/settings    设置五页：general/models/plugins/inventory/presets（Tab 换页）',
       '/jobs        后台任务面板（Enter 杀掉选中任务）',
@@ -625,6 +630,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       'Shift+Tab 切换文件权限 · PgUp/PgDn 滚动历史 · ↑/↓ 历史输入',
       '点击展开箭头展开/折叠；任一 Thinking 箭头统一切换全部 Thinking',
       '点击 ▼ 按钮回到最新消息 · Ctrl+L 清屏 · Ctrl+D 空闲退出',
+      'Ctrl+Y 进入 Copy Mode · /copy last|<n> 复制消息 · Esc 离开 Copy Mode（不取消任务）',
     ].join('\n')
 }
 

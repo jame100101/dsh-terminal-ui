@@ -24,7 +24,7 @@ The existing `selectTranscriptViewport` bottom-aligns short content and reserves
 
 ## Consequences
 
-Follow mode, PgUp/PgDn, scrollbar drag, and disclosure arrows keep the same pixels. Long transcripts no longer allocate a full-history array on every busy frame. The 3000-node retention cap stays until Phase 3.
+Follow mode, PgUp/PgDn, scrollbar drag, and disclosure arrows keep the same pixels. Long transcripts no longer allocate a full-history array on every busy frame. The renderer still windows the last 3000 nodes; Phase 3 compactes settled tool payloads on the fold so those nodes stay preview-sized.
 
 ## Testing
 

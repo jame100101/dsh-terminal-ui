@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-20-tui-fold-tool-preview-working-set.md
+2026-08-20-tui-fold-tool-preview-working-set.md: 6d20d1efbec46f98758f16e54ac3c85393570a03
+2026-08-20-tui-fold-tool-preview-working-set.zh.md: 4c2b0566a9e22ec6bae0c49a8ea01e3e19350181

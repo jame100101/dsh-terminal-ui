@@ -34,6 +34,8 @@ export interface CardLine {
 const MAX_CARD_LINES = 200
 /** Cap on one card source line: a single-line JSON blob must not wrap into hundreds of rows. */
 const MAX_CARD_LINE_LENGTH = 300
+/** Cap on retained tool-card payload strings (matches the fold's tool-text cap). */
+const MAX_CARD_PAYLOAD = 4000
 
 /** Truncate one over-long source line so wrapping stays bounded. */
 function capLine(text: string): string {
@@ -205,6 +207,128 @@ export function projectResultCard(view: ToolResultView | null, fallbackText: str
     }
     default:
       return fallbackText === '' ? [] : lines(fallbackText).map(line => ({ text: `  ${line.text}`, color: 'gray' as const }))
+  }
+}
+
+/** Truncate one over-long retained payload string. */
+function capPayload(text: string): string {
+  return text.length <= MAX_CARD_PAYLOAD ? text : `${text.slice(0, MAX_CARD_PAYLOAD)}…`
+}
+
+/** Replace content blocks with one capped text block. */
+function capContent(blocks: readonly ContentBlock[]): ContentBlock[] {
+  return [{ type: 'text', text: capPayload(blocksText(blocks)) }]
+}
+
+/** Cap a generic `rawInput` value; large objects collapse to truncated JSON. */
+function capRawInput(value: unknown): unknown {
+  if (typeof value === 'string') return capPayload(value)
+  try {
+    const rendered = JSON.stringify(value)
+    if (rendered.length > MAX_CARD_PAYLOAD) return `${rendered.slice(0, MAX_CARD_PAYLOAD)}…`
+  } catch {
+    return value
+  }
+  return value
+}
+
+/**
+ * Cap file diffs so a write/edit card cannot keep whole-file strings in the
+ * TUI working set after the session log already stored the raw event.
+ */
+function capDiffs(diffs: DiffCallView['diffs']): DiffCallView['diffs'] {
+  return diffs.slice(0, MAX_CARD_LINES).map(file => ({
+    path: file.path,
+    oldText: file.oldText === null ? null : capPayload(file.oldText),
+    newText: capPayload(file.newText),
+  }))
+}
+
+/**
+ * Shrink a pending-call view to display-sized fields. Raw `presentCall`
+ * objects can hold whole-file diffs or large `rawInput`; the renderer only
+ * needs a preview.
+ * @param view - the tool's `presentCall` result, or null.
+ * @returns a compacted view, or null.
+ */
+export function compactCallCard(view: unknown): unknown {
+  if (view === null || view === undefined || typeof view !== 'object') return view ?? null
+  const card = view as ToolCallView
+  switch (card.card) {
+    case 'generic':
+      return {
+        ...card,
+        ...(card.rawInput !== undefined ? { rawInput: capRawInput(card.rawInput) } : {}),
+        ...(card.content !== undefined ? { content: capContent(card.content) } : {}),
+      }
+    case 'diff':
+      return { ...card, diffs: capDiffs(card.diffs) }
+    case 'terminal':
+      return card
+    default:
+      return view
+  }
+}
+
+/**
+ * Shrink a completed-call view to display-sized fields so giant tool outputs
+ * (shell logs, file reads, diffs) are not retained beside the session log.
+ * @param view - the tool's `presentResult` result, or null.
+ * @returns a compacted view, or null.
+ */
+export function compactResultCard(view: unknown): unknown {
+  if (view === null || view === undefined || typeof view !== 'object') return view ?? null
+  const card = view as ToolResultView
+  switch (card.card) {
+    case 'generic':
+      return {
+        ...card,
+        ...(card.content !== undefined ? { content: capContent(card.content) } : {}),
+      }
+    case 'terminal':
+      return {
+        ...card,
+        ...(card.output !== undefined ? { output: capPayload(card.output) } : {}),
+      }
+    case 'diff':
+      return { ...card, diffs: capDiffs(card.diffs) }
+    case 'search':
+      if (card.shape === 'matches') {
+        return {
+          ...card,
+          files: card.files.slice(0, MAX_CARD_LINES).map(file => ({
+            path: file.path,
+            matches: file.matches.slice(0, 40).map(match => ({
+              lineNumber: match.lineNumber,
+              line: capLine(match.line),
+            })),
+          })),
+        }
+      }
+      return { ...card, paths: card.paths.slice(0, MAX_CARD_LINES) }
+    case 'read':
+      return {
+        ...card,
+        lines: card.lines.slice(0, MAX_CARD_LINES).map(line => ({
+          number: line.number,
+          text: capLine(line.text),
+        })),
+        content: undefined,
+      }
+    case 'web':
+      if (card.kind === 'search') {
+        return {
+          ...card,
+          ...(card.answer !== undefined ? { answer: capPayload(card.answer) } : {}),
+          sources: card.sources.slice(0, MAX_CARD_LINES).map(source => ({
+            ...source,
+            ...(source.snippet !== undefined ? { snippet: capLine(source.snippet) } : {}),
+          })),
+        }
+      }
+      return card
+    default:
+      return view
   }
 }
 

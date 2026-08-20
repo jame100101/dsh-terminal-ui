@@ -20,11 +20,15 @@ export type TuiNode =
     detail: string
     status: ToolStatus
     text: string
-    /** Parsed call arguments (lossless JSON value, or the raw string on parse failure). */
+    /**
+     * Parsed call arguments while the tool is running (`presentResult` reads
+     * them). `undefined` after the result settles — the session log keeps the
+     * raw `tool/call` arguments.
+     */
     args: unknown
-    /** `presentCall` projection (ToolCallView), plain JSON for the renderer. */
+    /** Compacted `presentCall` view while running; `null` after the result settles. */
     callCard: unknown
-    /** `presentResult` projection (ToolResultView), plain JSON for the renderer. */
+    /** Compacted `presentResult` view (preview-sized fields), or `null` to fall back to `text`. */
     resultCard: unknown
   }
   | {

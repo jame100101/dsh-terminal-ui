@@ -499,4 +499,26 @@ describe('session fold', () => {
     ])
     expect(withImage.nodes.find(node => node.kind === 'user')?.text).toContain('📎 shot.png')
   })
+
+  it('keeps parsed args only while a tool is running and caps settled result text', () => {
+    const huge = 'y'.repeat(12_000)
+    const running = foldAll([
+      event('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{"command":"cat huge.log"}' }, 1, 10),
+    ])
+    const runningNode = running.nodes.find(node => node.kind === 'tool')
+    expect(runningNode?.kind === 'tool' && runningNode.args).toEqual({ command: 'cat huge.log' })
+    const settled = foldAll([
+      event('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{"command":"cat huge.log"}' }, 1, 10),
+      event('tool/result', {
+        turn: 1,
+        step: 1,
+        message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [text(huge)] }] },
+      }, 2, 20),
+    ])
+    const tool = settled.nodes.find(node => node.kind === 'tool')
+    expect(tool?.kind === 'tool' && tool.args).toBeUndefined()
+    expect(tool?.kind === 'tool' && tool.callCard).toBeNull()
+    expect(tool?.kind === 'tool' && tool.text.length).toBe(4000)
+    expect(JSON.stringify(tool).length).toBeLessThan(huge.length)
+  })
 })

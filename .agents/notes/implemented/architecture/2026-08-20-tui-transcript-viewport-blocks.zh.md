@@ -24,7 +24,7 @@ Issue #14 的 Phase 1 仍然在每次 App render 时给所有保留节点（最�
 
 ## Consequences
 
-follow 模式、PgUp/PgDn、滚动条拖拽、disclosure 箭头的像素不变。长 transcript 不再在每个忙碌帧分配全文数组。3000 节点上限留到 Phase 3。
+follow 模式、PgUp/PgDn、滚动条拖拽、disclosure 箭头的像素不变。长 transcript 不再在每个忙碌帧分配全文数组。渲染层仍窗口化最近 3000 个节点；Phase 3 在 fold 上把已结束工具行压成 preview，这些节点保持展示尺寸。
 
 ## Testing
 

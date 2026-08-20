@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-20-tui-transcript-viewport-blocks.md
-2026-08-20-tui-transcript-viewport-blocks.md: 291527763626f63eff44908e99eb63cdd4e6f53a
-2026-08-20-tui-transcript-viewport-blocks.zh.md: 871d5efc3d76ec58080797f614ba732b9cd9f168
+2026-08-20-tui-transcript-viewport-blocks.md: 3c0ac3aae0a4fe0677819e34cb25b7fe3e49f10d
+2026-08-20-tui-transcript-viewport-blocks.zh.md: 40a9080f6126cc703499ab5a51f609f88474f336

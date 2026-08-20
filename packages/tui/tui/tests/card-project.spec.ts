@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { projectResultCard } from '../src/card-project'
+import { compactCallCard, compactResultCard, projectResultCard } from '../src/card-project'
 
 describe('projectResultCard locale', () => {
   it('renders search, read, and web chrome entirely in English', () => {
@@ -40,5 +40,31 @@ describe('projectResultCard locale', () => {
       truncated: false,
     } as never, '', 'zh')
     expect(rows.at(-1)?.text).toBe('共 3 项')
+  })
+
+  it('compacts giant terminal output and drops duplicate read content', () => {
+    const huge = 'x'.repeat(20_000)
+    const terminal = compactResultCard({ card: 'terminal', output: huge, exitCode: 0 }) as { output: string }
+    expect(terminal.output.length).toBeLessThanOrEqual(4001)
+    expect(terminal.output.endsWith('…')).toBe(true)
+    const read = compactResultCard({
+      card: 'read',
+      path: 'a.ts',
+      offset: 1,
+      totalLines: 3,
+      lines: [
+        { number: 1, text: 'a' },
+        { number: 2, text: 'b' },
+      ],
+      content: [{ type: 'text', text: huge }],
+    }) as { lines: unknown[]; content?: unknown }
+    expect(read.content).toBeUndefined()
+    expect(read.lines).toHaveLength(2)
+    const call = compactCallCard({
+      card: 'diff',
+      title: 'Write a.ts',
+      diffs: [{ path: 'a.ts', oldText: null, newText: huge }],
+    }) as { diffs: { newText: string }[] }
+    expect(call.diffs[0]?.newText.length).toBeLessThanOrEqual(4001)
   })
 })

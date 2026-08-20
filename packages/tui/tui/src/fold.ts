@@ -20,6 +20,7 @@ import type {} from '@deepseek-ai/dsh-plan-mode'
 import type {} from '@deepseek-ai/dsh-goal'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { FoldState, GoalRow, SessionStats, TuiNode, ToolStatus } from './types'
+import { compactResultCard } from './card-project'
 import { formatMs } from './plain'
 
 /** Tool-result text cap: rows stay display-sized even for giant outputs. */
@@ -383,7 +384,16 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
         const running = nodes[index]
         if (running !== undefined && running.kind === 'tool') {
           nodes = writableNodes(nodes, scratch)
-          nodes[index] = { ...running, status, text }
+          // Drop parsed args and the pending call view: the session log keeps
+          // the raw payload; the TUI row keeps a preview-sized result card.
+          nodes[index] = {
+            ...running,
+            status,
+            text,
+            args: undefined,
+            callCard: null,
+            resultCard: compactResultCard(running.resultCard),
+          }
         }
       } else {
         nodes = appendNode(nodes, { kind: 'tool', id: event.seq, detail: 'tool', status, text, args: undefined, callCard: null, resultCard: null }, scratch)
