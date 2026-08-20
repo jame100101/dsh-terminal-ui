@@ -38,7 +38,8 @@ import type { TuiStore } from './store'
 import type { TuiNode } from './types'
 import {
   nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport,
-  selectScrollbar, selectTerminalFrameWidth, selectTranscriptViewport, transcriptLineAtRow,
+  selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptLineAtRow,
+  TRANSCRIPT_LINE_OVERSCAN,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
 import { countUiRender } from './tui-perf'
@@ -851,14 +852,21 @@ const Transcript = React.memo(function Transcript(props: {
   height: number
   width: number
   offset: number
+  /** Full-transcript hidden-from-bottom offset; defaults to the window-relative offset. */
+  scrollOffset?: number | undefined
+  /** Full transcript line count; defaults to {@link lines}.length. */
+  lineCount?: number | undefined
   onMaximumOffsetChange?: ((maximumOffset: number, lineCount: number) => void) | undefined
   theme: 'dark' | 'light'
   locale: Locale
   /** Pin the floating back-to-bottom button when scrolled off the tail. */
   backButton?: boolean | undefined
 }): React.ReactElement {
-  const viewport = selectTranscriptViewport(props.lines, props.height, props.offset, props.backButton === true ? 1 : 0)
-  const scrollbar = selectScrollbar(props.lines.length, props.height, viewport.offset, props.backButton === true ? 1 : 0)
+  const reserved = props.backButton === true ? 1 : 0
+  const viewport = selectTranscriptViewport(props.lines, props.height, props.offset, reserved)
+  const lineCount = props.lineCount ?? props.lines.length
+  const scrollOffset = props.scrollOffset ?? viewport.offset
+  const scrollbar = selectScrollbar(lineCount, props.height, scrollOffset, reserved)
   const hasPulse = props.lines.some(line => line.pulse === true)
   const [pulseOn, setPulseOn] = useState(true)
   useEffect(() => {
@@ -867,8 +875,10 @@ const Transcript = React.memo(function Transcript(props: {
     return () => { clearInterval(interval) }
   }, [hasPulse])
   useEffect(() => {
-    props.onMaximumOffsetChange?.(viewport.maximumOffset, props.lines.length)
-  }, [props.onMaximumOffsetChange, viewport.maximumOffset, props.lines.length])
+    const capacity = Math.max(1, Math.max(1, Math.floor(props.height)) - reserved)
+    const maximumOffset = Math.max(0, lineCount - capacity)
+    props.onMaximumOffsetChange?.(maximumOffset, lineCount)
+  }, [props.onMaximumOffsetChange, lineCount, props.height, reserved])
   // The scrollbar lives in its OWN right-edge column (a browser-style strip,
   // never characters appended to content rows): content and gutter render as
   // sibling Boxes, so no line's text width can ever shift, wrap, or break the
@@ -1460,7 +1470,7 @@ function Takeover(props: {
 
 /** Live thinking/compaction plus incremental live text, isolated from App tick. */
 const ChatTranscript = React.memo(function ChatTranscript(props: {
-  settledLines: readonly TranscriptLine[]
+  settledBlocks: readonly (readonly TranscriptLine[])[]
   dockLines: readonly TranscriptLine[]
   snapshot: ReturnType<TuiStore['getSnapshot']>
   height: number
@@ -1472,6 +1482,7 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   locale: Locale
   backButton?: boolean | undefined
   linesRef: React.MutableRefObject<readonly TranscriptLine[]>
+  windowOffsetRef: React.MutableRefObject<number>
 }): React.ReactElement {
   const snapshot = props.snapshot
   const [tick, setTick] = useState(0)
@@ -1518,28 +1529,40 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
       text,
       color: 'white',
     }))
-  const lines: TranscriptLine[] = [...props.settledLines, ...liveThinkLines, ...liveTextLines]
+  const tailBlocks: TranscriptLine[][] = []
+  if (liveThinkLines.length > 0) tailBlocks.push(liveThinkLines)
+  if (liveTextLines.length > 0) tailBlocks.push(liveTextLines)
   if (snapshot.compaction) {
     const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
     const glyph = spinner[tick % spinner.length] ?? '⠋'
     const label = `${glyph} compacting…`
-    lines.push({
+    tailBlocks.push([{
       key: 'live-compact',
       text: label,
       runs: [...label].map((character, index) => ({
         text: character,
         color: thinkingShimmerColor(thinkingShimmerLevel(index, tick, label.length)),
       })),
-    })
+    }])
   }
-  lines.push(...props.dockLines)
-  props.linesRef.current = lines
+  if (props.dockLines.length > 0) tailBlocks.push([...props.dockLines])
+  const windowed = selectTranscriptBlocksWindow(
+    [...props.settledBlocks, ...tailBlocks],
+    props.height,
+    props.offset,
+    TRANSCRIPT_LINE_OVERSCAN,
+    props.backButton === true ? 1 : 0,
+  )
+  props.linesRef.current = windowed.lines
+  props.windowOffsetRef.current = windowed.relativeOffset
   return (
     <Transcript
-      lines={lines}
+      lines={windowed.lines}
       height={props.height}
       width={props.width}
-      offset={props.offset}
+      offset={windowed.relativeOffset}
+      scrollOffset={windowed.offset}
+      lineCount={windowed.totalCount}
       onMaximumOffsetChange={props.onMaximumOffsetChange}
       theme={props.theme}
       locale={props.locale}
@@ -1790,8 +1813,8 @@ export function App(props: {
         ...(color === undefined ? { dim: true } : { color }),
       }
     }), [snapshot.trace, transcriptContentWidth])
-  const historyLines = useMemo((): TranscriptLine[] => {
-    const lines: TranscriptLine[] = []
+  const historyBlocks = useMemo((): TranscriptLine[][] => {
+    const blocks: TranscriptLine[][] = []
     let previousKind: TuiNode['kind'] | undefined
     for (const node of visibleNodes) {
       const body = cachedNodeLines(
@@ -1803,17 +1826,19 @@ export function App(props: {
         locale,
       )
       if (node.kind === 'user') {
+        const block: TranscriptLine[] = []
         if (previousKind !== 'user') {
-          lines.push({ key: `${node.id}-vpad-top`, text: ' ' })
+          block.push({ key: `${node.id}-vpad-top`, text: ' ' })
         }
-        lines.push(...body)
-        lines.push({ key: `${node.id}-vpad-bot`, text: ' ' })
-      } else {
-        lines.push(...body)
+        block.push(...body)
+        block.push({ key: `${node.id}-vpad-bot`, text: ' ' })
+        blocks.push(block)
+      } else if (body.length > 0) {
+        blocks.push(body)
       }
       previousKind = node.kind
     }
-    return lines
+    return blocks
   }, [
     visibleNodes, transcriptContentWidth,
     expanded, thinkDefaultOpen, snapshot.feedback, locale,
@@ -1838,9 +1863,10 @@ export function App(props: {
       return { key: `welcome-${index}`, text: line, ...(chrome ? { color: 'yellow' } : { dim: true }) }
     })
   }, [visibleNodes.length, transcriptContentWidth, transcriptHeight, snapshot.model, snapshot.cwd, snapshot.sessionId, locale])
-  const settledLines = viewMode === 'trajectory'
-    ? trajectoryLines
-    : visibleNodes.length === 0 ? welcomeLines : historyLines
+  const settledBlocks = viewMode === 'trajectory'
+    ? (trajectoryLines.length > 0 ? [trajectoryLines] : [])
+    : visibleNodes.length === 0 ? (welcomeLines.length > 0 ? [welcomeLines] : [])
+      : historyBlocks
   const dockLines = useMemo((): TranscriptLine[] => {
     const lines: TranscriptLine[] = []
     if (notice !== '') {
@@ -1883,6 +1909,7 @@ export function App(props: {
   // (the back-button reservation also moves the maximum).
   const transcriptLineCountRef = useRef(0)
   const transcriptLinesRef = useRef<readonly TranscriptLine[]>([])
+  const transcriptWindowOffsetRef = useRef(0)
   const updateTranscriptMaximumOffset = useCallback((maximumOffset: number, lineCount: number) => {
     transcriptMaximumOffset.current = maximumOffset
     const grew = Math.max(0, lineCount - transcriptLineCountRef.current)
@@ -2541,7 +2568,7 @@ export function App(props: {
           const maximum = transcriptMaximumOffset.current
           const reserved = backButtonVisible ? 1 : 0
           const geometry = selectScrollbar(
-            transcriptLinesRef.current.length, transcriptHeight, transcriptScrollOffset, reserved,
+            transcriptLineCountRef.current, transcriptHeight, transcriptScrollOffset, reserved,
           )
           if (geometry.visible && click.row >= 5 && click.row <= 4 + contentHeight) {
             applyTranscriptScroll(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
@@ -2585,7 +2612,7 @@ export function App(props: {
           const maximum = transcriptMaximumOffset.current
           const reserved = backButtonVisible ? 1 : 0
           const geometry = selectScrollbar(
-            transcriptLinesRef.current.length, transcriptHeight, transcriptScrollOffset, reserved,
+            transcriptLineCountRef.current, transcriptHeight, transcriptScrollOffset, reserved,
           )
           if (geometry.visible && click.row >= 5 && click.row <= 4 + contentHeight) {
             scrollbarDragRef.current = true
@@ -2598,7 +2625,7 @@ export function App(props: {
           const line = transcriptLineAtRow(
             transcriptLinesRef.current,
             transcriptHeight,
-            transcriptScrollOffset,
+            transcriptWindowOffsetRef.current,
             backButtonVisible ? 1 : 0,
             click.row - 5,
           )
@@ -2770,7 +2797,7 @@ export function App(props: {
         </Box>
       ) : (
         <ChatTranscript
-          settledLines={settledLines}
+          settledBlocks={settledBlocks}
           dockLines={dockLines}
           snapshot={snapshot}
           height={transcriptHeight}
@@ -2782,6 +2809,7 @@ export function App(props: {
           locale={locale}
           backButton={transcriptScrollOffset > 0}
           linesRef={transcriptLinesRef}
+          windowOffsetRef={transcriptWindowOffsetRef}
         />
       )}
       {panelNoticeVisible ? (

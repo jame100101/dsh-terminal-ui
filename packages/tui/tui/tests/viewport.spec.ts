@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow, selectComposerLayout, selectInputViewport,
-  selectPanelViewport, selectScrollbar, selectTerminalFrameWidth, selectTranscriptViewport, transcriptLineAtRow,
+  selectPanelViewport, selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport,
+  transcriptLineAtRow,
 } from '../src/viewport'
 import type { TranscriptLine } from '../src/viewport'
 
@@ -60,6 +61,43 @@ describe('selectTranscriptViewport', () => {
     const lines = Array.from({ length: 10 }, (_, index) => line(`l${index}`))
     const viewport = selectTranscriptViewport(lines, 5, 2, 1)
     expect(viewport.lines.map(entry => entry.text)).toEqual(['l4', 'l5', 'l6', 'l7'])
+  })
+})
+
+describe('selectTranscriptBlocksWindow', () => {
+  const blocksOf = (count: number, size: number): TranscriptLine[][] =>
+    Array.from({ length: count }, (_, block) =>
+      Array.from({ length: size }, (_, index) => line(`b${block}-${index}`)))
+
+  it('matches a flat viewport at offset 0 after slicing the overscan window', () => {
+    const blocks = blocksOf(20, 5)
+    const flat = blocks.flat()
+    const windowed = selectTranscriptBlocksWindow(blocks, 8, 0, 4)
+    const sliced = selectTranscriptViewport(windowed.lines, 8, windowed.relativeOffset)
+    expect(windowed.totalCount).toBe(100)
+    expect(windowed.maximumOffset).toBe(92)
+    expect(windowed.offset).toBe(0)
+    expect(sliced.lines.map(entry => entry.text)).toEqual(flat.slice(92).map(entry => entry.text))
+    expect(windowed.lines.length).toBeLessThan(flat.length)
+  })
+
+  it('keeps the same visible slice as a flat transcript when scrolled', () => {
+    const blocks = blocksOf(20, 5)
+    const flat = blocks.flat()
+    const windowed = selectTranscriptBlocksWindow(blocks, 8, 17, 4)
+    const sliced = selectTranscriptViewport(windowed.lines, 8, windowed.relativeOffset)
+    expect(windowed.offset).toBe(17)
+    expect(sliced.lines.map(entry => entry.text)).toEqual(
+      selectTranscriptViewport(flat, 8, 17).lines.map(entry => entry.text),
+    )
+  })
+
+  it('includes overscan rows without changing the clamped offset', () => {
+    const blocks = blocksOf(10, 4)
+    const windowed = selectTranscriptBlocksWindow(blocks, 6, 10, 3)
+    expect(windowed.offset).toBe(10)
+    expect(windowed.lines.length).toBe(6 + 3 + 3)
+    expect(windowed.lines[0]?.text).toBe('b5-1')
   })
 })
 

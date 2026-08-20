@@ -80,6 +80,80 @@ export function selectTranscriptViewport(
   }
 }
 
+/** Extra projected rows above and below the visible transcript slice. */
+export const TRANSCRIPT_LINE_OVERSCAN = 32
+
+/** One overscan window over per-node (or tail) line blocks. */
+export interface TranscriptBlocksWindow {
+  /** Concatenated rows covering the viewport plus overscan. */
+  lines: TranscriptLine[]
+  /** Scroll offset relative to {@link lines}, for {@link selectTranscriptViewport}. */
+  relativeOffset: number
+  /** Clamped hidden-from-bottom offset in the full transcript. */
+  offset: number
+  /** Maximum offset from the full line count. */
+  maximumOffset: number
+  /** Sum of every block's length. */
+  totalCount: number
+}
+
+/**
+ * Concatenate only the blocks that intersect the visible slice plus overscan.
+ * Line counts still walk every block so the scrollbar knows the full length;
+ * Ink never receives the off-window rows.
+ * @param blocks - per-node (and tail) line arrays in transcript order.
+ * @param height - the viewport height in rows.
+ * @param requestedOffset - hidden lines counted from the bottom.
+ * @param overscan - extra rows before and after the visible slice.
+ * @param bottomReserved - rows reserved at the bottom of the viewport.
+ * @returns the overscan window and the full-transcript scroll facts.
+ */
+export function selectTranscriptBlocksWindow(
+  blocks: readonly (readonly TranscriptLine[])[],
+  height: number,
+  requestedOffset: number,
+  overscan = TRANSCRIPT_LINE_OVERSCAN,
+  bottomReserved = 0,
+): TranscriptBlocksWindow {
+  const viewportHeight = Math.max(1, Math.floor(height))
+  const reserved = Math.max(0, Math.min(Math.floor(bottomReserved), viewportHeight - 1))
+  const capacity = Math.max(1, viewportHeight - reserved)
+  const extra = Math.max(0, Math.floor(overscan))
+  let total = 0
+  for (const block of blocks) total += block.length
+  const maximumOffset = Math.max(0, total - capacity)
+  const offset = Math.min(
+    Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0,
+    maximumOffset,
+  )
+  const end = Math.max(0, total - offset)
+  const start = Math.max(0, end - capacity)
+  const windowStart = Math.max(0, start - extra)
+  const windowEnd = Math.min(total, end + extra)
+  const lines: TranscriptLine[] = []
+  let cursor = 0
+  for (const block of blocks) {
+    const next = cursor + block.length
+    if (next > windowStart && cursor < windowEnd) {
+      const sliceStart = Math.max(0, windowStart - cursor)
+      const sliceEnd = Math.min(block.length, windowEnd - cursor)
+      for (let index = sliceStart; index < sliceEnd; index += 1) {
+        const line = block[index]
+        if (line !== undefined) lines.push(line)
+      }
+    }
+    cursor = next
+    if (cursor >= windowEnd) break
+  }
+  return {
+    lines,
+    relativeOffset: windowEnd - end,
+    offset,
+    maximumOffset,
+    totalCount: total,
+  }
+}
+
 /**
  * Resolve one zero-based terminal row inside the transcript to its rendered
  * line. The transcript bottom-aligns short content and may reserve its last
