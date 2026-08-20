@@ -28,6 +28,10 @@ export interface TranscriptLine {
   color?: string
   bold?: boolean
   dim?: boolean
+  /** Waiting retry headers blink dim from a Transcript-local timer. */
+  pulse?: boolean
+  /** Grok prompt-block fill (`bg = light`): a gray bar behind user rows. */
+  background?: boolean
   runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string }[]
   /** Node whose disclosure arrow owns this header line. */
   disclosureNodeId?: number

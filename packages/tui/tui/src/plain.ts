@@ -270,6 +270,9 @@ export function retryCountdownSeconds(retryAt: number, now: number): number | nu
  */
 export function markdownLines(source: string, maxWidth: number = Number.POSITIVE_INFINITY): MdLine[] {
   const out: MdLine[] = []
+  const startBlock = (): void => {
+    if (out.length > 0 && out[out.length - 1]?.text !== '') out.push({ text: '' })
+  }
   let tokens
   try {
     tokens = marked.lexer(source)
@@ -279,6 +282,7 @@ export function markdownLines(source: string, maxWidth: number = Number.POSITIVE
   for (const token of tokens) {
     switch (token.type) {
       case 'heading': {
+        startBlock()
         const inlineTokens = (token as { tokens?: InlineToken[] }).tokens
         const runs = inlineTokens === undefined
           ? [{ text: stripInline(token.text) }]
@@ -289,17 +293,20 @@ export function markdownLines(source: string, maxWidth: number = Number.POSITIVE
         break
       }
       case 'code': {
+        startBlock()
         for (const line of token.text === '' ? [''] : token.text.split('\n')) {
           out.push({ text: `│ ${line}`, color: 'gray' })
         }
         break
       }
       case 'blockquote':
+        startBlock()
         for (const line of token.text === '' ? [''] : token.text.split('\n')) {
           out.push({ text: `▎ ${stripInline(line)}`, color: 'gray' })
         }
         break
       case 'list': {
+        startBlock()
         for (const item of token.items) {
           const body = item.text === '' && item.tokens !== undefined
             ? (item.tokens as { type: string; text?: string; raw?: string }[])
@@ -310,9 +317,11 @@ export function markdownLines(source: string, maxWidth: number = Number.POSITIVE
         break
       }
       case 'table':
+        startBlock()
         out.push(...tableLines(token as never, maxWidth))
         break
       case 'paragraph': {
+        startBlock()
         const inlineTokens = (token as { tokens?: InlineToken[] }).tokens
         const runs = inlineTokens === undefined
           ? [{ text: stripInline(token.text) }]

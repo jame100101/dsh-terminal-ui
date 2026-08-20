@@ -21,7 +21,7 @@ export interface PanelRow {
   color?: string
   dim?: boolean
   /** Which renderer action Enter triggers; absent rows are inert. */
-  action?: 'toggle-busy-enter' | 'toggle-thinking' | 'toggle-theme' | 'toggle-locale' | 'select-model' | 'select-reasoning-effort' | 'edit-credential' | 'kill-job' | 'resume-session' | 'toggle-config-boolean' | 'edit-config-number' | 'edit-config-secret' | 'edit-config-string' | 'select-preset'
+  action?: 'toggle-busy-enter' | 'toggle-thinking' | 'toggle-locale' | 'select-model' | 'select-reasoning-effort' | 'edit-credential' | 'kill-job' | 'resume-session' | 'toggle-config-boolean' | 'edit-config-number' | 'edit-config-secret' | 'edit-config-string' | 'select-preset'
   meta?: { provider?: string; model?: string; ref?: string; id?: string; effort?: string; ns?: string; field?: string; enabled?: boolean }
 }
 
@@ -59,7 +59,6 @@ export function buildSettingsRows(
   switch (page) {
     case 'general':
       return [
-        { key: 'g-head', text: locale === 'en' ? 'General · Enter toggles options · Tab switches modules' : '常规 General · Enter 切换选项 · Tab 切换模块', color: 'cyan' },
         {
           key: 'busyEnter',
           text: locale === 'en'
@@ -75,13 +74,6 @@ export function buildSettingsRows(
           action: 'toggle-thinking',
         },
         {
-          key: 'theme',
-          text: locale === 'en'
-            ? `theme terminal palette · now ${data.general.theme === 'light' ? 'light' : 'dark'}`
-            : `theme 终端主题 · 当前 ${data.general.theme === 'light' ? 'Light 浅色' : 'Dark 深色'}`,
-          action: 'toggle-theme',
-        },
-        {
           key: 'locale',
           text: locale === 'en'
             ? `locale UI language · now ${data.general.locale === 'en' ? 'English' : '中文'}`
@@ -91,10 +83,10 @@ export function buildSettingsRows(
         { key: 'g-foot', text: locale === 'en' ? 'Changes write to $DSH_HOME/settings.yaml (tui namespace) and apply immediately' : '变更写入 $DSH_HOME/settings.yaml（tui 命名空间）并立即生效', dim: true },
       ]
     case 'models': {
-      const rows: PanelRow[] = [{ key: 'm-head', text: locale === 'en' ? 'Models · Enter sets default · credential rows: Enter to edit · Tab switches modules' : '模型 Models · Enter 设为默认 · 凭据行 Enter 输入 · Tab 切换模块', color: 'cyan' }]
+      const rows: PanelRow[] = []
       const defaultProvider = data.models.providers.find(provider => provider.models.some(model => model.id === snapshot.model))?.provider
       for (const provider of data.models.providers) {
-        rows.push({ key: `p-${provider.provider}`, text: `▸ ${provider.provider}`, color: 'yellow' })
+        rows.push({ key: `p-${provider.provider}`, text: provider.provider, color: 'cyan' })
         for (const model of provider.models) {
           const isDefault = model.id === snapshot.model
           rows.push({
@@ -132,13 +124,7 @@ export function buildSettingsRows(
       return rows
     }
     case 'plugins': {
-      const rows: PanelRow[] = [{
-        key: 'pl-head',
-        text: locale === 'en'
-          ? 'Plugins · complete read-only status list · Tab switches modules'
-          : '插件 Plugins · 完整只读状态清单 · Tab 切换模块',
-        color: 'cyan',
-      }]
+      const rows: PanelRow[] = []
       if (data.plugins.length === 0) {
         rows.push({ key: 'pl-empty', text: locale === 'en' ? '(no plugin entries)' : '（当前没有插件条目）', dim: true })
       }
@@ -166,7 +152,7 @@ export function buildSettingsRows(
       return rows
     }
     case 'inventory': {
-      const rows: PanelRow[] = [{ key: 'i-head', text: locale === 'en' ? 'Inventory · read-only · Tab switches modules' : '清单 Inventory · 只读 · Tab 切换模块', color: 'cyan' }]
+      const rows: PanelRow[] = []
       rows.push({ key: 'i-ns', text: locale === 'en' ? `${data.inventory.namespaces.length} settings namespaces` : `设置命名空间 ${data.inventory.namespaces.length} 个`, color: 'yellow' })
       for (const namespace of data.inventory.namespaces) {
         rows.push({
@@ -188,13 +174,7 @@ export function buildSettingsRows(
       return rows
     }
     case 'presets': {
-      const rows: PanelRow[] = [{
-        key: 'p-head',
-        text: locale === 'en'
-          ? 'Presets · Enter switches the blank session in place · Tab switches modules'
-          : '预设 Presets · Enter 切换（空白会话原地生效）· Tab 切换模块',
-        color: 'cyan',
-      }]
+      const rows: PanelRow[] = []
       if (data.presets.length === 0) {
         rows.push({ key: 'p-empty', text: locale === 'en' ? '(no agent presets composed — the agent-presets service is not mounted in this profile)' : '（没有可用的 agent 预设——当前 profile 未挂载 agent-presets 服务）', dim: true })
         return rows

@@ -91,13 +91,13 @@ describe('buildSettingsRows reasoning effort', () => {
   })
 })
 
-describe('buildSettingsRows theme and locale', () => {
-  it('offers theme and locale toggle rows on the general page', () => {
+describe('buildSettingsRows locale', () => {
+  it('offers a locale toggle and no theme switcher on the general page', () => {
     const fixture = modelsSettings()
     fixture.settings.general = { ...fixture.settings.general, theme: 'light', locale: 'en' }
     const rows = buildSettingsRows(fixture, 'general', 'zh')
-    expect(rows.some(row => row.action === 'toggle-theme' && row.text.includes('Light 浅色'))).toBe(true)
     expect(rows.some(row => row.action === 'toggle-locale' && row.text.includes('English'))).toBe(true)
+    expect(rows.some(row => row.key === 'theme' || row.text.includes('终端主题'))).toBe(false)
   })
 })
 
@@ -109,7 +109,7 @@ describe('buildSettingsRows plugin inventory', () => {
       { id: 'off', name: 'off', enabled: false, loaded: false },
     ]
     const rows = buildSettingsRows(fixture, 'plugins', 'zh')
-    expect(rows[0]?.text).toContain('完整只读状态清单')
+    expect(rows[0]?.text).toBe('● storage · storage')
     const storage = rows.find(row => row.key === 'pl-storage')
     expect(storage?.action).toBeUndefined()
     expect(storage?.meta).toBeUndefined()
@@ -129,7 +129,7 @@ describe('buildSettingsRows plugin inventory', () => {
     const fixture = modelsSettings()
     fixture.settings.plugins = [{ id: 'storage', name: 'storage', enabled: true, loaded: true }]
     const rows = buildSettingsRows(fixture, 'plugins', 'en')
-    expect(rows[0]?.text).toContain('complete read-only status list')
+    expect(rows[0]?.text).toBe('● storage · storage')
     expect(rows.some(row => row.key === 'pl-storage' && row.text === '● storage · storage')).toBe(true)
     expect(rows.at(-1)?.text).toContain('ask the Agent to update that configuration file')
   })
@@ -287,13 +287,21 @@ describe('en locale', () => {
     const fixture = modelsSettings()
     fixture.settings.general = { busyEnter: 'steer', thinking: 'expanded', theme: 'light', locale: 'en' }
     const rows = buildSettingsRows(fixture, 'general', 'en')
-    expect(rows.some(row => row.text.includes('General · Enter toggles options'))).toBe(true)
+    expect(rows[0]?.key).toBe('busyEnter')
     expect(rows.some(row => row.key === 'busyEnter' && row.text.includes('now steer'))).toBe(true)
   })
 
   it('marks the default model with English copy', () => {
     const rows = buildSettingsRows(modelsSettings(), 'models', 'en')
     expect(rows.some(row => row.action === 'select-model' && row.text.includes(' · default'))).toBe(true)
+  })
+
+  it('renders provider names as cyan section titles without a pointer', () => {
+    const rows = buildSettingsRows(modelsSettings(), 'models', 'zh')
+    const provider = rows.find(row => row.key === 'p-deepseek-official')
+    expect(provider?.text).toBe('deepseek-official')
+    expect(provider?.color).toBe('cyan')
+    expect(provider?.text.startsWith('▸')).toBe(false)
   })
 
   it('renders session headers in English', () => {
@@ -437,17 +445,17 @@ describe('buildSettingsRows presets page', () => {
 
   it('shows the empty placeholder when no preset service is composed', () => {
     const rows = buildSettingsRows(modelsSettings(), 'presets', 'zh')
-    expect(rows[1]?.text).toContain('没有可用的 agent 预设')
+    expect(rows[0]?.text).toContain('没有可用的 agent 预设')
   })
 
   it('navigates to the presets page through the five-page Tab cycle', () => {
     expect(SETTINGS_PAGES).toEqual(['general', 'models', 'plugins', 'inventory', 'presets'])
   })
 
-  it('puts the Tab hint on every page header', () => {
+  it('keeps every settings page free of the old cyan title row', () => {
     for (const page of SETTINGS_PAGES) {
       const rows = buildSettingsRows(presetsFixture(), page, 'zh')
-      expect(rows[0]?.text).toContain('Tab 切换模块')
+      expect(rows[0]?.text.includes('Tab 切换模块')).toBe(false)
     }
   })
 })

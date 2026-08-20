@@ -5,6 +5,7 @@
  * @module @deepseek-ai/dsh-tui/src/store
  */
 
+import { countUiPublish } from './tui-perf'
 import type { GoalRow, LiveBuffer, PlanState, SessionStats, TodoItem, TraceEntry, TuiNode } from './types'
 
 /** One editable top-level field of a plugin's settings namespace. */
@@ -74,7 +75,7 @@ export interface GeneralSettings {
   busyEnter: 'queue' | 'steer'
   /** Whether think rows start expanded without an explicit toggle. */
   thinking: 'collapsed' | 'expanded'
-  /** Terminal palette: dark (identity ANSI) or light (bright-on-light remap). */
+  /** Terminal palette: dark (bright ANSI remap) or light (bright-on-light remap). */
   theme: 'dark' | 'light'
   /** UI chrome language. */
   locale: 'zh' | 'en'
@@ -259,6 +260,7 @@ export function createTuiStore(initial: TuiSnapshot): TuiStore {
     set: (next) => {
       if (next.version === snapshot.version) return
       snapshot = next
+      countUiPublish()
       for (const listener of [...listeners]) listener()
     },
   }

@@ -327,6 +327,8 @@ describe('session fold', () => {
     expect(texts).toContain('│ const x = 1')
     expect(texts).toContain('• item one')
     expect(texts.some(text => text.includes('**'))).toBe(false)
+    expect(texts[texts.indexOf('Title') + 1]).toBe('')
+    expect(texts[texts.indexOf('Some bold text') + 1]).toBe('')
   })
 
   it('renders GFM tables as cell-width-aligned grids', () => {

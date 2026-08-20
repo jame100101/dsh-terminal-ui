@@ -21,6 +21,7 @@ import { csiTailKey, escapeArbiter, syntheticKey } from './csi-arbiter'
 import {
   DISABLE_WHEEL_MOUSE, ENABLE_WHEEL_MOUSE, parseMouseReport, parseMouseWheel, scrollOffsetForWheel, stripMouseReports,
 } from './mouse'
+import { busyStarFrame } from './busy-star'
 import { formatStats, helpText, localizeFoldStatus, markdownLines, retryCountdownSeconds, welcomeBlock, wrapRuns, fitStatsStrip } from './plain'
 import { welcomeBanner } from './welcome-banner'
 import type { MdRun } from './plain'
@@ -29,6 +30,10 @@ import {
   buildJobsRows, buildPluginConfigRows, buildSessionRows, buildSettingsRows, buildSubagentRows, buildWorkflowRows, SETTINGS_PAGES,
 } from './settings-data'
 import type { PanelRow, SettingsPageId } from './settings-data'
+import {
+  cycleSettingsPage, filterSettingsRows, hitSettingsTab, SETTINGS_CHROME_ROWS, settingsChromeHit, settingsHintText,
+  settingsListIndex, settingsSearchText, settingsTabCell, settingsTabLabels,
+} from './settings-chrome'
 import type { TuiStore } from './store'
 import type { TuiNode } from './types'
 import {
@@ -36,6 +41,9 @@ import {
   selectScrollbar, selectTerminalFrameWidth, selectTranscriptViewport, transcriptLineAtRow,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
+import { countUiRender } from './tui-perf'
+import { padEndDisplay, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
+import type { LiveWrapState } from './wrap'
 
 const MAX_POPUP_ITEMS = 8
 const CTRL_C_EXIT_WINDOW_MS = 2_000
@@ -110,7 +118,6 @@ interface Copy {
   inputTooLarge: (bytes: number, max: number) => string
   busyEnterChanged: (next: string) => string
   thinkingChanged: (next: string) => string
-  themeChanged: (next: string) => string
   localeChanged: (next: string) => string
   modelDefault: (model: string) => string
   effortDefault: (effort: string) => string
@@ -195,7 +202,6 @@ const COPY: Record<Locale, Copy> = {
     inputTooLarge: (bytes, max) => `输入过大：${bytes} bytes（上限 ${max}）`,
     busyEnterChanged: next => `busyEnter → ${next === 'steer' ? 'Steer 转向' : 'Queue 排队'}`,
     thinkingChanged: next => `thinking 默认显示 → ${next === 'expanded' ? '展开' : '折叠'}`,
-    themeChanged: next => `theme → ${next === 'light' ? 'Light 浅色' : 'Dark 深色'}`,
     localeChanged: next => `locale → ${next === 'en' ? 'English' : '中文'}`,
     modelDefault: model => `默认模型 → ${model}`,
     effortDefault: effort => `推理等级 → ${effort}`,
@@ -277,7 +283,6 @@ const COPY: Record<Locale, Copy> = {
     inputTooLarge: (bytes, max) => `input too large: ${bytes} bytes (limit ${max})`,
     busyEnterChanged: next => `busyEnter → ${next === 'steer' ? 'steer' : 'queue'}`,
     thinkingChanged: next => `thinking default → ${next === 'expanded' ? 'expanded' : 'collapsed'}`,
-    themeChanged: next => `theme → ${next === 'light' ? 'light' : 'dark'}`,
     localeChanged: next => `locale → ${next === 'en' ? 'English' : 'Chinese'}`,
     modelDefault: model => `default model → ${model}`,
     effortDefault: effort => `reasoning effort → ${effort}`,
@@ -300,20 +305,84 @@ const COPY: Record<Locale, Copy> = {
   },
 }
 
-/** Remap one Ink color intent for the light palette (dark is identity). */
-function themed(color: string | undefined, theme: 'dark' | 'light', fallback: string): string {
-  if (color === undefined || theme === 'dark') return color ?? fallback
-  const LIGHT: Record<string, string> = {
-    cyan: 'blue',
-    magenta: 'magenta',
-    yellow: 'yellow',
-    green: 'green',
-    red: 'red',
-    blue: 'blue',
-    gray: 'black',
-    white: 'black',
-  }
-  return LIGHT[color] ?? color
+const INK_NAMED = /^(?:red|green|yellow|blue|magenta|cyan|white|gray|grey)(?:Bright)?$/
+
+const DARK_PALETTE: Record<string, string> = {
+  black: 'whiteBright',
+  gray: 'gray',
+  grey: 'gray',
+  white: 'whiteBright',
+  cyan: 'cyan',
+  yellow: 'yellowBright',
+  green: 'greenBright',
+  magenta: 'magentaBright',
+  blue: 'blue',
+  red: 'redBright',
+  whiteBright: 'whiteBright',
+  cyanBright: 'cyanBright',
+  yellowBright: 'yellowBright',
+  greenBright: 'greenBright',
+  magentaBright: 'magentaBright',
+  blueBright: 'blueBright',
+  redBright: 'redBright',
+}
+
+const LIGHT_PALETTE: Record<string, string> = {
+  black: 'blue',
+  gray: 'blue',
+  grey: 'blue',
+  white: 'blue',
+  whiteBright: 'blue',
+  cyan: 'blue',
+  cyanBright: 'blue',
+  yellow: 'yellow',
+  yellowBright: 'yellow',
+  green: 'green',
+  greenBright: 'green',
+  red: 'red',
+  redBright: 'red',
+  blue: 'blue',
+  blueBright: 'blue',
+  magenta: 'magenta',
+  magentaBright: 'magenta',
+}
+
+/**
+ * Map a TrueColor hex to a named Ink color. Hex on Windows Terminal often
+ * paints as black, so banner art must not pass `#rrggbb` through to Ink.
+ * @param hex - a `#rrggbb` string.
+ * @param theme - active tui theme.
+ * @returns a named Ink color.
+ */
+function namedColorFromHex(hex: string, theme: 'dark' | 'light'): string {
+  const fallback = theme === 'light' ? 'blue' : 'whiteBright'
+  if (!/^#[0-9a-fA-F]{6}$/.test(hex)) return fallback
+  const r = Number.parseInt(hex.slice(1, 3), 16)
+  const g = Number.parseInt(hex.slice(3, 5), 16)
+  const b = Number.parseInt(hex.slice(5, 7), 16)
+  const lum = (r * 299 + g * 587 + b * 114) / 1000
+  const blueish = b > r + 20 && b > g
+  if (lum < 96) return theme === 'light' ? 'blue' : (blueish ? 'blue' : 'whiteBright')
+  if (blueish) return theme === 'light' ? 'blue' : 'blueBright'
+  return fallback
+}
+
+/**
+ * Remap one Ink color intent for the active palette.
+ * Dark uses bright named ANSI. Hex and `black` never reach Ink: they paint
+ * invisible text on Windows Terminal.
+ * @param color - the requested color, including hex from banner art.
+ * @param theme - active tui theme.
+ * @param fallback - used when `color` is empty.
+ * @returns a named Ink color.
+ */
+export function themed(color: string | undefined, theme: 'dark' | 'light', fallback: string): string {
+  const raw = color === undefined || color === '' ? fallback : color
+  const intent = raw.startsWith('#') ? namedColorFromHex(raw, theme) : raw
+  const table = theme === 'light' ? LIGHT_PALETTE : DARK_PALETTE
+  const mapped = table[intent] ?? intent
+  if (!INK_NAMED.test(mapped)) return theme === 'light' ? 'blue' : 'whiteBright'
+  return mapped
 }
 
 /** Structured-trajectory palette: model blue, tool activity red, user cyan. */
@@ -324,59 +393,16 @@ export function traceLineColor(text: string): 'blue' | 'red' | 'cyan' | undefine
   return undefined
 }
 
-/** Half-width of the highlight window in cells (a 9-cell soft band). */
-const SHIMMER_WINDOW = 4
-
 /**
- * One character's grayscale level under the sweeping highlight. The window
- * (medium gray → lighter → near-white → lighter → medium gray, smoothstep
- * falloff) travels left to right across the label and loops. The base stays
- * clearly readable but visibly dimmer than normal assistant output. Pure:
- * the renderer stamps one phase per tick (~100ms).
- * @param index - the character index inside the label.
- * @param phase - the animation phase (increments once per tick).
- * @param length - the label length the window sweeps across.
- * @returns the grayscale level, 0-255.
- */
-export function thinkingShimmerLevel(index: number, phase: number, length: number): number {
-  const span = length + SHIMMER_WINDOW * 2 + 1
-  const center = (phase % span) - SHIMMER_WINDOW
-  const t = Math.max(0, Math.min(1, 1 - Math.abs(index - center) / (SHIMMER_WINDOW + 1)))
-  const smooth = t * t * (3 - 2 * t)
-  return Math.round(145 + 110 * smooth)
-}
-
-/**
- * One grayscale level as a TrueColor hex (chalk downlevels it to ANSI-256
- * automatically on terminals without 24-bit support).
- * @param level - the grayscale level, 0-255.
- * @returns the `#rrggbb` color.
- */
-export function thinkingShimmerHex(level: number): string {
-  const value = Math.max(0, Math.min(255, level)).toString(16).padStart(2, '0')
-  return `#${value}${value}${value}`
-}
-
-/**
- * The brand glyph leading the header title. The whale emoji needs a
- * width-correct terminal (modern terminals measure it as two cells); on
- * legacy environments that mishandle emoji width it degrades to a narrow
- * glyph so the row alignment never breaks.
+ * The brand glyph leading the header title. The whale is two cells on
+ * modern terminals. Dumb TERM and Apple Terminal mishandle that width, so
+ * those hosts get a one-cell diamond.
  * @param env - the environment mapping.
  * @returns the glyph.
  */
 export function brandGlyph(env: Record<string, string | undefined>): string {
   if (env.TERM === 'dumb') return '✦'
   if (env.TERM_PROGRAM === 'Apple_Terminal') return '✦'
-  const modern = env.WT_SESSION !== undefined
-    || env.ConEmuANSI !== undefined
-    || env.TERM_PROGRAM !== undefined
-    || env.TERM?.startsWith('xterm') === true
-    || env.TERM?.includes('256color') === true
-    || env.COLORTERM !== undefined
-  // Legacy Windows conhost (no modern-terminal marker) measures emoji
-  // inconsistently.
-  if (process.platform === 'win32' && !modern) return '✦'
   return '🐋'
 }
 
@@ -469,7 +495,7 @@ function localCommands(locale: Locale): PaletteItem[] {
     { name: 'clear', description: zh ? '清空显示（保留会话）' : 'clear the display (session kept)', needsArgs: false },
     { name: 'trajectory', description: zh ? '切换结构化轨迹视图' : 'toggle the structured trajectory view', needsArgs: false },
     { name: 'model', description: zh ? '选择模型' : 'pick a model', needsArgs: false },
-    { name: 'settings', description: zh ? '设置五页（general/models/plugins/inventory/presets）' : 'five pages: general/models/plugins/inventory/presets', needsArgs: false },
+    { name: 'settings', description: zh ? '设置（Tab / 点击切换分页）' : 'settings (Tab / click to switch pages)', needsArgs: false },
     { name: 'jobs', description: zh ? '后台任务面板（Enter 杀掉选中任务）' : 'background jobs panel (Enter kills the selected job)', needsArgs: false },
     { name: 'subagents', description: zh ? '子代理树面板' : 'subagent tree panel', needsArgs: false },
     { name: 'workflows', description: zh ? 'workflow 运行进度面板' : 'workflow run progress panel', needsArgs: false },
@@ -507,27 +533,7 @@ function shorten(value: string, width: number): string {
 
 /** Hard-wrap one source line by terminal cell width. */
 function wrapText(text: string, width: number): string[] {
-  const lines: string[] = []
-  for (const source of text.split('\n')) {
-    if (source === '') {
-      lines.push('')
-      continue
-    }
-    let current = ''
-    let currentWidth = 0
-    for (const character of source) {
-      const characterWidth = Math.max(1, stringWidth(character))
-      if (currentWidth + characterWidth > width) {
-        lines.push(current)
-        current = ''
-        currentWidth = 0
-      }
-      current += character
-      currentWidth += characterWidth
-    }
-    lines.push(current)
-  }
-  return lines
+  return wrapDisplayLines(text, width)
 }
 
 /** Word-aware hard wrap for prose: breaks on spaces, only over-long words break by cells. */
@@ -581,13 +587,20 @@ function nodeLines(
   node: TuiNode,
   width: number,
   expanded: boolean,
-  retryShimmer: boolean,
   feedback: ReadonlyMap<string, { rating: 'positive' | 'negative' }> | undefined,
   locale: Locale,
 ): TranscriptLine[] {
   const copy = COPY[locale]
   const marker = ''
-  const withKey = (lines: { text: string; color?: string; dim?: boolean; runs?: MdRun[] }[]): TranscriptLine[] =>
+  type NodeLineDraft = {
+    text: string
+    color?: string
+    dim?: boolean
+    pulse?: boolean
+    runs?: MdRun[]
+    background?: boolean
+  }
+  const withKey = (lines: NodeLineDraft[]): TranscriptLine[] =>
     lines.map((line, index) => ({
       key: `${node.id}-${index}`,
       ...line,
@@ -602,7 +615,11 @@ function nodeLines(
     }))
   switch (node.kind) {
     case 'user':
-      return withKey(wrapText(`${marker}▸ ${sanitizeTerminalText(node.text)}`, width).map(text => ({ text, color: 'cyan' })))
+      return withKey(wrapText(`${marker}▸ ${sanitizeTerminalText(node.text)}`, width).map(text => ({
+        text: padEndDisplay(text, width),
+        color: 'blue',
+        background: true,
+      })))
     case 'context': {
       const title = expanded
         ? `${copy.contextTitle(node.producer)} ▼`
@@ -638,7 +655,12 @@ function nodeLines(
           }
         }
       }
-      return withKey(lines.filter(line => line.text !== '' || (line.runs?.length ?? 0) > 0))
+      while (lines.length > 0) {
+        const last = lines[lines.length - 1]
+        if (last === undefined || last.text !== '' || (last.runs?.length ?? 0) > 0) break
+        lines.pop()
+      }
+      return withKey(lines)
     }
     case 'think': {
       const durationLabel = `${(node.durationMs / 1000).toFixed(1)}s`
@@ -695,7 +717,7 @@ function nodeLines(
         ? `⟳ retry ${node.retry}/${maxLabel} · ${copy.retryIn(remaining)}`
         : `⟳ retry ${node.retry}/${maxLabel} · ${node.started ? copy.retryFired : copy.retryWaiting}`
       const head = wrapText(`${marker}${title} ${expanded ? '▼' : '▶'}`, width).map(text => ({
-        text, color: 'gray', dim: waiting ? retryShimmer : !expanded,
+        text, color: 'gray', dim: waiting ? false : !expanded, pulse: waiting,
       }))
       const body = expanded
         ? wrapText(
@@ -707,7 +729,7 @@ function nodeLines(
     }
     case 'status':
       return withKey(wrapText(`${marker}${node.error ? '×' : '◆'} ${sanitizeTerminalText(localizeFoldStatus(node.text, locale))}`, width).map(text => ({
-        text, color: node.error ? 'red' : 'gray',
+        text, color: node.error ? 'red' : 'gray', dim: !node.error,
       })))
   }
 }
@@ -721,7 +743,6 @@ function cachedNodeLines(
   node: TuiNode,
   width: number,
   expanded: boolean,
-  retryShimmer: boolean,
   feedback: ReadonlyMap<string, { rating: 'positive' | 'negative' }> | undefined,
   locale: Locale,
 ): TranscriptLine[] {
@@ -729,7 +750,6 @@ function cachedNodeLines(
   const key = [
     width,
     isCollapsible(node) && expanded ? 1 : 0,
-    node.kind === 'retry' && retryShimmer ? 1 : 0,
     rating,
     locale,
   ].join(':')
@@ -740,7 +760,7 @@ function cachedNodeLines(
   }
   const cached = variants.get(key)
   if (cached !== undefined) return cached
-  const lines = nodeLines(node, width, expanded, retryShimmer, feedback, locale)
+  const lines = nodeLines(node, width, expanded, feedback, locale)
   // Repeated terminal resizes must not retain an unbounded width history for
   // every transcript node. Expansion normally uses at most two variants.
   if (variants.size >= 8) variants.clear()
@@ -807,6 +827,13 @@ const Transcript = React.memo(function Transcript(props: {
 }): React.ReactElement {
   const viewport = selectTranscriptViewport(props.lines, props.height, props.offset, props.backButton === true ? 1 : 0)
   const scrollbar = selectScrollbar(props.lines.length, props.height, viewport.offset, props.backButton === true ? 1 : 0)
+  const hasPulse = props.lines.some(line => line.pulse === true)
+  const [pulseOn, setPulseOn] = useState(true)
+  useEffect(() => {
+    if (!hasPulse) return
+    const interval = setInterval(() => { setPulseOn(value => !value) }, 500)
+    return () => { clearInterval(interval) }
+  }, [hasPulse])
   useEffect(() => {
     props.onMaximumOffsetChange?.(viewport.maximumOffset, props.lines.length)
   }, [props.onMaximumOffsetChange, viewport.maximumOffset, props.lines.length])
@@ -824,25 +851,34 @@ const Transcript = React.memo(function Transcript(props: {
         paddingX={1}
         justifyContent="flex-end"
       >
-        {viewport.lines.map((line, index) => (
+        {viewport.lines.map((line, index) => {
           // Index keys: scrolling reorders the visible rows every wheel tick,
           // and keyed reordering through Ink's reconciler can accumulate stale
           // rows — position-keyed rows never move, only their text changes.
-          <Text key={index} color={themed(line.color, props.theme, 'white')} bold={line.bold === true} dimColor={line.dim === true}>
-            {line.runs !== undefined && line.runs.length > 0
-              ? line.runs.map((run, runIndex) => (
-                <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
-                  {...run.color !== undefined
-                    ? { color: themed(run.color, props.theme, 'white') }
-                    : run.code === true
-                      ? { color: themed('cyan', props.theme, 'cyan') }
-                      : {}}>
-                  {run.text}
-                </Text>
-              ))
-              : (line.text || ' ')}
-          </Text>
-        ))}
+          const row = (
+            <Text
+              color={themed(line.color, props.theme, 'white')}
+              bold={line.bold === true}
+              dimColor={line.pulse === true ? pulseOn : line.dim === true}
+            >
+              {line.runs !== undefined && line.runs.length > 0
+                ? line.runs.map((run, runIndex) => (
+                  <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
+                    {...run.color !== undefined
+                      ? { color: themed(run.color, props.theme, 'white') }
+                      : run.code === true
+                        ? { color: themed('cyan', props.theme, 'cyan') }
+                        : {}}>
+                    {run.text}
+                  </Text>
+                ))
+                : (line.text || ' ')}
+            </Text>
+          )
+          return line.background === true
+            ? <Box key={index} width="100%" backgroundColor="gray">{row}</Box>
+            : <React.Fragment key={index}>{row}</React.Fragment>
+        })}
         {props.backButton === true ? (
           <Text key="back-button">
             {' '.repeat(Math.max(0, Math.floor((Math.max(1, props.width - 3) - stringWidth(` ${COPY[props.locale].backToBottom} `)) / 2)))}
@@ -907,6 +943,39 @@ function PanelView(props: {
   )
 }
 
+/** Claude Code-style search field, tab strip, and key hint above the list. */
+function SettingsChrome(props: {
+  page: SettingsPageId
+  locale: Locale
+  theme: 'dark' | 'light'
+  width: number
+  query: string
+}): React.ReactElement {
+  const tabs = settingsTabLabels(props.locale)
+  return (
+    <Box flexDirection="column" width={props.width} paddingX={1}>
+      <Text dimColor wrap="truncate">{settingsSearchText(props.locale, props.query)}</Text>
+      <Text wrap="truncate">
+        {tabs.map((tab) => {
+          const active = tab.id === props.page
+          return (
+            <Text
+              key={tab.id}
+              inverse={active}
+              bold={active}
+              dimColor={!active}
+              color={themed(active ? 'white' : 'cyan', props.theme, 'cyan')}
+            >
+              {settingsTabCell(tab.label)}
+            </Text>
+          )
+        })}
+      </Text>
+      <Text dimColor wrap="truncate">{settingsHintText(props.locale)}</Text>
+    </Box>
+  )
+}
+
 /** Find the first row that performs a panel action. */
 function firstActionablePanelRow(rows: readonly PanelRow[]): number | undefined {
   const index = rows.findIndex(row => row.action !== undefined)
@@ -932,6 +1001,7 @@ function CommandPaletteView(props: {
   width: number
   height: number
   locale: Locale
+  theme: 'dark' | 'light'
   title?: string
   hint?: string
 }): React.ReactElement {
@@ -946,7 +1016,7 @@ function CommandPaletteView(props: {
   const visibleItems = items.slice(start, start + itemCapacity)
   return (
     <Box flexDirection="column" paddingX={paletteWidth > 2 ? 1 : 0} width={paletteWidth} height={Math.max(1, props.height)} overflow="hidden">
-      <Text bold color="cyan" wrap="truncate">{shorten(props.title ?? copy.paletteTitle, contentWidth)}</Text>
+      <Text bold color={themed('cyan', props.theme, 'cyan')} wrap="truncate">{shorten(props.title ?? copy.paletteTitle, contentWidth)}</Text>
       {visibleItems.length === 0
         ? <Text dimColor>{copy.noMatch}</Text>
         : visibleItems.map((command, index) => {
@@ -956,7 +1026,7 @@ function CommandPaletteView(props: {
           return (
             <Text
               key={command.command ?? command.name}
-              color={absoluteIndex === props.selectedIndex ? 'cyan' : 'white'}
+              color={themed(absoluteIndex === props.selectedIndex ? 'cyan' : 'white', props.theme, 'white')}
               bold={absoluteIndex === props.selectedIndex}
               inverse={absoluteIndex === props.selectedIndex}
             >
@@ -1168,7 +1238,7 @@ function Composer(props: {
       <Text dimColor>{'─'.repeat(Math.max(1, props.width))}</Text>
       <Box paddingX={1}>
         <Box flexDirection="row">
-          <Text bold color={themed(props.disabled ? 'gray' : 'cyan', props.theme, 'cyan')}>{'› '}</Text>
+          <Text dimColor color={themed('gray', props.theme, 'gray')}>{'› '}</Text>
           <Box flexGrow={1} flexDirection="column">
             {props.disabled
               ? (
@@ -1214,7 +1284,7 @@ export function permissionLabel(mode: 'read-only' | 'workspace-write' | 'danger-
       : 'full access'
 }
 
-/** Status-bar color for one file-policy mode: bright white / yellow / red. */
+/** Permission-chip color by file-policy mode: bright white / yellow / red. */
 export function permissionColor(mode: 'read-only' | 'workspace-write' | 'danger-full-access'): 'whiteBright' | 'yellowBright' | 'redBright' {
   return mode === 'read-only' ? 'whiteBright' : mode === 'workspace-write' ? 'yellowBright' : 'redBright'
 }
@@ -1243,8 +1313,18 @@ function StatusBar(props: {
   const queuedLabel = snapshot.queued.length > 0 ? ` · ${copy.queued} ${snapshot.queued.length}` : ''
   const historyPaused = !props.panelOpen && props.scrollOffset > 0 ? ` · ${copy.historyPaused}` : ''
   const planLabel = snapshot.plan.active ? ` · ${copy.plan}` : snapshot.plan.pending ? ` · ${copy.planPending}` : ''
+  const [starTick, setStarTick] = useState(0)
+  useEffect(() => {
+    if (!snapshot.busy) {
+      setStarTick(0)
+      return
+    }
+    const interval = setInterval(() => { setStarTick(value => value + 1) }, 100)
+    return () => { clearInterval(interval) }
+  }, [snapshot.busy])
+  const star = snapshot.busy ? busyStarFrame(starTick) : null
   const left = snapshot.busy
-    ? `● ${phaseLabel}${elapsedLabel}${queuedLabel}${planLabel} ${copy.busyCancel}`
+    ? `${star?.glyph ?? '✶'} ${phaseLabel}${elapsedLabel}${queuedLabel}${planLabel} ${copy.busyCancel}`
     : `${copy.idle}${historyPaused}${planLabel}`
   const effortLabel = snapshot.reasoning.effort ?? copy.effortOff
   const effortText = `${copy.effort} ${effortLabel}`
@@ -1253,11 +1333,13 @@ function StatusBar(props: {
   // onto the strip row below.
   const showRight = props.width >= 52
   const leftBudget = Math.max(4, props.width - 2 - (showRight ? stringWidth(effortText) + stringWidth(rightRest) + 1 : 0))
+  // Busy keeps the original yellow; only the star glyph animates.
+  const leftColor = snapshot.busy ? 'yellow' : 'cyan'
   return (
     <Box flexDirection="column">
       <Text dimColor>{'─'.repeat(Math.max(1, props.width))}</Text>
       <Box justifyContent="space-between" paddingX={1}>
-        <Text wrap="truncate" color={themed(snapshot.busy ? 'yellow' : 'cyan', props.theme, 'cyan')}>{shorten(left, leftBudget)}</Text>
+        <Text wrap="truncate" color={themed(leftColor, props.theme, 'cyan')}>{shorten(left, leftBudget)}</Text>
         {showRight ? (
           <Box>
             <Text bold color={themed('magenta', props.theme, 'magenta')}>{effortText}</Text>
@@ -1304,6 +1386,7 @@ function Takeover(props: {
   width: number
   height: number
   locale: Locale
+  theme: 'dark' | 'light'
 }): React.ReactElement {
   const approval = props.snapshot.pendingApproval
   const question = props.snapshot.pendingQuestion?.questions[
@@ -1314,34 +1397,111 @@ function Takeover(props: {
     <Box flexDirection="column" paddingX={1} height={Math.max(1, props.height)} overflow="hidden">
       {approval !== null ? (
         <>
-          <Text wrap="truncate" color="yellow" bold>{`${copy.approval}${approval.toolName}`}</Text>
+          <Text wrap="truncate" color={themed('yellow', props.theme, 'yellow')} bold>{`${copy.approval}${approval.toolName}`}</Text>
           {approval.reason !== undefined && approval.reason !== '' && <Text wrap="truncate" dimColor>({sanitizeTerminalText(approval.reason)})</Text>}
-          <Text wrap="truncate" bold={props.approvalSel === 0} {...props.approvalSel === 0 ? { color: 'yellow' } : {}}>
+          <Text wrap="truncate" bold={props.approvalSel === 0} {...props.approvalSel === 0 ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
             {props.approvalSel === 0 ? '▸' : ' '} {copy.allowOnce}
           </Text>
-          <Text wrap="truncate" bold={props.approvalSel === 1} {...props.approvalSel === 1 ? { color: 'yellow' } : {}}>
+          <Text wrap="truncate" bold={props.approvalSel === 1} {...props.approvalSel === 1 ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
             {props.approvalSel === 1 ? '▸' : ' '} {copy.deny}
           </Text>
           <Text wrap="truncate" dimColor>{copy.approvalHint}</Text>
         </>
       ) : question !== undefined ? (
         <>
-          <Text wrap="truncate" color="yellow" bold>? {sanitizeTerminalText(question.question)}</Text>
+          <Text wrap="truncate" color={themed('yellow', props.theme, 'yellow')} bold>? {sanitizeTerminalText(question.question)}</Text>
           {question.detail !== undefined && <Text wrap="truncate" dimColor>{sanitizeTerminalText(question.detail)}</Text>}
           {(question.options ?? []).length > 0 && props.questionText === ''
             ? (question.options ?? []).map((option, index) => (
-              <Text wrap="truncate" key={option.label} bold={index === props.questionSel} {...index === props.questionSel ? { color: 'yellow' } : {}}>
+              <Text wrap="truncate" key={option.label} bold={index === props.questionSel} {...index === props.questionSel ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
                 {index === props.questionSel ? '▸' : ' '} ○ {sanitizeTerminalText(option.label)}
                 {option.description !== undefined ? ` · ${sanitizeTerminalText(option.description)}` : ''}
               </Text>
             ))
-            : <Text wrap="truncate" color="cyan">› {props.questionText || copy.questionInput}</Text>}
+            : <Text wrap="truncate" color={themed('cyan', props.theme, 'cyan')}>› {props.questionText || copy.questionInput}</Text>}
           <Text wrap="truncate" dimColor>{copy.questionHint}</Text>
         </>
       ) : null}
     </Box>
   )
 }
+
+/** Live thinking/compaction plus incremental live text, isolated from App tick. */
+const ChatTranscript = React.memo(function ChatTranscript(props: {
+  settledLines: readonly TranscriptLine[]
+  dockLines: readonly TranscriptLine[]
+  snapshot: ReturnType<TuiStore['getSnapshot']>
+  height: number
+  width: number
+  contentWidth: number
+  offset: number
+  onMaximumOffsetChange?: (maximumOffset: number, lineCount: number) => void
+  theme: 'dark' | 'light'
+  locale: Locale
+  backButton?: boolean
+  linesRef: React.MutableRefObject<readonly TranscriptLine[]>
+}): React.ReactElement {
+  const snapshot = props.snapshot
+  const [tick, setTick] = useState(0)
+  useEffect(() => {
+    if (!snapshot.busy && !snapshot.compaction) {
+      setTick(0)
+      return
+    }
+    const interval = setInterval(() => { setTick(value => value + 1) }, 100)
+    return () => { clearInterval(interval) }
+  }, [snapshot.busy, snapshot.compaction])
+  const liveWrapRef = useRef<LiveWrapState | null>(null)
+  const liveText = snapshot.live?.text ?? ''
+  if (!snapshot.busy || liveText === '') liveWrapRef.current = null
+  else {
+    liveWrapRef.current = wrapLiveAssistantText(liveWrapRef.current, liveText, props.contentWidth)
+  }
+  const liveThinkLines: TranscriptLine[] = (() => {
+    if (snapshot.live === null || !snapshot.busy || snapshot.live.think === '') return []
+    const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    const elapsed = snapshot.live.thinkSince === null ? 0 : Date.now() - snapshot.live.thinkSince
+    const label = `${spinner[tick % spinner.length]} Thinking ${(elapsed / 1000).toFixed(1)}s…`
+    const lines: TranscriptLine[] = [{ key: 'live-think', text: label, color: 'magenta' }]
+    const tail = snapshot.live.think.split('\n').at(-1) ?? ''
+    if (tail !== '') {
+      const tailSpace = Math.max(8, props.contentWidth - 3)
+      const content = stringWidth(tail) <= tailSpace ? tail : `…${tail.slice(-(tailSpace - 1))}`
+      lines.push({ key: 'live-think-tail', text: `  │ ${content}`, dim: true })
+    }
+    return lines
+  })()
+  const liveTextLines: TranscriptLine[] = liveWrapRef.current === null
+    ? []
+    : liveWrapRef.current.lines.map((text, index) => ({
+      key: `live-text-${index}`,
+      text,
+      color: 'white',
+    }))
+  const lines: TranscriptLine[] = [...props.settledLines, ...liveThinkLines, ...liveTextLines]
+  if (snapshot.compaction) {
+    const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+    lines.push({
+      key: 'live-compact',
+      text: `${spinner[tick % spinner.length]} compacting…`,
+      color: 'yellow',
+    })
+  }
+  lines.push(...props.dockLines)
+  props.linesRef.current = lines
+  return (
+    <Transcript
+      lines={lines}
+      height={props.height}
+      width={props.width}
+      offset={props.offset}
+      onMaximumOffsetChange={props.onMaximumOffsetChange}
+      theme={props.theme}
+      locale={props.locale}
+      backButton={props.backButton}
+    />
+  )
+})
 
 /** One /settings panel page id. */
 type PanelKind = 'settings' | 'jobs' | 'subagents' | 'workflows' | 'sessions' | 'plugin-config'
@@ -1351,6 +1511,7 @@ export function App(props: {
   store: TuiStore
   host: TuiHost
 }): React.ReactElement {
+  countUiRender()
   const { stdout } = useStdout()
   const { exit } = useApp()
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
@@ -1373,12 +1534,19 @@ export function App(props: {
   // content cells, one right-margin cell, then the gutter column.
   const transcriptContentWidth = Math.max(1, width - 3)
 
-  const [tick, setTick] = useState(0)
   const [draft, setDraft] = useState('')
   const [paletteDismissedInput, setPaletteDismissedInput] = useState<string | null>(null)
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0)
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
+  const transcriptScrollOffsetRef = useRef(0)
   const transcriptMaximumOffset = useRef(0)
+  const applyTranscriptScroll = useCallback((next: number | ((current: number) => number)): void => {
+    const current = transcriptScrollOffsetRef.current
+    const value = typeof next === 'function' ? next(current) : next
+    const clamped = Math.max(0, Math.floor(value))
+    transcriptScrollOffsetRef.current = clamped
+    setTranscriptScrollOffset(clamped)
+  }, [])
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
   const [viewMode, setViewMode] = useState<'chat' | 'trajectory'>('chat')
   const [notice, setNotice] = useState('')
@@ -1394,6 +1562,7 @@ export function App(props: {
   const [settingsConfirm, setSettingsConfirm] = useState<string | null>(null)
   const [pluginEdit, setPluginEdit] = useState<{ ns: string; field: string; kind: 'string' | 'number' | 'secret' } | null>(null)
   const [pluginEditText, setPluginEditText] = useState('')
+  const [settingsFilter, setSettingsFilter] = useState('')
   const lastCtrlCAt = useRef(0)
   // Whether a left-button press on the right-edge scrollbar column is being
   // dragged; button-motion reports keep scrolling until the release.
@@ -1436,15 +1605,6 @@ export function App(props: {
     const restore = installTerminalTitle(stdout, restoredTitleRef)
     return restore
   }, [stdout])
-  // The thinking timer, gradient tick, and retry countdown shimmer while a
-  // turn streams, a compaction runs, or a retry wait is pending.
-  const hasPendingRetry = snapshot.nodes.some(node => node.kind === 'retry' && !node.started && node.retryAt > Date.now())
-  useEffect(() => {
-    if (!snapshot.busy && !hasPendingRetry && !snapshot.compaction) return
-    const interval = setInterval(() => { setTick(value => value + 1) }, 100)
-    return () => { clearInterval(interval) }
-  }, [snapshot.busy, hasPendingRetry, snapshot.compaction])
-
   // The /jobs panel polls its rows once a second while open.
   useEffect(() => {
     if (panel?.kind !== 'jobs') return
@@ -1526,12 +1686,6 @@ export function App(props: {
   const thinkDefaultOpen = snapshot.settings?.general.thinking === 'expanded'
   const expandedOf = (node: TuiNode): boolean => node.kind === 'think' ? thinkDefaultOpen : expanded.has(node.id)
   const nodeLineCache = useRef<NodeLineCache>(new WeakMap())
-  // The 100ms tick drives the spinner frame, the live Thinking shimmer, and
-  // the retry shimmer (500ms per flip). Settled node projections stay out of
-  // the tick: recomputing up to 3000 nodes ten times a second during a busy
-  // turn is bounded; the cap only guards pathological sessions and must not
-  // drop the first user message out of the scrollable history.
-  const retryShimmer = hasPendingRetry && Math.floor(tick / 5) % 2 === 0
 
   // ── layout budget ─────────────────────────────────────────────────────
   // A panel action's notice pins one dim row under the panel list, so the
@@ -1566,6 +1720,8 @@ export function App(props: {
   const fixedRows = reserved + takeoverH + paletteH
   const transcriptHeight = Math.max(1, rowCount - fixedRows)
   const panelHeight = Math.max(1, transcriptHeight - 1 - (panelNoticeVisible ? 1 : 0))
+  const settingsChromeRows = panel?.kind === 'settings' ? SETTINGS_CHROME_ROWS : 0
+  const panelListHeight = Math.max(1, panelHeight - settingsChromeRows)
 
   const visibleNodes = useMemo(
     () => snapshot.nodes.slice(Math.max(0, snapshot.nodes.length - 3000)),
@@ -1588,21 +1744,31 @@ export function App(props: {
     }), [snapshot.trace, transcriptContentWidth])
   const historyLines = useMemo((): TranscriptLine[] => {
     const lines: TranscriptLine[] = []
+    let previousKind: TuiNode['kind'] | undefined
     for (const node of visibleNodes) {
-      lines.push(...cachedNodeLines(
+      const body = cachedNodeLines(
         nodeLineCache.current,
         node,
         transcriptContentWidth,
         expandedOf(node),
-        retryShimmer,
         snapshot.feedback,
         locale,
-      ))
+      )
+      if (node.kind === 'user') {
+        if (previousKind !== 'user') {
+          lines.push({ key: `${node.id}-vpad-top`, text: ' ' })
+        }
+        lines.push(...body)
+        lines.push({ key: `${node.id}-vpad-bot`, text: ' ' })
+      } else {
+        lines.push(...body)
+      }
+      previousKind = node.kind
     }
     return lines
   }, [
     visibleNodes, transcriptContentWidth,
-    expanded, thinkDefaultOpen, retryShimmer, snapshot.feedback, locale,
+    expanded, thinkDefaultOpen, snapshot.feedback, locale,
   ])
   const welcomeLines = useMemo((): TranscriptLine[] => {
     if (visibleNodes.length > 0) return []
@@ -1627,73 +1793,13 @@ export function App(props: {
   const settledLines = viewMode === 'trajectory'
     ? trajectoryLines
     : visibleNodes.length === 0 ? welcomeLines : historyLines
-  const liveThinkLines = useMemo((): TranscriptLine[] => {
-    if (snapshot.live === null || !snapshot.busy || snapshot.live.think === '') return []
-    // Claude Code style: the original spinning glyph stays up front, and the
-    // " Thinking" letters carry a soft grayscale highlight window sweeping
-    // left to right. The base gray is medium-bright (readable, clearly
-    // dimmer than assistant output). Ink diffs the frame, so only this row
-    // rewrites in place each tick.
-    const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-    const label = `${spinner[tick % spinner.length]} Thinking`
-    const elapsed = snapshot.live.thinkSince === null ? 0 : Date.now() - snapshot.live.thinkSince
-    const runs = [
-      ...[...label].map((character, index) => ({
-        text: character,
-        color: thinkingShimmerHex(thinkingShimmerLevel(index, tick, label.length)),
-      })),
-      { text: ` ${(elapsed / 1000).toFixed(1)}s…`, color: '#969696' },
-    ]
-    // Stable keys: this row re-renders every tick; a position-derived key
-    // would churn as the transcript grows and can leave stale rows.
-    const lines: TranscriptLine[] = [{ key: 'live-think', text: '', runs }]
-    const tail = snapshot.live.think.split('\n').at(-1) ?? ''
-    if (tail !== '') {
-      // Bound the preview to one row: a longer tail would wrap onto the next
-      // line without its `│` prefix and overwrite the row below.
-      const tailSpace = Math.max(8, transcriptContentWidth - 3)
-      const content = stringWidth(tail) <= tailSpace ? tail : `…${tail.slice(-(tailSpace - 1))}`
-      lines.push({
-        key: 'live-think-tail',
-        text: `  │ ${content}`,
-        dim: true,
-      })
-    }
-    return lines
-  }, [snapshot.live, snapshot.busy, width, tick])
-  const liveTextLines = useMemo((): TranscriptLine[] => {
-    if (snapshot.live === null || !snapshot.busy || snapshot.live.text === '') return []
-    return wrapText(`● ${snapshot.live.text}▌`, transcriptContentWidth).map((text, index) => ({
-      key: `live-text-${index}`, text,
-    }))
-  }, [snapshot.live?.text, snapshot.busy, width])
-  const compactionTick = snapshot.compaction ? tick : 0
-  const allLines = useMemo((): TranscriptLine[] => {
-    const lines: TranscriptLine[] = [...settledLines, ...liveThinkLines, ...liveTextLines]
-    // A compaction run draws the same shimmer style as Thinking: the
-    // spinning glyph plus a grayscale highlight sweeping the label.
-    if (snapshot.compaction) {
-      const spinner = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
-      const label = `${spinner[compactionTick % spinner.length]} compacting…`
-      lines.push({
-        key: 'live-compact',
-        text: '',
-        runs: [...label].map((character, index) => ({
-          text: character,
-          color: thinkingShimmerHex(thinkingShimmerLevel(index, compactionTick, label.length)),
-        })),
-      })
-    }
+  const dockLines = useMemo((): TranscriptLine[] => {
+    const lines: TranscriptLine[] = []
     if (notice !== '') {
       wrapText(notice, transcriptContentWidth).forEach((line, index) => {
         lines.push({ key: `notice-${index}`, text: line, color: 'gray' })
       })
     }
-    // dsh docks render at the transcript tail so follow mode keeps them
-    // visible right above the composer. Each dock is ONE transcript row and
-    // must never exceed the content width: an overlong row would wrap onto
-    // the next line and shift every row below it (breaking the frame and the
-    // right-edge scrollbar alignment), so docks truncate with an ellipsis.
     if (snapshot.queued.length > 0) {
       const preview = snapshot.queued.map(entry => `${entry.steer ? '▸▸ ' : ''}${sanitizeTerminalText(entry.text)}`).join(' · ')
       lines.push({ key: 'queue-dock', text: fitDisplayText(`${copy.queueDock} ${snapshot.queued.length}：${preview}`, transcriptContentWidth), color: 'yellow' })
@@ -1704,7 +1810,6 @@ export function App(props: {
       const done = snapshot.todos.filter(todo => todo.status === 'completed').length
       lines.push({ key: 'todo-dock', text: fitDisplayText(`${copy.todoDock} ${copy.todoCounts(active, pending, done)}`, transcriptContentWidth), color: 'yellow' })
     }
-    // The goal dock mirrors the Web goal panel in one transcript-tail row.
     if (snapshot.goal !== null) {
       const phaseLabel = snapshot.goal.phase === 'active' ? copy.goalActive
         : snapshot.goal.phase === 'paused' ? copy.goalPaused
@@ -1717,29 +1822,28 @@ export function App(props: {
         color: 'yellow',
       })
     }
-    // Pending image attachments ride the next user message (Web composer chips).
     if (snapshot.attachmentCount > 0) {
       lines.push({ key: 'attach-dock', text: fitDisplayText(copy.attachCount(snapshot.attachmentCount), transcriptContentWidth), color: 'yellow' })
     }
     return lines
   }, [
-    settledLines, liveThinkLines, liveTextLines, snapshot.compaction, compactionTick, notice, transcriptContentWidth,
-    snapshot.queued, snapshot.todos, snapshot.goal, snapshot.attachmentCount, copy,
+    notice, transcriptContentWidth, snapshot.queued, snapshot.todos, snapshot.goal, snapshot.attachmentCount, copy,
   ])
 
   // The view stays on the same CONTENT while new lines stream in at the
   // tail: compensate only for real line growth, never for chrome changes
   // (the back-button reservation also moves the maximum).
   const transcriptLineCountRef = useRef(0)
+  const transcriptLinesRef = useRef<readonly TranscriptLine[]>([])
   const updateTranscriptMaximumOffset = useCallback((maximumOffset: number, lineCount: number) => {
     transcriptMaximumOffset.current = maximumOffset
     const grew = Math.max(0, lineCount - transcriptLineCountRef.current)
     transcriptLineCountRef.current = lineCount
-    setTranscriptScrollOffset((current) => {
+    applyTranscriptScroll((current) => {
       if (current === 0) return 0
       return Math.min(maximumOffset, Math.max(0, current + grew))
     })
-  }, [])
+  }, [applyTranscriptScroll])
 
   const pageSize = Math.max(1, rowCount - 12)
 
@@ -1747,20 +1851,20 @@ export function App(props: {
   const settingsRows = useMemo((): PanelRow[] => {
     if (panel === null) return []
     switch (panel.kind) {
-      case 'settings': return buildSettingsRows(snapshot, panel.settingsPage, locale)
+      case 'settings': return filterSettingsRows(buildSettingsRows(snapshot, panel.settingsPage, locale), settingsFilter)
       case 'jobs': return buildJobsRows(snapshot.jobs, locale)
       case 'subagents': return buildSubagentRows(snapshot.subagents, locale)
       case 'workflows': return buildWorkflowRows(snapshot.workflows, locale)
       case 'sessions': return buildSessionRows(snapshot.sessions, panel.filter, locale)
       case 'plugin-config': return buildPluginConfigRows(snapshot.settings?.configs[panel.filter ?? ''] ?? [], panel.filter ?? '', locale)
     }
-  }, [snapshot, panel, locale])
+  }, [snapshot, panel, locale, settingsFilter])
   const settingsViewport = selectPanelViewport(settingsRows.map(row => ({
     key: row.key,
     text: row.text,
     ...(row.color !== undefined ? { color: row.color } : {}),
     dim: row.dim === true,
-  })), panelHeight, settingsTop)
+  })), panelListHeight, settingsTop)
   const settingsSelClamped = Math.max(0, Math.min(settingsSel, settingsRows.length - 1))
 
   // Panels open on a row that can be activated. Static headers and hints are
@@ -1770,8 +1874,8 @@ export function App(props: {
     const first = firstActionablePanelRow(settingsRows)
     if (first === undefined) return
     setSettingsSel(first)
-    setSettingsTop(current => first >= current + panelHeight ? first - panelHeight + 1 : Math.min(current, first))
-  }, [panelOpen, panelHeight, settingsRows, settingsSelClamped])
+    setSettingsTop(current => first >= current + panelListHeight ? first - panelListHeight + 1 : Math.min(current, first))
+  }, [panelOpen, panelListHeight, settingsRows, settingsSelClamped])
 
   // ── command routing ───────────────────────────────────────────────────
   const openPanel = useCallback((kind: PanelKind, settingsPageArg: SettingsPageId = 'general', filter?: string): void => {
@@ -1787,6 +1891,7 @@ export function App(props: {
     setSettingsConfirm(null)
     setPluginEdit(null)
     setPluginEditText('')
+    setSettingsFilter('')
     setDraft('')
     setPaletteDismissedInput(null)
     setNotice('')
@@ -1824,7 +1929,7 @@ export function App(props: {
     }
     if (text === '/trajectory') {
       setViewMode(viewMode === 'chat' ? 'trajectory' : 'chat')
-      setTranscriptScrollOffset(0)
+      applyTranscriptScroll(0)
       return
     }
     if (text === '/settings' || text.startsWith('/settings ')) {
@@ -1876,7 +1981,7 @@ export function App(props: {
     }
     if (text === '/new') {
       props.host.newSession()
-      setTranscriptScrollOffset(0)
+      applyTranscriptScroll(0)
       return
     }
     if (text === '/rename' || text.startsWith('/rename ')) {
@@ -1948,7 +2053,7 @@ export function App(props: {
       return
     }
     setDraft('')
-    setTranscriptScrollOffset(0)
+    applyTranscriptScroll(0)
     const busyEnter = snapshot.settings?.general.busyEnter ?? 'queue'
     const effectiveSteer = snapshot.busy
       ? (steer ? busyEnter !== 'steer' : busyEnter === 'steer')
@@ -2078,13 +2183,6 @@ export function App(props: {
         }).catch(() => {})
         return
       }
-      case 'toggle-theme': {
-        const next = snapshot.settings?.general.theme === 'light' ? 'dark' : 'light'
-        void props.host.updateSetting({ theme: next }).then(() => {
-          setNotice(copy.themeChanged(next))
-        }).catch(() => {})
-        return
-      }
       case 'toggle-locale': {
         const next = snapshot.settings?.general.locale === 'en' ? 'zh' : 'en'
         void props.host.updateSetting({ locale: next }).then(() => {
@@ -2130,7 +2228,7 @@ export function App(props: {
             setNotice(copy.resumeDone(row.meta?.id ?? ''))
             setPanel(null)
             // The resumed transcript starts at the newest history tail.
-            setTranscriptScrollOffset(0)
+            applyTranscriptScroll(0)
           }
         })
         return
@@ -2173,10 +2271,10 @@ export function App(props: {
   const ensurePanelSelectionVisible = useCallback((selected: number): void => {
     setSettingsTop((current) => {
       if (selected < current) return selected
-      if (selected >= current + panelHeight) return selected - panelHeight + 1
+      if (selected >= current + panelListHeight) return selected - panelListHeight + 1
       return current
     })
-  }, [panelHeight])
+  }, [panelListHeight])
 
   const handlePanelKey = useCallback((input: string, key: Key): boolean => {
     // Escape is intercepted upstream and routed through the debounced
@@ -2195,7 +2293,7 @@ export function App(props: {
     if (settingsEdit !== null) {
       return true
     }
-    if (input === 'q' || input === 'Q') {
+    if ((input === 'q' || input === 'Q') && (panel?.kind !== 'settings' || settingsFilter === '')) {
       // From a plugin-config editor, `q` returns to the plugins list.
       if (panel?.kind === 'plugin-config') {
         openPanel('settings', 'plugins')
@@ -2205,14 +2303,12 @@ export function App(props: {
       setNotice('')
       return true
     }
-    if (key.tab && panel?.kind === 'settings') {
-      const index = SETTINGS_PAGES.indexOf(settingsPage)
-      setPanel(previous => previous === null ? previous : {
-        ...previous,
-        settingsPage: SETTINGS_PAGES[(index + 1) % SETTINGS_PAGES.length] ?? 'general',
-      })
+    if (panel?.kind === 'settings' && (key.tab || key.rightArrow || key.leftArrow)) {
+      const nextPage = cycleSettingsPage(settingsPage, key.leftArrow ? -1 : 1)
+      setPanel(previous => previous === null ? previous : { ...previous, settingsPage: nextPage })
       setSettingsSel(0)
       setSettingsTop(0)
+      setSettingsFilter('')
       return true
     }
     if (key.upArrow) {
@@ -2240,10 +2336,21 @@ export function App(props: {
       activateSettingsRow(settingsRows[settingsSelClamped])
       return true
     }
+    if (panel?.kind === 'settings') {
+      if (key.backspace) {
+        setSettingsFilter(current => current.slice(0, -1))
+        return true
+      }
+      if (input.length === 1 && input >= ' ' && !input.startsWith('\x1b')) {
+        setSettingsFilter(current => current + input)
+        return true
+      }
+    }
     return false
   }, [
     pluginEdit, commitPluginEdit, settingsConfirm, settingsEdit, commitCredentialEdit, panel, settingsPage, settingsRows, settingsSel,
     settingsSelClamped, settingsViewport.maximumOffset, pageSize, activateSettingsRow, ensurePanelSelectionVisible, openPanel,
+    settingsFilter,
   ])
 
   // ── input routing ─────────────────────────────────────────────────────
@@ -2270,6 +2377,10 @@ export function App(props: {
       // Esc from a plugin-config editor returns to the plugins list.
       if (panel?.kind === 'plugin-config') {
         openPanel('settings', 'plugins')
+        return
+      }
+      if (panel?.kind === 'settings' && settingsFilter !== '') {
+        setSettingsFilter('')
         return
       }
       setPanel(null)
@@ -2359,7 +2470,7 @@ export function App(props: {
         const delta = wheel === 'up' ? -3 : 3
         setSettingsTop(current => Math.max(0, Math.min(settingsViewport.maximumOffset, current + delta)))
       } else {
-        setTranscriptScrollOffset(current =>
+        applyTranscriptScroll(current =>
           scrollOffsetForWheel(current, transcriptMaximumOffset.current, wheel))
       }
       return
@@ -2377,33 +2488,64 @@ export function App(props: {
           const backButtonVisible = transcriptScrollOffset > 0
           const contentHeight = transcriptHeight - (backButtonVisible ? 1 : 0)
           const maximum = transcriptMaximumOffset.current
-          const geometry = selectScrollbar(allLines.length, transcriptHeight, transcriptScrollOffset, backButtonVisible ? 1 : 0)
+          const reserved = backButtonVisible ? 1 : 0
+          const geometry = selectScrollbar(
+            transcriptLinesRef.current.length, transcriptHeight, transcriptScrollOffset, reserved,
+          )
           if (geometry.visible && click.row >= 5 && click.row <= 4 + contentHeight) {
-            setTranscriptScrollOffset(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
+            applyTranscriptScroll(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
+          }
+        }
+        return
+      }
+      if (click.action === 'press' && panelOpen && click.button === 0 && panel?.kind === 'settings') {
+        const region = settingsChromeHit(click.row, 4)
+        if (region === 'tab') {
+          const hit = hitSettingsTab(click.column, locale)
+          if (hit !== undefined) {
+            setPanel(previous => previous === null ? previous : { ...previous, settingsPage: hit })
+            setSettingsSel(0)
+            setSettingsTop(0)
+            setSettingsFilter('')
+          }
+          return
+        }
+        if (region === 'search' || region === 'hint') return
+        if (region === 'list') {
+          const index = settingsListIndex(click.row, settingsTop, 4)
+          if (index >= 0 && index < settingsTop + panelListHeight) {
+            const row = settingsRows[index]
+            if (row !== undefined) {
+              setSettingsSel(index)
+              if (row.action !== undefined) activateSettingsRow(row)
+            }
           }
         }
         return
       }
       if (click.action === 'press' && !panelOpen) {
         if (transcriptScrollOffset > 0 && click.row === 4 + transcriptHeight) {
-          setTranscriptScrollOffset(0)
+          applyTranscriptScroll(0)
           return
         }
         if (click.button === 0 && click.column >= width) {
           const backButtonVisible = transcriptScrollOffset > 0
           const contentHeight = transcriptHeight - (backButtonVisible ? 1 : 0)
           const maximum = transcriptMaximumOffset.current
-          const geometry = selectScrollbar(allLines.length, transcriptHeight, transcriptScrollOffset, backButtonVisible ? 1 : 0)
+          const reserved = backButtonVisible ? 1 : 0
+          const geometry = selectScrollbar(
+            transcriptLinesRef.current.length, transcriptHeight, transcriptScrollOffset, reserved,
+          )
           if (geometry.visible && click.row >= 5 && click.row <= 4 + contentHeight) {
             scrollbarDragRef.current = true
-            setTranscriptScrollOffset(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
+            applyTranscriptScroll(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
           }
           return
         }
         if (click.button === 0) {
           const backButtonVisible = transcriptScrollOffset > 0
           const line = transcriptLineAtRow(
-            allLines,
+            transcriptLinesRef.current,
             transcriptHeight,
             transcriptScrollOffset,
             backButtonVisible ? 1 : 0,
@@ -2438,14 +2580,14 @@ export function App(props: {
       return
     }
     if (key.pageUp || (key.ctrl && key.home)) {
-      setTranscriptScrollOffset((current) => {
+      applyTranscriptScroll((current) => {
         const maximum = transcriptMaximumOffset.current
         return key.home ? maximum : Math.min(maximum, current + pageSize)
       })
       return
     }
     if (key.pageDown || (key.end && (key.ctrl || transcriptScrollOffset > 0))) {
-      setTranscriptScrollOffset((current) => {
+      applyTranscriptScroll((current) => {
         const clamped = Math.min(current, transcriptMaximumOffset.current)
         return key.end ? 0 : Math.max(0, clamped - pageSize)
       })
@@ -2557,23 +2699,38 @@ export function App(props: {
     <Box flexDirection="column" width={width} height={rowCount} overflow="hidden">
       <Header snapshot={snapshot} width={width} theme={theme} />
       {panelOpen ? (
-        <PanelView
-          rows={settingsRows}
-          height={panelHeight}
-          offset={settingsTop}
-          selectedIndex={settingsSelClamped}
-          theme={theme}
-        />
+        <Box flexDirection="column" height={Math.max(1, panelHeight)} overflow="hidden">
+          {panel?.kind === 'settings' ? (
+            <SettingsChrome
+              page={settingsPage}
+              locale={locale}
+              theme={theme}
+              width={width}
+              query={settingsFilter}
+            />
+          ) : null}
+          <PanelView
+            rows={settingsRows}
+            height={panelListHeight}
+            offset={settingsTop}
+            selectedIndex={settingsSelClamped}
+            theme={theme}
+          />
+        </Box>
       ) : (
-        <Transcript
-          lines={allLines}
+        <ChatTranscript
+          settledLines={settledLines}
+          dockLines={dockLines}
+          snapshot={snapshot}
           height={transcriptHeight}
           width={width}
+          contentWidth={transcriptContentWidth}
           offset={transcriptScrollOffset}
           onMaximumOffsetChange={updateTranscriptMaximumOffset}
           theme={theme}
           locale={locale}
           backButton={transcriptScrollOffset > 0}
+          linesRef={transcriptLinesRef}
         />
       )}
       {panelNoticeVisible ? (
@@ -2586,6 +2743,7 @@ export function App(props: {
           width={width - 2}
           height={Math.max(1, paletteH)}
           locale={locale}
+          theme={theme}
           {...palette.some(item => item.command?.startsWith('/effort ') ?? false)
             ? {
               title: locale === 'zh'
@@ -2608,6 +2766,7 @@ export function App(props: {
           width={width}
           height={takeoverH}
           locale={locale}
+          theme={theme}
         />
       ) : null}
       <PermissionBar snapshot={snapshot} width={width} locale={locale} theme={theme} />

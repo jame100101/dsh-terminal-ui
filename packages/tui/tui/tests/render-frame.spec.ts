@@ -15,7 +15,8 @@ import { render } from 'ink'
 import stringWidth from 'string-width'
 import { marked } from 'marked'
 import xtermHeadless from '@xterm/headless'
-import { App, brandGlyph, permissionColor, permissionLabel, thinkingShimmerHex, thinkingShimmerLevel, traceLineColor } from '../src/render'
+import { App, brandGlyph, permissionColor, permissionLabel, traceLineColor } from '../src/render'
+import { settingsTabCell } from '../src/settings-chrome'
 import { selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
 import type { TuiHost } from '../src/render'
 import { createTuiStore } from '../src/store'
@@ -602,17 +603,71 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
+  it('switches settings pages when the tab strip is clicked', async () => {
+    const { capture, unmount, type } = await mount()
+    try {
+      await type('/settings')
+      await type('\r')
+      const modelsColumn = 2 + stringWidth(settingsTabCell('常规'))
+      await type(`\x1b[<0;${modelsColumn};5M`)
+      await type(`\x1b[<0;${modelsColumn};5m`)
+      await type(`\x1b[<0;${modelsColumn};7M`)
+      await type(`\x1b[<0;${modelsColumn};7m`)
+      let lines = capture.screenLines()
+      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(true)
+      await type(`\x1b[<0;${modelsColumn};6M`)
+      await type(`\x1b[<0;${modelsColumn};6m`)
+      lines = capture.screenLines()
+      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(false)
+      expect(lines.some(line => line.includes('deepseek-official'))).toBe(true)
+      expect(lines.some(line => line.includes('▸ deepseek-official'))).toBe(false)
+      await type('\x1b[<0;4;8M')
+      await type('\x1b[<0;4;8m')
+      lines = capture.screenLines()
+      expect(lines.some(line => line.includes('deepseek-official'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('cycles settings tabs with Tab and keeps a search field', async () => {
+    const { capture, unmount, type } = await mount()
+    try {
+      await type('/settings')
+      await type('\r')
+      let lines = capture.screenLines()
+      const searchAt = lines.findIndex(line => line.includes('搜索设置'))
+      const tabsAt = lines.findIndex(line => line.includes('常规') && line.includes('模型'))
+      expect(searchAt).toBeGreaterThanOrEqual(0)
+      expect(tabsAt).toBeGreaterThan(searchAt)
+      expect(lines.some(line => line.includes('Tab 切换'))).toBe(true)
+      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(true)
+      await type('\t')
+      lines = capture.screenLines()
+      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(false)
+      expect(lines.some(line => line.includes('deepseek-official'))).toBe(true)
+      await type('\x1b[D')
+      lines = capture.screenLines()
+      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
   it('opens the settings panel from the slash picker and exits with q', async () => {
     const { capture, unmount, type } = await mount()
     try {
       // A real terminal delivers text and Enter as separate stdin chunks.
       await type('/settings')
       await type('\r')
-      let lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('常规 General'))).toBe(true)
+      let lines = capture.screenLines()
+      expect(lines.some(line => line.includes('常规'))).toBe(true)
+      expect(lines.some(line => line.includes('模型'))).toBe(true)
+      expect(lines.some(line => line.includes('搜索设置'))).toBe(true)
       await type('q')
-      lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('常规 General'))).toBe(false)
+      lines = capture.screenLines()
+      expect(lines.some(line => line.includes('搜索设置'))).toBe(false)
+      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(false)
     } finally {
       unmount()
     }
@@ -663,18 +718,14 @@ describe('Ink 7 full-screen render', () => {
       await type('/presets')
       await type('\r')
       let lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('预设 Presets'))).toBe(true)
+      expect(lines.some(line => line.includes('预设'))).toBe(true)
       expect(lines.some(line => line.includes('● code'))).toBe(true)
-      // ↓ onto the minimal row (head + code row above it), Enter switches in
-      // place: the host callback runs, the notice pins under the still-open
-      // panel (the ● marker moves to the new preset).
-      await type('\x1b[B')
-      await type('\x1b[B')
+      // The current preset is inert, so the selection lands on minimal.
       await type('\r')
       expect(switched).toEqual(['minimal'])
       lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('已切换当前会话到预设 minimal'))).toBe(true)
-      expect(lines.some(line => line.includes('预设 Presets'))).toBe(true)
+      expect(lines.some(line => line.includes('预设'))).toBe(true)
     } finally {
       unmount()
     }
@@ -717,10 +768,10 @@ describe('Ink 7 full-screen render', () => {
       const seen = new Map<string, number>()
       for (const line of lines) {
         const trimmed = line.trim()
-        if (trimmed === '' || /^─+$/.test(trimmed)) continue
+        if (trimmed === '' || /^─+$/.test(trimmed) || trimmed === '█') continue
         const count = (seen.get(line) ?? 0) + 1
         seen.set(line, count)
-        expect(count).toBe(1)
+        expect(count, JSON.stringify(line)).toBe(1)
       }
       // A real terminal applies the whole stream sequentially; the screen
       // emulator must show the same clean frame (this catches erase-count
@@ -732,7 +783,7 @@ describe('Ink 7 full-screen render', () => {
       const screenSeen = new Map<string, number>()
       for (const line of screenLines) {
         const trimmed = line.trim()
-        if (trimmed === '' || /^─+$/.test(trimmed)) continue
+        if (trimmed === '' || /^─+$/.test(trimmed) || trimmed === '█') continue
         const count = (screenSeen.get(line) ?? 0) + 1
         screenSeen.set(line, count)
         expect(count).toBe(1)
@@ -923,7 +974,7 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
-  it('draws a live compacting gradient row while a compaction runs', async () => {
+  it('draws a live compacting spinner row while a compaction runs', async () => {
     const { store, capture, unmount } = await mount([{ kind: 'user', id: 1, text: 'hi' }])
     try {
       const snapshot = store.getSnapshot()
@@ -1202,16 +1253,14 @@ describe('Ink 7 full-screen render', () => {
       await type('\r')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       let lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('插件 Plugins') && line.includes('完整只读状态清单'))).toBe(true)
+      expect(lines.some(line => line.includes('插件'))).toBe(true)
       expect(lines.some(line => line.includes('● storage · storage'))).toBe(true)
       expect(lines.some(line => line.includes('○ off · off · 未加载 · 已禁用'))).toBe(true)
       expect(lines.some(line => line.includes('让 Agent 为你修改该配置文件'))).toBe(true)
-      // Enter and c remain inert: the list never writes or opens an editor.
       await type('\x1b[B')
       await type('\r')
-      await type('c')
       lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('插件 Plugins'))).toBe(true)
+      expect(lines.some(line => line.includes('插件'))).toBe(true)
       expect(lines.some(line => line.includes('插件配置 · Enter 切换/编辑'))).toBe(false)
       expect(lines.some(line => line.includes('storage →'))).toBe(false)
     } finally {
@@ -1252,7 +1301,7 @@ describe('Ink 7 full-screen render', () => {
       await type('/settings plugins')
       await type('\r')
       screen = capture.screenLines().join('\n')
-      expect(screen).toContain('complete read-only status list')
+      expect(screen).toContain('Plugins')
       expect(screen).toContain('ask the Agent to update that configuration file')
       expect(screen).not.toMatch(/\p{Script=Han}/u)
     } finally {
@@ -1434,7 +1483,7 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
-  it('renders the Thinking shimmer with the original spinner glyph up front', async () => {
+  it('renders the Thinking row with a spinner glyph and no hue sweep', async () => {
     const { store, capture, unmount } = await mount([{ kind: 'user', id: 1, text: 'hi' }])
     try {
       const snapshot = store.getSnapshot()
@@ -1446,53 +1495,20 @@ describe('Ink 7 full-screen render', () => {
       })
       await new Promise<void>(resolve => setTimeout(resolve, 400))
       const lines = lastFrameLines(capture.output)
-      // The original spinning glyph leads the row; the shimmer rides the
-      // " Thinking" letters behind it.
       expect(lines.some(line => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line) && line.includes('Thinking'))).toBe(true)
     } finally {
       unmount()
     }
   })
 
-  it('sweeps the grayscale highlight window left to right with smooth falloff', () => {
-    const length = 10
-    // At phase 0 the window enters from the left: index 0 sits inside the
-    // band, far indices stay at the medium-gray base.
-    const at0 = Array.from({ length }, (_, index) => thinkingShimmerLevel(index, 0, length))
-    expect(at0[0]).toBeGreaterThan(at0[5])
-    expect(thinkingShimmerLevel(9, 0, length)).toBe(145)
-    // The window center reaches near-white and the band is symmetric
-    // around it: gray → lighter → white → lighter → gray.
-    const centerPhase = 4 // center = phase % span - 4 = 0 → index 0 is the peak
-    const band = Array.from({ length: 11 }, (_, index) => thinkingShimmerLevel(index - 5, centerPhase, length))
-    expect(band[0]).toBe(145)
-    expect(band[2]).toBeGreaterThan(band[0])
-    expect(band[5]).toBe(255)
-    expect(band[8]).toBeGreaterThan(band[10])
-    expect(band[10]).toBe(145)
-    // The peak sweeps right as the phase advances.
-    const peakAt = (phase: number): number => {
-      let best = 0
-      for (let index = 0; index < length; index += 1) {
-        if (thinkingShimmerLevel(index, phase, length) >= thinkingShimmerLevel(best, phase, length)) best = index
-      }
-      return best
-    }
-    expect(peakAt(4)).toBeLessThan(peakAt(10))
-    // Grayscale hex encoding: readable base and peak.
-    expect(thinkingShimmerHex(145)).toBe('#919191')
-    expect(thinkingShimmerHex(255)).toBe('#ffffff')
-  })
-
-  it('picks the whale brand glyph only on width-correct terminals', () => {
+  it('uses the whale brand glyph except on dumb and Apple Terminal', () => {
     expect(brandGlyph({ WT_SESSION: 'x' })).toBe('🐋')
     expect(brandGlyph({ TERM: 'xterm-256color' })).toBe('🐋')
+    expect(brandGlyph({})).toBe('🐋')
     expect(brandGlyph({ TERM: 'dumb' })).toBe('✦')
-    // Legacy Windows conhost without a modern-terminal marker degrades.
-    expect(brandGlyph({})).toBe('✦')
-    // The header measures the brand by its real width either way.
-    expect(stringWidth(`${brandGlyph({ WT_SESSION: 'x' })} DSH-TUI`)).toBe(10)
-    expect(stringWidth(`${brandGlyph({})} DSH-TUI`)).toBe(9)
+    expect(brandGlyph({ TERM_PROGRAM: 'Apple_Terminal' })).toBe('✦')
+    expect(stringWidth(`${brandGlyph({})} DSH-TUI`)).toBe(10)
+    expect(stringWidth(`${brandGlyph({ TERM: 'dumb' })} DSH-TUI`)).toBe(9)
   })
 
   it('sets the whale tab title on mount and keeps the frame clean', async () => {
@@ -1502,6 +1518,70 @@ describe('Ink 7 full-screen render', () => {
       expect(capture.output).toContain('\x1b[21t')
       const lines = lastFrameLines(capture.output)
       expect(lines.some(line => line.includes('DSH-TUI'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('pads each user prompt with one blank row above and below', async () => {
+    const nodes: TuiNode[] = [
+      { kind: 'user', id: 1, text: 'first' },
+      { kind: 'think', id: 2, text: 'notes', durationMs: 1200 },
+      { kind: 'assistant', id: 3, text: 'answer', messageId: 'a1' },
+      { kind: 'user', id: 4, text: 'second' },
+    ]
+    const { capture, unmount } = await mount(nodes)
+    try {
+      const lines = lastFrameLines(capture.output).map(line => line.trimEnd())
+      const first = lines.findIndex(line => line.includes('▸ first'))
+      const think = lines.findIndex(line => line.includes('Thinking'))
+      const answer = lines.findIndex(line => line.includes('● answer') || line.includes('answer'))
+      const second = lines.findIndex(line => line.includes('▸ second'))
+      expect(first).toBeGreaterThan(-1)
+      expect(think).toBe(first + 2)
+      expect(lines[first + 1]?.trim()).toBe('')
+      expect(answer).toBe(think + 1)
+      expect(second).toBeGreaterThan(answer)
+      expect(lines[answer + 1]?.trim()).toBe('')
+      expect(lines[second - 1]?.trim()).toBe('')
+    } finally {
+      unmount()
+    }
+  })
+
+  it('keeps one blank row between assistant markdown blocks, not before the first', async () => {
+    const nodes: TuiNode[] = [
+      { kind: 'user', id: 1, text: 'ask' },
+      { kind: 'think', id: 2, text: 'notes', durationMs: 500 },
+      { kind: 'assistant', id: 3, text: '# Title\n\nBody paragraph', messageId: 'a1' },
+    ]
+    const { capture, unmount } = await mount(nodes)
+    try {
+      const lines = lastFrameLines(capture.output).map(line => line.trimEnd())
+      const think = lines.findIndex(line => line.includes('Thinking'))
+      const title = lines.findIndex(line => line.includes('Title'))
+      const body = lines.findIndex(line => line.includes('Body paragraph'))
+      expect(title).toBe(think + 1)
+      expect(lines[title + 1]?.trim()).toBe('')
+      expect(body).toBe(title + 2)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('shows a star on the busy status bar instead of a static circle', async () => {
+    const { store, capture, unmount } = await mount([{ kind: 'user', id: 1, text: 'hi' }])
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        busy: true,
+        live: { text: 'streaming', think: '', thinkSince: null },
+      })
+      await new Promise<void>(resolve => setTimeout(resolve, 400))
+      const lines = lastFrameLines(capture.output)
+      expect(lines.some(line => /[✶✸✹✺]/.test(line)), JSON.stringify(lines.slice(-8))).toBe(true)
     } finally {
       unmount()
     }

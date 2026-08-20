@@ -21,6 +21,13 @@ describe('markdownLines inline runs', () => {
     expect(heading?.runs?.find(run => run.text === 'code')?.code).toBe(true)
   })
 
+  it('keeps one blank row between markdown blocks', () => {
+    const texts = markdownLines('# Title\n\nA paragraph\n\n- item').map(line => line.text)
+    expect(texts[texts.indexOf('Title') + 1]).toBe('')
+    expect(texts[texts.indexOf('A paragraph') + 1]).toBe('')
+    expect(markdownLines('\n\n# Only').map(line => line.text)[0]).toBe('Only')
+  })
+
   it('keeps structural lines plain (code fences, lists, blockquotes)', () => {
     const lines = markdownLines('```ts\nconst x = 1\n```\n\n- item\n\n> quote')
     expect(lines.find(line => line.text === '│ const x = 1')?.runs).toBeUndefined()

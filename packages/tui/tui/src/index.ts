@@ -74,6 +74,7 @@ import type { FoldState } from './types'
 import { renderAssistantResultPlain, renderNodePlain } from './plain'
 import { collectCredentialRefs, collectPluginFields, groupProviders, sessionTitlesById } from './settings-data'
 import { createTuiStore } from './store'
+import { createUiPublishScheduler, shouldCoalesceSessionEvent } from './ui-publish'
 import { buildTuiStartupProgram, parseTuiStartupIntent } from './startup-args'
 import type { StartupIntent } from './startup-args'
 import {
@@ -513,6 +514,7 @@ function subscribe(
       occupancy: readOccupancy(ctx, surface.agent.session),
     })
   }
+  const uiPublish = createUiPublishScheduler(publish)
   const off = ctx.on('internal/dispatch', (_mode, eventName, args) => {
     if (eventName === 'session/event') {
       // Only the surface's own session feeds the fold: a foreign agent's
@@ -524,7 +526,7 @@ function subscribe(
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
       enrichToolCards(ctx, event, surface.fold)
       anchorRetry(surface.fold, event)
-      publish()
+      uiPublish.request(!shouldCoalesceSessionEvent(event))
       return
     }
     if (eventName === 'agent/status') {
@@ -533,7 +535,7 @@ function subscribe(
       const payload = (args as unknown[])[0] as { agent?: unknown; status?: unknown } | undefined
       if (payload?.agent !== surface.agent) return
       surface.busy = payload.status === 'running'
-      publish()
+      uiPublish.request(true)
     }
   }, { global: true })
   // The occupancy projection can change on the same session event the fold
@@ -584,6 +586,8 @@ function subscribe(
   })
   publish()
   return () => {
+    uiPublish.flush()
+    uiPublish.dispose()
     off()
     offSettings()
     offCredentials()
