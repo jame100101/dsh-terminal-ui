@@ -37,6 +37,8 @@ export interface TranscriptLine {
   disclosureNodeId?: number
   /** Thinking arrows toggle the global display; other arrows toggle one node. */
   disclosureKind?: 'thinking' | 'node'
+  /** Fold node whose body this row copies on a click (user/assistant/think/tool). */
+  copyNodeId?: number
 }
 
 /** The visible slice plus its scroll bookkeeping. */
@@ -181,6 +183,46 @@ export function transcriptLineAtRow(
   const viewport = selectTranscriptViewport(lines, viewportHeight, requestedOffset, reserved)
   const padding = Math.max(0, contentHeight - viewport.lines.length)
   return viewport.lines[position - padding]
+}
+
+/**
+ * Map a mouse row/column onto one cell of the windowed transcript, honoring
+ * flex-end padding and the left content pad (terminal column 2).
+ * @param lines - windowed transcript lines.
+ * @param height - complete transcript height.
+ * @param requestedOffset - hidden lines counted from the bottom of `lines`.
+ * @param bottomReserved - rows pinned below the scrolling content.
+ * @param row - zero-based row inside the complete transcript box.
+ * @param terminalColumn - 1-based terminal column of the click.
+ * @returns the cell, or `undefined` for padding, reserved rows, or the gutter.
+ */
+export function transcriptCellAt(
+  lines: readonly TranscriptLine[],
+  height: number,
+  requestedOffset: number,
+  bottomReserved: number,
+  row: number,
+  terminalColumn: number,
+): { lineIndex: number; column: number; line: TranscriptLine } | undefined {
+  const viewportHeight = Math.max(1, Math.floor(height))
+  const reserved = Math.max(0, Math.min(Math.floor(bottomReserved), viewportHeight - 1))
+  const contentHeight = viewportHeight - reserved
+  const position = Math.floor(row)
+  if (position < 0 || position >= contentHeight) return undefined
+  const viewport = selectTranscriptViewport(lines, viewportHeight, requestedOffset, reserved)
+  const padding = Math.max(0, contentHeight - viewport.lines.length)
+  const visibleIndex = position - padding
+  const line = viewport.lines[visibleIndex]
+  if (line === undefined) return undefined
+  const capacity = Math.max(1, contentHeight)
+  const normalizedOffset = Number.isFinite(requestedOffset) ? Math.max(0, Math.floor(requestedOffset)) : 0
+  const maximumOffset = Math.max(0, lines.length - capacity)
+  const offset = Math.min(normalizedOffset, maximumOffset)
+  const end = Math.max(0, lines.length - offset)
+  const start = Math.max(0, end - capacity)
+  const lineIndex = start + visibleIndex
+  const column = Math.max(0, Math.min(stringWidth(line.text), Math.floor(terminalColumn) - 2))
+  return { lineIndex, column, line }
 }
 
 /** The visible text plus the caret column inside one single-line input. */

@@ -1615,29 +1615,32 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 30_000)
 
-  it('enters Copy Mode with Ctrl+Y, disables mouse tracking, and Esc restores it without clearing draft', async () => {
+  it('copies a user prompt on click and a dragged span on mouse-up', async () => {
     const { capture, unmount, type } = await mount([
-      { kind: 'user', id: 1, text: 'hi' },
+      { kind: 'user', id: 1, text: 'hi there' },
       { kind: 'assistant', id: 2, text: 'const value = 123', messageId: 'm2' },
     ])
     try {
       expect(capture.output).toContain('\x1b[?1000h')
-      await type('keep this draft')
-      await type('\x19')
+      const frame = lastFrameLines(capture.output)
+      const promptRow = frame.findIndex(line => line.includes('▸ hi there'))
+      expect(promptRow).toBeGreaterThanOrEqual(0)
+      const row = promptRow + 1
+      await type(`\x1b[<0;4;${row}M`)
+      await type(`\x1b[<0;4;${row}m`)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      expect(capture.output).toContain('\x1b[?1006l')
-      let lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('COPY MODE'))).toBe(true)
-      expect(lines.some(line => line.includes('keep this draft'))).toBe(true)
-      await type('\x1b')
-      await new Promise<void>(resolve => setTimeout(resolve, 400))
-      const after = capture.output
-      const disableAt = after.lastIndexOf('\x1b[?1006l')
-      const enableAt = after.lastIndexOf('\x1b[?1000h')
-      expect(enableAt).toBeGreaterThan(disableAt)
-      lines = lastFrameLines(capture.output)
-      expect(lines.some(line => line.includes('COPY MODE'))).toBe(false)
-      expect(lines.some(line => line.includes('keep this draft'))).toBe(true)
+      expect(lastFrameLines(capture.output).some(line =>
+        line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
+      const replyRow = lastFrameLines(capture.output).findIndex(line => line.includes('const value = 123'))
+      expect(replyRow).toBeGreaterThanOrEqual(0)
+      const reply = replyRow + 1
+      await type(`\x1b[<0;3;${reply}M`)
+      await type(`\x1b[<32;18;${reply}M`)
+      await type(`\x1b[<0;18;${reply}m`)
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      expect(capture.output).toContain('\x1b[?1000h')
+      await type('\x1b[<64;10;5M')
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
     } finally {
       unmount()
     }

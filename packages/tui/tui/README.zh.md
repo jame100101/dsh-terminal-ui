@@ -26,7 +26,7 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **Slash picker** (`/`) over host commands plus TUI-local ones, listed **alphabetically (a–z)** in the DamnatioX palette style; host commands get Chinese descriptions in the zh locale and dispatch through `ctx.commands` without a model turn.
 - **Approval and ask_user takeovers** (allow-once / deny / options / custom answers); **`/trajectory`** structured view; **todo and queue docks** at the transcript tail.
 - **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits.
-- **复制**：`/copy last` 或 `/copy <n>` 复制语义 `node.text`（Markdown 源、无字形、无 ANSI）。`/select` 或 `Ctrl+Y` 进入 Copy Mode（`DISABLE_WHEEL_MOUSE`），由宿主终端拖选；`Esc` 恢复 TUI 鼠标跟踪，不取消任务、不清 draft。`Ctrl+C` 仍是取消/退出。线性/print 模式不实现剪贴板快捷键。
+- **复制**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；单击用户提示或助手回复复制整条（`node.text`，无字形）。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。`Esc` 清掉高亮。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
 
 ## Model Experience
 
@@ -73,6 +73,6 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 - **Non-TTY fallback is fail-closed**: the linear REPL mounts no answerer, so approval asks deny and `ask_user` fails — headless-strict semantics, matching `phi run`. TUI-local slash commands print a "linear mode" notice instead of leaking into a model turn.
 - **The composer is single-line** (DamnatioX TS parity): Shift+Enter inserts a `↵`-rendered newline; the caret viewport scrolls horizontally with `…` ellipses.
 - **Pending steering has no transcript bubble yet** (the queue dock shows the queued steer previews).
-- **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), and the back-to-bottom button. Free-form drag-select needs Copy Mode (`Ctrl+Y` / `/select`) because mouse tracking is on in normal mode.
+- **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), the back-to-bottom button, and default drag-copy of prompt/reply text.
 - **Markdown styling covers headings, paragraphs, and GFM tables**: list items and blockquote interiors stay plain text (remaining GFM pass).
 - **Resume still reads the complete authoritative session log** because the resumed Agent requires complete replay; the TUI fold is linear and the display projection is bounded, but history transport is not yet Web-style backward paging.

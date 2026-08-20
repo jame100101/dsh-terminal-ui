@@ -35,7 +35,7 @@ export async function runLegacy(handlers: LegacyHandlers, locale: 'zh' | 'en' = 
       continue
     }
     if (text === '/clear') continue
-    if (text === '/copy' || text.startsWith('/copy ') || text === '/select') {
+    if (text === '/copy' || text.startsWith('/copy ')) {
       out.write(locale === 'en'
         ? 'copy commands need the interactive TUI\n'
         : '复制命令仅在交互式 TUI 中可用\n')

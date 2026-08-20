@@ -34,20 +34,21 @@ describe('semantic copy text', () => {
     expect(extractCopyText(assistant(1, '\x1b[32mgreen\x1b[0m'))).toBe('green')
   })
 
-  it('resolves /copy last and 1-based indices among copyable nodes', () => {
+  it('resolves /copy to the Nth-latest assistant reply', () => {
     const nodes: TuiNode[] = [
-      user(1, 'first'),
-      { kind: 'status', id: 2, text: '└ turn 1', error: false },
-      assistant(3, 'second'),
-      tool(4, 'tool body'),
+      user(1, 'first prompt'),
+      assistant(2, 'first reply'),
+      { kind: 'status', id: 3, text: '└ turn 1', error: false },
+      assistant(4, 'second reply'),
+      tool(5, 'tool body'),
     ]
-    expect(resolveCopyTarget(nodes, '')).toMatchObject({ ok: true, target: { index: 3, total: 3 } })
-    expect(extractCopyText((resolveCopyTarget(nodes, 'last') as { target: { node: TuiNode } }).target.node)).toBe('tool body')
-    expect(extractCopyText((resolveCopyTarget(nodes, '1') as { target: { node: TuiNode } }).target.node)).toBe('first')
-    expect(extractCopyText((resolveCopyTarget(nodes, '2') as { target: { node: TuiNode } }).target.node)).toBe('second')
+    expect(extractCopyText((resolveCopyTarget(nodes, '') as { target: { node: TuiNode } }).target.node)).toBe('second reply')
+    expect(extractCopyText((resolveCopyTarget(nodes, 'last') as { target: { node: TuiNode } }).target.node)).toBe('second reply')
+    expect(extractCopyText((resolveCopyTarget(nodes, '1') as { target: { node: TuiNode } }).target.node)).toBe('second reply')
+    expect(extractCopyText((resolveCopyTarget(nodes, '2') as { target: { node: TuiNode } }).target.node)).toBe('first reply')
     expect(resolveCopyTarget(nodes, '9')).toEqual({ ok: false, error: 'range' })
     expect(resolveCopyTarget(nodes, '0')).toEqual({ ok: false, error: 'usage' })
     expect(resolveCopyTarget(nodes, 'foo')).toEqual({ ok: false, error: 'usage' })
-    expect(resolveCopyTarget([], 'last')).toEqual({ ok: false, error: 'empty' })
+    expect(resolveCopyTarget([user(1, 'only prompt')], '')).toEqual({ ok: false, error: 'empty' })
   })
 })

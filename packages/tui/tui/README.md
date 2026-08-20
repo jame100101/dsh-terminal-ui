@@ -26,7 +26,7 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **Slash picker** (`/`) over host commands plus TUI-local ones, listed **alphabetically (a–z)** in the DamnatioX palette style; host commands get Chinese descriptions in the zh locale and dispatch through `ctx.commands` without a model turn.
 - **Approval and ask_user takeovers** (allow-once / deny / options / custom answers); **`/trajectory`** structured view; **todo and queue docks** at the transcript tail.
 - **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits.
-- **Copy**: `/copy last` or `/copy <n>` copies semantic `node.text` (markdown source, no glyphs, no ANSI). `/select` or `Ctrl+Y` enters Copy Mode (`DISABLE_WHEEL_MOUSE`) so the host terminal can drag-select; `Esc` restores TUI mouse tracking without cancelling the agent or clearing the draft. `Ctrl+C` is still cancel/exit. Linear/print mode does not implement clipboard shortcuts.
+- **Copy** (Grok-style, always on): drag across a prompt or reply to highlight and auto-copy; click a user prompt or assistant reply to copy that whole message (`node.text`, no glyphs). `/copy` copies the latest assistant reply; `/copy n` is the Nth-latest. `Esc` clears a highlight. Wheel, scrollbar, and disclosure clicks stay TUI-owned. Linear/print mode does not implement clipboard shortcuts.
 
 ## Model Experience
 
@@ -73,6 +73,6 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 - **Non-TTY fallback is fail-closed**: the linear REPL mounts no answerer, so approval asks deny and `ask_user` fails — headless-strict semantics, matching `phi run`. TUI-local slash commands print a "linear mode" notice instead of leaking into a model turn.
 - **The composer is single-line** (DamnatioX TS parity): Shift+Enter inserts a `↵`-rendered newline; the caret viewport scrolls horizontally with `…` ellipses.
 - **Pending steering has no transcript bubble yet** (the queue dock shows the queued steer previews).
-- **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), and the back-to-bottom button. Free-form drag-select needs Copy Mode (`Ctrl+Y` / `/select`) because mouse tracking is on in normal mode.
+- **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), the back-to-bottom button, and default drag-copy of prompt/reply text.
 - **Markdown styling covers headings, paragraphs, and GFM tables**: list items and blockquote interiors stay plain text (remaining GFM pass).
 - **Resume still reads the complete authoritative session log** because the resumed Agent requires complete replay; the TUI fold is linear and the display projection is bounded, but history transport is not yet Web-style backward paging.

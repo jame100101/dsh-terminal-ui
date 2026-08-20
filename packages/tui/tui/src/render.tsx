@@ -38,12 +38,14 @@ import type { TuiStore } from './store'
 import type { TuiNode } from './types'
 import {
   nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport,
-  selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptLineAtRow,
-  TRANSCRIPT_LINE_OVERSCAN,
+  selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt,
+  transcriptLineAtRow, TRANSCRIPT_LINE_OVERSCAN,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
 import { copyToClipboard } from './clipboard'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
+import { extractSelectedText, selectionMoved, selectionSpanOnLine, sliceDisplayRange } from './selection'
+import type { TextSelection } from './selection'
 import { countUiRender } from './tui-perf'
 import { padEndDisplay, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
 import type { LiveWrapState } from './wrap'
@@ -145,8 +147,6 @@ interface Copy {
   copyRange: (n: string, total: number) => string
   copyDone: string
   copyFailed: (reason: string) => string
-  copyModeHint: string
-  copyModeUnavailable: string
 }
 
 /** The chrome copy table. */
@@ -231,13 +231,11 @@ const COPY: Record<Locale, Copy> = {
     permissionChip: label => `权限 ${label}`,
     permissionHint: ' · Shift+Tab 切换',
     backToBottom: '▼ 回到底部',
-    copyUsage: '用法：/copy last 或 /copy <序号>',
-    copyEmpty: '没有可复制的消息',
-    copyRange: (n, total) => `没有第 ${n} 条可复制消息（共 ${total} 条）`,
+    copyUsage: '用法：/copy 或 /copy <n>（第 n 条最近的回复）',
+    copyEmpty: '没有可复制的回复',
+    copyRange: (n, total) => `没有第 ${n} 条最近回复（共 ${total} 条）`,
     copyDone: '已复制',
     copyFailed: reason => `复制失败：${reason}`,
-    copyModeHint: 'COPY MODE · 拖选文本 · Esc 返回',
-    copyModeUnavailable: '请先关闭面板或对话框再进入 Copy Mode',
   },
   en: {
     idle: '▣ idle · Enter send · /help',
@@ -319,13 +317,11 @@ const COPY: Record<Locale, Copy> = {
     permissionChip: label => `permission ${label}`,
     permissionHint: ' · Shift+Tab to switch',
     backToBottom: '▼ back to bottom',
-    copyUsage: 'Usage: /copy last or /copy <n>',
-    copyEmpty: 'No copyable message',
-    copyRange: (n, total) => `No copyable message ${n} (${total} available)`,
+    copyUsage: 'Usage: /copy or /copy <n> (Nth-latest reply)',
+    copyEmpty: 'No assistant reply to copy',
+    copyRange: (n, total) => `No ${n}-latest reply (${total} available)`,
     copyDone: 'Copied',
     copyFailed: reason => `Copy failed: ${reason}`,
-    copyModeHint: 'COPY MODE · drag to select text · Esc to return',
-    copyModeUnavailable: 'Close the panel or dialog before entering Copy Mode',
   },
 }
 
@@ -548,8 +544,7 @@ function localCommands(locale: Locale): PaletteItem[] {
   return [
     { name: 'help', description: zh ? '显示帮助' : 'show this help', needsArgs: false },
     { name: 'clear', description: zh ? '清空显示（保留会话）' : 'clear the display (session kept)', needsArgs: false },
-    { name: 'copy', description: zh ? '复制第 n 条或最后一条消息（语义文本）' : 'copy message n or last (semantic text)', needsArgs: true },
-    { name: 'select', description: zh ? '进入 Copy Mode（终端原生拖选）' : 'enter Copy Mode (terminal native drag-select)', needsArgs: false },
+    { name: 'copy', description: zh ? '复制最近一条回复（/copy n 为第 n 条最近回复）' : 'copy the latest assistant reply (/copy n = Nth-latest)', needsArgs: true },
     { name: 'trajectory', description: zh ? '切换结构化轨迹视图' : 'toggle the structured trajectory view', needsArgs: false },
     { name: 'model', description: zh ? '选择模型' : 'pick a model', needsArgs: false },
     { name: 'settings', description: zh ? '设置（Tab / 点击切换分页）' : 'settings (Tab / click to switch pages)', needsArgs: false },
@@ -663,6 +658,10 @@ function nodeLines(
       ...line,
       ...(line.runs !== undefined ? { runs: line.runs } : {}),
       dim: line.dim === true,
+      ...(node.kind === 'user' || node.kind === 'assistant' || node.kind === 'think'
+        || node.kind === 'tool' || node.kind === 'context'
+        ? { copyNodeId: node.id }
+        : {}),
       ...(isCollapsible(node) && (line.text.endsWith('▶') || line.text.endsWith('▼'))
         ? {
           disclosureNodeId: node.id,
@@ -886,6 +885,8 @@ const Transcript = React.memo(function Transcript(props: {
   locale: Locale
   /** Pin the floating back-to-bottom button when scrolled off the tail. */
   backButton?: boolean | undefined
+  /** In-app drag-select range, in indices of {@link lines}. */
+  selection?: TextSelection | null | undefined
 }): React.ReactElement {
   const reserved = props.backButton === true ? 1 : 0
   const viewport = selectTranscriptViewport(props.lines, props.height, props.offset, reserved)
@@ -922,24 +923,37 @@ const Transcript = React.memo(function Transcript(props: {
           // Index keys: scrolling reorders the visible rows every wheel tick,
           // and keyed reordering through Ink's reconciler can accumulate stale
           // rows — position-keyed rows never move, only their text changes.
+          const absoluteIndex = props.lines.indexOf(line)
+          const span = props.selection === undefined || props.selection === null
+            ? null
+            : selectionSpanOnLine(props.selection, absoluteIndex < 0 ? index : absoluteIndex, stringWidth(line.text))
+          const body = line.runs !== undefined && line.runs.length > 0 && span === null
+            ? line.runs.map((run, runIndex) => (
+              <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
+                {...run.color !== undefined
+                  ? { color: themed(run.color, props.theme, 'white') }
+                  : run.code === true
+                    ? { color: themed('cyan', props.theme, 'cyan') }
+                    : {}}>
+                {run.text}
+              </Text>
+            ))
+            : span === null
+              ? (line.text || ' ')
+              : (
+                <>
+                  {sliceDisplayRange(line.text, 0, span.start)}
+                  <Text inverse>{sliceDisplayRange(line.text, span.start, span.end) || ' '}</Text>
+                  {sliceDisplayRange(line.text, span.end, stringWidth(line.text))}
+                </>
+              )
           const row = (
             <Text
               color={themed(line.color, props.theme, 'white')}
               bold={line.bold === true}
               dimColor={line.pulse === true ? pulseOn : line.dim === true}
             >
-              {line.runs !== undefined && line.runs.length > 0
-                ? line.runs.map((run, runIndex) => (
-                  <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
-                    {...run.color !== undefined
-                      ? { color: themed(run.color, props.theme, 'white') }
-                      : run.code === true
-                        ? { color: themed('cyan', props.theme, 'cyan') }
-                        : {}}>
-                    {run.text}
-                  </Text>
-                ))
-                : (line.text || ' ')}
+              {body}
             </Text>
           )
           return line.background === true
@@ -1193,7 +1207,6 @@ function ImeTextInput(props: {
         (key.shift && key.tab) ||
         input === '\x1b[Z' ||
         (key.ctrl && input.toLowerCase() === 'c')
-        || (key.ctrl && (input.toLowerCase() === 'y' || input === '\x19'))
       ) {
         return
       }
@@ -1509,6 +1522,7 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   backButton?: boolean | undefined
   linesRef: React.MutableRefObject<readonly TranscriptLine[]>
   windowOffsetRef: React.MutableRefObject<number>
+  selection?: TextSelection | null | undefined
 }): React.ReactElement {
   const snapshot = props.snapshot
   const [tick, setTick] = useState(0)
@@ -1592,6 +1606,7 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
       onMaximumOffsetChange={props.onMaximumOffsetChange}
       theme={props.theme}
       locale={props.locale}
+      selection={props.selection}
       backButton={props.backButton}
     />
   )
@@ -1665,7 +1680,9 @@ export function App(props: {
   const historyRef = useRef<string[]>([])
   const historyScratchRef = useRef('')
   const [historyIndex, setHistoryIndex] = useState(-1)
-  const [copyMode, setCopyMode] = useState(false)
+  const [textSelection, setTextSelection] = useState<TextSelection | null>(null)
+  const textSelectionRef = useRef<TextSelection | null>(null)
+  const selectingRef = useRef(false)
 
   const pendingApproval = snapshot.pendingApproval
   const pendingQuestion = snapshot.pendingQuestion
@@ -1682,9 +1699,9 @@ export function App(props: {
   }, [refreshTerminalSize, stdout])
 
   useEffect(() => {
-    stdout.write(copyMode ? DISABLE_WHEEL_MOUSE : ENABLE_WHEEL_MOUSE)
+    stdout.write(ENABLE_WHEEL_MOUSE)
     return () => { stdout.write(DISABLE_WHEEL_MOUSE) }
-  }, [stdout, copyMode])
+  }, [stdout])
   const exitApp = useCallback((): void => {
     // Reset app-owned mouse modes while Ink still has a writable terminal;
     // alternate-screen teardown intentionally discards effect-cleanup output.
@@ -1896,9 +1913,6 @@ export function App(props: {
       : historyBlocks
   const dockLines = useMemo((): TranscriptLine[] => {
     const lines: TranscriptLine[] = []
-    if (copyMode) {
-      lines.push({ key: 'copy-mode', text: fitDisplayText(copy.copyModeHint, transcriptContentWidth), color: 'cyan' })
-    }
     if (notice !== '') {
       wrapText(notice, transcriptContentWidth).forEach((line, index) => {
         lines.push({ key: `notice-${index}`, text: line, color: 'gray' })
@@ -1932,7 +1946,6 @@ export function App(props: {
     return lines
   }, [
     notice, transcriptContentWidth, snapshot.queued, snapshot.todos, snapshot.goal, snapshot.attachmentCount, copy,
-    copyMode,
   ])
 
   // The view stays on the same CONTENT while new lines stream in at the
@@ -2038,7 +2051,7 @@ export function App(props: {
       const resolved = resolveCopyTarget(snapshot.nodes, argument)
       if (!resolved.ok) {
         setNotice(resolved.error === 'empty' ? copy.copyEmpty
-          : resolved.error === 'range' ? copy.copyRange(argument.trim(), snapshot.nodes.filter(node => extractCopyText(node) !== null).length)
+          : resolved.error === 'range' ? copy.copyRange(argument.trim() === '' || argument.trim() === 'last' ? '1' : argument.trim(), snapshot.nodes.filter(node => node.kind === 'assistant' && extractCopyText(node) !== null).length)
             : copy.copyUsage)
         return
       }
@@ -2050,16 +2063,6 @@ export function App(props: {
       void copyToClipboard(semantic, stdout).then((outcome) => {
         setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
       })
-      return
-    }
-    if (text === '/select') {
-      const blocked = panelOpen || pendingApproval !== null || pendingQuestion !== null
-        || pluginEdit !== null || settingsEdit !== null || settingsConfirm !== null
-      if (blocked) {
-        setNotice(copy.copyModeUnavailable)
-        return
-      }
-      setCopyMode(true)
       return
     }
     if (text === '/trajectory') {
@@ -2175,10 +2178,7 @@ export function App(props: {
     // dispatch without a model turn; unknown lines become model messages.
     props.host.submit(text, false)
     setNotice('')
-  }, [
-    exitApp, viewMode, snapshot, props.host, openPanel, locale, copy, stdout,
-    panelOpen, pendingApproval, pendingQuestion, pluginEdit, settingsEdit, settingsConfirm,
-  ])
+  }, [exitApp, viewMode, snapshot, props.host, openPanel, locale, copy, stdout])
 
   const submit = useCallback((value: string, steer = false): void => {
     const trimmed = value.trim()
@@ -2498,9 +2498,10 @@ export function App(props: {
   // Every Escape action funnels through here so the 60ms phantom-Escape
   // confirmation window can drop split-CSI artifacts without side effects.
   const handleEscape = useEffectEvent(() => {
-    if (copyMode) {
-      setCopyMode(false)
-      setNotice('')
+    if (textSelection !== null) {
+      textSelectionRef.current = null
+      setTextSelection(null)
+      selectingRef.current = false
       return
     }
     if (pluginEdit !== null) {
@@ -2584,16 +2585,6 @@ export function App(props: {
     // left behind by an earlier Escape at the same input value must not
     // swallow the next invocation.
     if (input === '/') setPaletteDismissedInput(null)
-    if (key.ctrl && (input.toLowerCase() === 'y' || input === '\x19')) {
-      const blocked = panelOpen || pendingApproval !== null || pendingQuestion !== null
-        || pluginEdit !== null || settingsEdit !== null || settingsConfirm !== null || palette !== null
-      if (blocked) {
-        setNotice(copy.copyModeUnavailable)
-        return
-      }
-      setCopyMode(true)
-      return
-    }
     if (key.ctrl && input.toLowerCase() === 'c') {
       const now = Date.now()
       if (now - lastCtrlCAt.current <= CTRL_C_EXIT_WINDOW_MS) {
@@ -2622,7 +2613,11 @@ export function App(props: {
     // Panels anchor to the TOP, so wheel-up walks toward older rows.
     const wheel = parseMouseWheel(input)
     if (wheel !== null) {
-      if (copyMode) return
+      if (textSelection !== null) {
+        textSelectionRef.current = null
+        setTextSelection(null)
+        selectingRef.current = false
+      }
       if (panelOpen) {
         const delta = wheel === 'up' ? -3 : 3
         setSettingsTop(current => Math.max(0, Math.min(settingsViewport.maximumOffset, current + delta)))
@@ -2639,9 +2634,8 @@ export function App(props: {
     // 5..4+height; its text begins at column 2 after the left padding cell.
     const click = parseMouseReport(input)
     if (click !== null && (click.button & 64) === 0) {
-      if (copyMode) return
       if ((click.button & 32) !== 0) {
-        // Drag motion: follow the pointer along the scrollbar gutter.
+        // Drag motion: scrollbar thumb, or transcript text selection.
         if (scrollbarDragRef.current && !panelOpen) {
           const backButtonVisible = transcriptScrollOffset > 0
           const contentHeight = transcriptHeight - (backButtonVisible ? 1 : 0)
@@ -2652,6 +2646,24 @@ export function App(props: {
           )
           if (geometry.visible && click.row >= 5 && click.row <= 4 + contentHeight) {
             applyTranscriptScroll(scrollOffsetForScrollbarRow(click.row, 5, contentHeight, maximum))
+          }
+        } else if (selectingRef.current && !panelOpen) {
+          const backButtonVisible = transcriptScrollOffset > 0
+          const cell = transcriptCellAt(
+            transcriptLinesRef.current,
+            transcriptHeight,
+            transcriptWindowOffsetRef.current,
+            backButtonVisible ? 1 : 0,
+            click.row - 5,
+            click.column,
+          )
+          if (cell !== undefined) {
+            const previous = textSelectionRef.current
+            const next: TextSelection = previous === null
+              ? { anchor: { lineIndex: cell.lineIndex, column: cell.column }, head: { lineIndex: cell.lineIndex, column: cell.column } }
+              : { ...previous, head: { lineIndex: cell.lineIndex, column: cell.column } }
+            textSelectionRef.current = next
+            setTextSelection(next)
           }
         }
         return
@@ -2728,9 +2740,87 @@ export function App(props: {
             }
             return
           }
+          const cell = transcriptCellAt(
+            transcriptLinesRef.current,
+            transcriptHeight,
+            transcriptWindowOffsetRef.current,
+            backButtonVisible ? 1 : 0,
+            click.row - 5,
+            click.column,
+          )
+          if (cell !== undefined) {
+            selectingRef.current = true
+            const next = {
+              anchor: { lineIndex: cell.lineIndex, column: cell.column },
+              head: { lineIndex: cell.lineIndex, column: cell.column },
+            }
+            textSelectionRef.current = next
+            setTextSelection(next)
+          } else {
+            textSelectionRef.current = null
+            setTextSelection(null)
+          }
         }
       }
-      if (click.action === 'release') scrollbarDragRef.current = false
+      if (click.action === 'release') {
+        scrollbarDragRef.current = false
+        if (selectingRef.current) {
+          selectingRef.current = false
+          const current = textSelectionRef.current
+          if (current !== null && selectionMoved(current)) {
+            const selected = extractSelectedText(transcriptLinesRef.current, current)
+            if (selected !== '') {
+              void copyToClipboard(selected, stdout).then((outcome) => {
+                setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
+              })
+            }
+          } else {
+            const cell = transcriptCellAt(
+              transcriptLinesRef.current,
+              transcriptHeight,
+              transcriptWindowOffsetRef.current,
+              transcriptScrollOffset > 0 ? 1 : 0,
+              click.row - 5,
+              click.column,
+            )
+            const nodeId = cell?.line.copyNodeId
+            if (nodeId !== undefined) {
+              const node = snapshot.nodes.find(entry => entry.id === nodeId)
+              const semantic = node === undefined ? null : extractCopyText(node)
+              if (semantic !== null && semantic !== '') {
+                void copyToClipboard(semantic, stdout).then((outcome) => {
+                  setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
+                })
+                const rows = transcriptLinesRef.current
+                let first = -1
+                let last = -1
+                for (let index = 0; index < rows.length; index += 1) {
+                  if (rows[index]?.copyNodeId === nodeId) {
+                    if (first === -1) first = index
+                    last = index
+                  }
+                }
+                if (first >= 0 && last >= 0) {
+                  const lastLine = rows[last]
+                  const next: TextSelection = {
+                    anchor: { lineIndex: first, column: 0 },
+                    head: { lineIndex: last, column: lastLine === undefined ? 0 : stringWidth(lastLine.text) },
+                  }
+                  textSelectionRef.current = next
+                  setTextSelection(next)
+                }
+              }
+            } else if (cell?.line.key.startsWith('live-text-') === true) {
+              const live = snapshot.live?.text ?? ''
+              if (live !== '') {
+                void copyToClipboard(live, stdout).then((outcome) => {
+                  setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
+                })
+              }
+            }
+          }
+        }
+      }
       return
     }
     if (panelOpen) {
@@ -2890,6 +2980,7 @@ export function App(props: {
           backButton={transcriptScrollOffset > 0}
           linesRef={transcriptLinesRef}
           windowOffsetRef={transcriptWindowOffsetRef}
+          selection={textSelection}
         />
       )}
       {panelNoticeVisible ? (
@@ -2944,9 +3035,9 @@ export function App(props: {
               setDraft(value)
             }}
         onSubmit={submitComposer}
-        disabled={copyMode || (pluginEdit !== null || settingsEdit !== null
+        disabled={pluginEdit !== null || settingsEdit !== null
           ? false
-          : (pendingApproval !== null || pendingQuestion !== null || panelOpen))}
+          : (pendingApproval !== null || pendingQuestion !== null || panelOpen)}
         focused={composerFocused}
         width={width}
         placeholder={pluginEdit !== null
