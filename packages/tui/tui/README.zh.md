@@ -76,7 +76,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | 拖选复制提示词和回复；输入框 Ctrl+A/C/V；`/copy` | 已完成 |
 | 输入框第一折行仍吞一格 | 待办 — [bug.md](./bug.md) |
 | 粘贴终端内容不自动收成预览行 | 待办 — [bug.md](./bug.md) |
-| 流式合并发布、增量折行、独立微光、窗口化拖选命中（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 进行中 |
+| 流式合并发布、增量折行、独立微光、窗口化命中、视口局部节点缓存（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 进行中 |
 
 ## Known Limitations and Deferred Work
 

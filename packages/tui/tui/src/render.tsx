@@ -840,8 +840,65 @@ function nodeLines(
   }
 }
 
-/** Per-node projection variants retained while that immutable node is live. */
-type NodeLineCache = WeakMap<TuiNode, Map<string, TranscriptLine[]>>
+/** Per-node projection variants retained for the viewport-local working set. */
+interface NodeLineCache {
+  lines: Map<TuiNode, Map<string, TranscriptLine[]>>
+  counts: WeakMap<TuiNode, Map<string, number>>
+  recency: TuiNode[]
+}
+
+function createNodeLineCache(): NodeLineCache {
+  return { lines: new Map(), counts: new WeakMap(), recency: [] }
+}
+
+/** Max projected nodes whose line arrays stay in memory. */
+const MAX_NODE_LINE_CACHE = 256
+
+function nodeLineVariantKey(
+  node: TuiNode,
+  width: number,
+  expanded: boolean,
+  feedback: ReadonlyMap<string, { rating: 'positive' | 'negative' }> | undefined,
+  locale: Locale,
+): string {
+  const rating = node.kind === 'assistant' ? feedback?.get(node.messageId)?.rating ?? '' : ''
+  return [
+    width,
+    isCollapsible(node) && expanded ? 1 : 0,
+    rating,
+    locale,
+  ].join(':')
+}
+
+function rememberNodeLineCount(cache: NodeLineCache, node: TuiNode, key: string, count: number): void {
+  let counts = cache.counts.get(node)
+  if (counts === undefined) {
+    counts = new Map()
+    cache.counts.set(node, counts)
+  }
+  counts.set(key, count)
+}
+
+function touchNodeLineCache(cache: NodeLineCache, node: TuiNode): void {
+  cache.recency = cache.recency.filter(entry => entry !== node)
+  cache.recency.push(node)
+}
+
+function pruneNodeLineCache(cache: NodeLineCache, keep: ReadonlySet<TuiNode>): void {
+  while (cache.lines.size > MAX_NODE_LINE_CACHE) {
+    const victim = cache.recency.find(entry => !keep.has(entry)) ?? cache.recency[0]
+    if (victim === undefined) break
+    cache.lines.delete(victim)
+    cache.recency = cache.recency.filter(entry => entry !== victim)
+  }
+}
+
+/** Length-only block so off-window nodes do not keep their painted rows in the window walk. */
+function sparseCountBlock(count: number): TranscriptLine[] {
+  const block: TranscriptLine[] = []
+  block.length = Math.max(0, Math.floor(count))
+  return block
+}
 
 /** Project one node once for a display-affecting input combination. */
 function cachedNodeLines(
@@ -852,26 +909,40 @@ function cachedNodeLines(
   feedback: ReadonlyMap<string, { rating: 'positive' | 'negative' }> | undefined,
   locale: Locale,
 ): TranscriptLine[] {
-  const rating = node.kind === 'assistant' ? feedback?.get(node.messageId)?.rating ?? '' : ''
-  const key = [
-    width,
-    isCollapsible(node) && expanded ? 1 : 0,
-    rating,
-    locale,
-  ].join(':')
-  let variants = cache.get(node)
+  const key = nodeLineVariantKey(node, width, expanded, feedback, locale)
+  let variants = cache.lines.get(node)
   if (variants === undefined) {
     variants = new Map()
-    cache.set(node, variants)
+    cache.lines.set(node, variants)
   }
   const cached = variants.get(key)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    rememberNodeLineCount(cache, node, key, cached.length)
+    touchNodeLineCache(cache, node)
+    return cached
+  }
   const lines = nodeLines(node, width, expanded, feedback, locale)
   // Repeated terminal resizes must not retain an unbounded width history for
   // every transcript node. Expansion normally uses at most two variants.
   if (variants.size >= 8) variants.clear()
   variants.set(key, lines)
+  rememberNodeLineCount(cache, node, key, lines.length)
+  touchNodeLineCache(cache, node)
   return lines
+}
+
+function cachedNodeLineCount(
+  cache: NodeLineCache,
+  node: TuiNode,
+  width: number,
+  expanded: boolean,
+  feedback: ReadonlyMap<string, { rating: 'positive' | 'negative' }> | undefined,
+  locale: Locale,
+): number {
+  const key = nodeLineVariantKey(node, width, expanded, feedback, locale)
+  const hit = cache.counts.get(node)?.get(key)
+  if (hit !== undefined) return hit
+  return cachedNodeLines(cache, node, width, expanded, feedback, locale).length
 }
 
 /** Three-row compact header plus a separator (DamnatioX header geometry). */
@@ -2173,7 +2244,7 @@ export function App(props: {
   // ── transcript lines ──────────────────────────────────────────────────
   const thinkDefaultOpen = snapshot.settings?.general.thinking === 'expanded'
   const expandedOf = (node: TuiNode): boolean => node.kind === 'think' ? thinkDefaultOpen : expanded.has(node.id)
-  const nodeLineCache = useRef<NodeLineCache>(new WeakMap())
+  const nodeLineCache = useRef<NodeLineCache>(createNodeLineCache())
 
   // ── layout budget ─────────────────────────────────────────────────────
   // A panel action's notice pins one dim row under the panel list, so the
@@ -2312,10 +2383,15 @@ export function App(props: {
       }
     }), [snapshot.trace, transcriptContentWidth])
   const historyBlocks = useMemo((): TranscriptLine[][] => {
-    const blocks: TranscriptLine[][] = []
+    const liveNodes = new Set(visibleNodes)
+    if (![...nodeLineCache.current.lines.keys()].some(node => liveNodes.has(node))) {
+      nodeLineCache.current.lines.clear()
+      nodeLineCache.current.recency = []
+    }
+    const prepared: { node: TuiNode; count: number; topPad: boolean; botPad: boolean }[] = []
     let previousKind: TuiNode['kind'] | undefined
     for (const node of visibleNodes) {
-      const body = cachedNodeLines(
+      const count = cachedNodeLineCount(
         nodeLineCache.current,
         node,
         transcriptContentWidth,
@@ -2324,22 +2400,67 @@ export function App(props: {
         locale,
       )
       if (node.kind === 'user') {
-        const block: TranscriptLine[] = []
-        if (previousKind !== 'user') {
-          block.push({ key: `${node.id}-vpad-top`, text: ' ' })
-        }
-        block.push(...body)
-        block.push({ key: `${node.id}-vpad-bot`, text: ' ' })
-        blocks.push(block)
-      } else if (body.length > 0) {
-        blocks.push(body)
+        prepared.push({
+          node,
+          count,
+          topPad: previousKind !== 'user',
+          botPad: true,
+        })
+      } else if (count > 0) {
+        prepared.push({ node, count, topPad: false, botPad: false })
       }
       previousKind = node.kind
     }
+    const lengths = prepared.map(entry =>
+      entry.count + (entry.topPad ? 1 : 0) + (entry.botPad ? 1 : 0))
+    let total = 0
+    for (const length of lengths) total += length
+    const reserved = transcriptScrollOffset > 0 ? 1 : 0
+    const capacity = Math.max(1, Math.max(1, Math.floor(transcriptHeight)) - reserved)
+    const extra = TRANSCRIPT_LINE_OVERSCAN
+    const maximumOffset = Math.max(0, total - capacity)
+    const offset = Math.min(
+      Number.isFinite(transcriptScrollOffset) ? Math.max(0, Math.floor(transcriptScrollOffset)) : 0,
+      maximumOffset,
+    )
+    const end = Math.max(0, total - offset)
+    const start = Math.max(0, end - capacity)
+    const windowStart = Math.max(0, start - extra)
+    const windowEnd = Math.min(total, end + extra)
+    const keep = new Set<TuiNode>()
+    const blocks: TranscriptLine[][] = []
+    let cursor = 0
+    for (let index = 0; index < prepared.length; index += 1) {
+      const entry = prepared[index]
+      const length = lengths[index]
+      if (entry === undefined || length === undefined) continue
+      const next = cursor + length
+      if (next > windowStart && cursor < windowEnd) {
+        keep.add(entry.node)
+        const body = cachedNodeLines(
+          nodeLineCache.current,
+          entry.node,
+          transcriptContentWidth,
+          expandedOf(entry.node),
+          snapshot.feedback,
+          locale,
+        )
+        const block: TranscriptLine[] = []
+        if (entry.topPad) block.push({ key: `${entry.node.id}-vpad-top`, text: ' ' })
+        block.push(...body)
+        if (entry.botPad) block.push({ key: `${entry.node.id}-vpad-bot`, text: ' ' })
+        blocks.push(block)
+      } else {
+        blocks.push(sparseCountBlock(length))
+      }
+      cursor = next
+    }
+    pruneNodeLineCache(nodeLineCache.current, keep)
     return blocks
   }, [
     visibleNodes, transcriptContentWidth,
     expanded, thinkDefaultOpen, snapshot.feedback, locale,
+    transcriptScrollOffset, transcriptHeight,
   ])
   const welcomeLines = useMemo((): TranscriptLine[] => {
     if (visibleNodes.length > 0) return []
