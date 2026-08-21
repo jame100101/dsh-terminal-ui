@@ -5,7 +5,8 @@ import {
   countComposerHardLines,
   lineSelectableWidth, nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow,
   selectComposerLayout, selectInputViewport, selectPanelViewport, selectScrollbar, selectTerminalFrameWidth,
-  selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt, transcriptLineAtRow, wrapComposerRanges,
+  rememberTranscriptWindow, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt,
+  transcriptLineAtRow, wrapComposerRanges,
 } from '../src/viewport'
 import type { TranscriptLine } from '../src/viewport'
 
@@ -142,6 +143,26 @@ describe('transcriptCellAt', () => {
     expect(cell?.line.key).toBe('user')
     expect(cell?.column).toBe(10)
     expect(transcriptCellAt(lines, 5, 0, 0, 4, 4)?.column).toBe(2)
+  })
+
+  it('adds windowStart so a windowed slice reports absolute line indices', () => {
+    const lines = Array.from({ length: 10 }, (_, index) => line(`l${index}`))
+    const windowed = lines.slice(5)
+    const cell = transcriptCellAt(windowed, 5, 0, 0, 0, 2, 5)
+    expect(cell?.line.key).toBe('l5')
+    expect(cell?.lineIndex).toBe(5)
+    const last = transcriptCellAt(windowed, 5, 0, 0, 4, 2, 5)
+    expect(last?.line.key).toBe('l9')
+    expect(last?.lineIndex).toBe(9)
+  })
+
+  it('records an overscan window into a sparse absolute-index map', () => {
+    const lines = [line('a'), line('b'), line('c')]
+    const map = new Map<number, ReturnType<typeof line>>()
+    rememberTranscriptWindow(map, lines, 10)
+    expect(map.get(10)?.key).toBe('a')
+    expect(map.get(12)?.key).toBe('c')
+    expect(map.size).toBe(3)
   })
 })
 

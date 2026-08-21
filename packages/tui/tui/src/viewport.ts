@@ -212,6 +212,7 @@ export function lineSelectableWidth(text: string): number {
  * @param bottomReserved - rows pinned below the scrolling content.
  * @param row - zero-based row inside the complete transcript box.
  * @param terminalColumn - 1-based terminal column of the click.
+ * @param windowStart - absolute index of `lines[0]` in the full transcript.
  * @returns the cell, or `undefined` for flex-end padding, reserved rows, or the gutter.
  * Blank spacer rows still return a cell (column 0) so a drag can start or
  * pass through them; copy skips those rows.
@@ -223,6 +224,7 @@ export function transcriptCellAt(
   bottomReserved: number,
   row: number,
   terminalColumn: number,
+  windowStart = 0,
 ): { lineIndex: number; column: number; line: TranscriptLine } | undefined {
   const viewportHeight = Math.max(1, Math.floor(height))
   const reserved = Math.max(0, Math.min(Math.floor(bottomReserved), viewportHeight - 1))
@@ -241,11 +243,30 @@ export function transcriptCellAt(
   const offset = Math.min(normalizedOffset, maximumOffset)
   const end = Math.max(0, lines.length - offset)
   const start = Math.max(0, end - capacity)
-  const lineIndex = start + visibleIndex
+  const lineIndex = windowStart + start + visibleIndex
   const column = selectable <= 0
     ? 0
     : Math.max(0, Math.min(selectable, Math.floor(terminalColumn) - 2))
   return { lineIndex, column, line }
+}
+
+/**
+ * Record one overscan window into a sparse absolute-index map so a drag that
+ * auto-scrolls can still copy rows that have left the current window.
+ * @param map - absolute index to painted row.
+ * @param lines - the current overscan window.
+ * @param windowStart - absolute index of `lines[0]`.
+ */
+export function rememberTranscriptWindow(
+  map: Map<number, TranscriptLine>,
+  lines: readonly TranscriptLine[],
+  windowStart: number,
+): void {
+  const origin = Math.max(0, Math.floor(windowStart))
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    if (line !== undefined) map.set(origin + index, line)
+  }
 }
 
 /** The visible text plus the caret column inside one single-line input. */

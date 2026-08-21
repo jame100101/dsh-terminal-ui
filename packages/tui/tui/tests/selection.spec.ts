@@ -70,6 +70,17 @@ describe('transcript drag-select', () => {
     })).toBe('hello\nreply')
   })
 
+  it('extracts a drag from a sparse absolute-index map', () => {
+    const map = new Map<number, TranscriptLine>([
+      [10, line('a', '▸ hello')],
+      [12, line('c', '● reply')],
+    ])
+    expect(extractSelectedText(map, {
+      anchor: { lineIndex: 10, column: 0 },
+      head: { lineIndex: 12, column: 7 },
+    })).toBe('hello\nreply')
+  })
+
   it('orders a backward drag and reports an empty click as unmoved', () => {
     const backward = orderedSelection({
       anchor: { lineIndex: 3, column: 8 },

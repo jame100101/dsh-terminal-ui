@@ -219,21 +219,29 @@ function stripLineChrome(text: string, fromLineStart: boolean): string {
   return trimmed
 }
 
+/** Dense transcript rows, or a sparse map of absolute indices collected during a drag. */
+export type TranscriptLineLookup = readonly TranscriptLine[] | ReadonlyMap<number, TranscriptLine>
+
+function transcriptLineAt(source: TranscriptLineLookup, index: number): TranscriptLine | undefined {
+  if (Array.isArray(source)) return (source as readonly TranscriptLine[])[index]
+  return (source as ReadonlyMap<number, TranscriptLine>).get(index)
+}
+
 /**
  * Clipboard text for a drag range over painted rows. Chrome prefixes (`▸ `,
  * `● `, think bars) drop only when the range includes the start of the line.
- * @param lines - absolute transcript rows.
+ * @param lines - absolute transcript rows, dense or sparse.
  * @param selection - the drag range.
  * @returns the joined text, or '' when the range is empty.
  */
 export function extractSelectedText(
-  lines: readonly TranscriptLine[],
+  lines: TranscriptLineLookup,
   selection: TextSelection,
 ): string {
   const { start, end } = orderedSelection(selection)
   const rows: string[] = []
   for (let index = start.lineIndex; index <= end.lineIndex; index += 1) {
-    const line = lines[index]
+    const line = transcriptLineAt(lines, index)
     if (line === undefined) continue
     const width = lineSelectableWidth(line.text)
     if (width <= 0) continue

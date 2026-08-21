@@ -76,7 +76,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | Drag-copy of prompts and replies; composer Ctrl+A/C/V; `/copy` | Done |
 | Composer first wrap line swallowing a cell | Open — [bug.md](./bug.md) |
 | Paste of terminal text not collapsing the composer | Open — [bug.md](./bug.md) |
-| Streaming render, transcript virtualization, memory ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | Next |
+| Streaming coalesce, incremental wrap, isolated shimmer, windowed drag-copy hit-test ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | In progress |
 
 ## Known Limitations and Deferred Work
 

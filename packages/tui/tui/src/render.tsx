@@ -40,9 +40,9 @@ import {
   composerGlyphAt, composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth,
   composerVisibleRowCount, countComposerHardLines, lineSelectableWidth, nextCodePointBoundary,
   previousCodePointBoundary, COMPOSER_COLLAPSE_HARD_LINES, COMPOSER_PROMPT_WIDTH,
-  scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport, wrapComposerRanges,
-  selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt,
-  transcriptLineAtRow, TRANSCRIPT_LINE_OVERSCAN,
+  rememberTranscriptWindow, scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport,
+  wrapComposerRanges, selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow,
+  selectTranscriptViewport, transcriptCellAt, transcriptLineAtRow, TRANSCRIPT_LINE_OVERSCAN,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
 import { copyToClipboard, pasteFromClipboard } from './clipboard'
@@ -1907,6 +1907,7 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   backButton?: boolean | undefined
   linesRef: React.MutableRefObject<readonly TranscriptLine[]>
   windowOffsetRef: React.MutableRefObject<number>
+  blocksRef: React.MutableRefObject<readonly (readonly TranscriptLine[])[]>
   selection?: TextSelection | null | undefined
 }): React.ReactElement {
   const snapshot = props.snapshot
@@ -1951,10 +1952,6 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
   }
   if (props.dockLines.length > 0) tailBlocks.push([...props.dockLines])
   const blocks = [...props.settledBlocks, ...tailBlocks]
-  const allLines: TranscriptLine[] = []
-  for (const block of blocks) {
-    for (const line of block) allLines.push(line)
-  }
   const windowed = selectTranscriptBlocksWindow(
     blocks,
     props.height,
@@ -1962,7 +1959,8 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
     TRANSCRIPT_LINE_OVERSCAN,
     props.backButton === true ? 1 : 0,
   )
-  props.linesRef.current = allLines
+  props.blocksRef.current = blocks
+  props.linesRef.current = windowed.lines
   props.windowOffsetRef.current = windowed.windowStart
   return (
     <Transcript
@@ -2215,23 +2213,43 @@ export function App(props: {
   const fixedRows = reserved + takeoverH + paletteH
   const transcriptHeight = Math.max(1, rowCount - fixedRows)
   const panelHeight = Math.max(1, transcriptHeight - 1 - (panelNoticeVisible ? 1 : 0))
+  const snapshotTranscriptWindow = useEffectEvent((offset: number) => selectTranscriptBlocksWindow(
+    transcriptBlocksRef.current,
+    transcriptHeight,
+    offset,
+    TRANSCRIPT_LINE_OVERSCAN,
+    offset > 0 ? 1 : 0,
+  ))
+  const hitTranscriptCell = useEffectEvent((
+    terminalRow: number,
+    terminalColumn: number,
+    offset: number,
+    recordWindow: boolean,
+  ) => {
+    const reserved = offset > 0 ? 1 : 0
+    const contentHeight = Math.max(1, transcriptHeight - reserved)
+    const clampedRow = Math.max(0, Math.min(contentHeight - 1, terminalRow - 5))
+    const windowed = snapshotTranscriptWindow(offset)
+    if (recordWindow) {
+      rememberTranscriptWindow(selectionLinesRef.current, windowed.lines, windowed.windowStart)
+    }
+    return transcriptCellAt(
+      windowed.lines,
+      transcriptHeight,
+      windowed.relativeOffset,
+      reserved,
+      clampedRow,
+      terminalColumn,
+      windowed.windowStart,
+    )
+  })
   const extendTranscriptSelection = useEffectEvent((terminalRow: number, terminalColumn: number): void => {
     let offset = transcriptScrollOffsetRef.current
     const maximum = transcriptMaximumOffset.current
     if (terminalRow <= 5) offset = Math.min(maximum, offset + SELECT_SCROLL_LINES)
     else if (terminalRow >= 4 + transcriptHeight) offset = Math.max(0, offset - SELECT_SCROLL_LINES)
     if (offset !== transcriptScrollOffsetRef.current) applyTranscriptScroll(offset)
-    const reserved = offset > 0 ? 1 : 0
-    const contentHeight = Math.max(1, transcriptHeight - reserved)
-    const clampedRow = Math.max(0, Math.min(contentHeight - 1, terminalRow - 5))
-    const cell = transcriptCellAt(
-      transcriptLinesRef.current,
-      transcriptHeight,
-      offset,
-      reserved,
-      clampedRow,
-      terminalColumn,
-    )
+    const cell = hitTranscriptCell(terminalRow, terminalColumn, offset, true)
     const press = selectPressRef.current
     if (cell === undefined || press === null) return
     const span = glyphSpanAt(cell.line.text, cell.column)
@@ -2390,6 +2408,8 @@ export function App(props: {
   const transcriptLineCountRef = useRef(0)
   const transcriptLinesRef = useRef<readonly TranscriptLine[]>([])
   const transcriptWindowOffsetRef = useRef(0)
+  const transcriptBlocksRef = useRef<readonly (readonly TranscriptLine[])[]>([])
+  const selectionLinesRef = useRef(new Map<number, TranscriptLine>())
   const updateTranscriptMaximumOffset = useCallback((maximumOffset: number, lineCount: number) => {
     transcriptMaximumOffset.current = maximumOffset
     const grew = Math.max(0, lineCount - transcriptLineCountRef.current)
@@ -2945,6 +2965,7 @@ export function App(props: {
       setTextSelection(null)
       selectingRef.current = false
       selectPressRef.current = null
+      selectionLinesRef.current = new Map()
       stopSelectScroll()
       return
     }
@@ -3082,6 +3103,7 @@ export function App(props: {
       if (textSelection !== null) {
         textSelectionRef.current = null
         setTextSelection(null)
+        selectionLinesRef.current = new Map()
       }
       if (panelOpen) {
         const delta = wheel === 'up' ? -3 : 3
@@ -3128,13 +3150,14 @@ export function App(props: {
           selectPressRef.current = null
           setTextSelection(null)
           if (current !== null && selectionIsDrag(current)) {
-            const selected = extractSelectedText(transcriptLinesRef.current, current)
+            const selected = extractSelectedText(selectionLinesRef.current, current)
             if (selected !== '') {
               void copyToClipboard(selected, stdout).then((outcome) => {
                 setNotice(outcome.ok ? copy.copyDone : copy.copyFailed(outcome.error ?? 'unknown'))
               })
             }
           }
+          selectionLinesRef.current = new Map()
         }
         return
       }
@@ -3143,6 +3166,7 @@ export function App(props: {
         setTextSelection(null)
         selectingRef.current = false
         selectPressRef.current = null
+        selectionLinesRef.current = new Map()
         stopSelectScroll()
         return
       }
@@ -3192,10 +3216,11 @@ export function App(props: {
         }
         if (click.button === 0) {
           const backButtonVisible = transcriptScrollOffset > 0
+          const windowed = snapshotTranscriptWindow(transcriptScrollOffsetRef.current)
           const line = transcriptLineAtRow(
-            transcriptLinesRef.current,
+            windowed.lines,
             transcriptHeight,
-            transcriptScrollOffsetRef.current,
+            windowed.relativeOffset,
             backButtonVisible ? 1 : 0,
             click.row - 5,
           )
@@ -3218,13 +3243,12 @@ export function App(props: {
             }
             return
           }
-          const cell = transcriptCellAt(
-            transcriptLinesRef.current,
-            transcriptHeight,
-            transcriptScrollOffsetRef.current,
-            backButtonVisible ? 1 : 0,
-            click.row - 5,
+          selectionLinesRef.current = new Map()
+          const cell = hitTranscriptCell(
+            click.row,
             click.column,
+            transcriptScrollOffsetRef.current,
+            true,
           )
           if (cell !== undefined) {
             const span = glyphSpanAt(cell.line.text, cell.column)
@@ -3244,6 +3268,7 @@ export function App(props: {
             selectPressRef.current = null
             textSelectionRef.current = null
             setTextSelection(null)
+            selectionLinesRef.current = new Map()
           }
         }
       }
@@ -3408,6 +3433,7 @@ export function App(props: {
           backButton={transcriptScrollOffset > 0}
           linesRef={transcriptLinesRef}
           windowOffsetRef={transcriptWindowOffsetRef}
+          blocksRef={transcriptBlocksRef}
           selection={textSelection}
         />
       )}
