@@ -46,13 +46,14 @@ import {
 } from './viewport'
 import type { TranscriptLine } from './viewport'
 import { copyToClipboard, pasteFromClipboard } from './clipboard'
+import { MAX_FOLD_NODES, MAX_TRACE } from './fold'
 import { atTokenRange, listWorkspaceMentions, readWorkspaceDir, replaceAtToken } from './file-mention'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
 import {
   extractSelectedText, glyphSpanAt, selectionFromGlyphs, selectionIsDrag, selectionSpanOnLine, sliceDisplayParts,
 } from './selection'
 import type { GlyphAnchor, TextSelection } from './selection'
-import { countUiRender } from './tui-perf'
+import { countUiInputDelay, countUiRender } from './tui-perf'
 import { padEndDisplay, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
 import type { LiveWrapState } from './wrap'
 
@@ -2439,11 +2440,11 @@ export function App(props: {
   const panelListHeight = Math.max(1, panelHeight - settingsChromeRows)
 
   const visibleNodes = useMemo(
-    () => snapshot.nodes.slice(Math.max(0, snapshot.nodes.length - 3000)),
+    () => snapshot.nodes.slice(Math.max(0, snapshot.nodes.length - MAX_FOLD_NODES)),
     [snapshot.nodes],
   )
   const trajectoryLines = useMemo((): TranscriptLine[] => snapshot.trace
-    .slice(Math.max(0, snapshot.trace.length - 3000))
+    .slice(Math.max(0, snapshot.trace.length - MAX_TRACE))
     .map((entry, index) => {
       // One flat row per trace entry, truncated to the content width so a
       // long entry can never wrap and shift the rows below it.
@@ -3301,6 +3302,7 @@ export function App(props: {
     // Panels anchor to the TOP, so wheel-up walks toward older rows.
     const wheel = parseMouseWheel(input)
     if (wheel !== null) {
+      const wheelStarted = performance.now()
       if (selectingRef.current) return
       if (textSelection !== null) {
         textSelectionRef.current = null
@@ -3314,6 +3316,7 @@ export function App(props: {
         applyTranscriptScroll(current =>
           scrollOffsetForWheel(current, transcriptMaximumOffset.current, wheel))
       }
+      countUiInputDelay(performance.now() - wheelStarted)
       return
     }
     // A mouse click can activate the floating back-to-bottom button, the

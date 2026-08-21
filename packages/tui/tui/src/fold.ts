@@ -2,9 +2,11 @@
  * Pure session-log → transcript fold for the dsh terminal surface. Applying
  * the same event prefix always produces the same node/trace/stats sequence
  * (replay determinism), which is what unit tests assert and what resume
- * relies on. The whole-session statistics mirror the Web stats strip:
- * turn/step counts, LLM and tool wall times, TTFT, decode throughput, cache
- * hit ratio, token totals, and context occupancy.
+ * relies on. The fold working set keeps a bounded tail of rows and capped
+ * bodies; stats still accumulate across dropped prefix events. The session
+ * log remains the full durable record. The whole-session statistics mirror
+ * the Web stats strip: turn/step counts, LLM and tool wall times, TTFT,
+ * decode throughput, cache hit ratio, token totals, and context occupancy.
  * @module @deepseek-ai/dsh-tui/src/fold
  */
 
@@ -24,13 +26,53 @@ import { compactResultCard } from './card-project'
 import { formatMs } from './plain'
 
 /** Tool-result text cap: rows stay display-sized even for giant outputs. */
-const MAX_TOOL_TEXT = 4000
+export const MAX_TOOL_TEXT = 4000
+/** Settled assistant body cap. The session log keeps the full message. */
+export const MAX_ASSISTANT_TEXT = 32_768
+/** User-prompt body cap in the fold working set. */
+export const MAX_USER_TEXT = 8_192
+/** Thinking-row body cap. */
+export const MAX_THINK_TEXT = 4_000
+/** Injected-context body cap. */
+export const MAX_CONTEXT_TEXT = 4_000
+/** Newest transcript rows the fold retains (matches the render window). */
+export const MAX_FOLD_NODES = 3_000
+/** Newest trajectory lines the fold retains. */
+export const MAX_TRACE = 512
 /** Status-row text cap. */
 const MAX_STATUS_TEXT = 400
 /** Goal objective preview cap for the status row. */
 const MAX_GOAL_PREVIEW = 200
 /** Tool-call argument preview cap. */
 const MAX_ARGS_PREVIEW = 120
+
+/**
+ * Hard-slice a display body. The durable session log is the full text.
+ * @param text - the projected body.
+ * @param cap - maximum retained characters.
+ * @returns `text` or its prefix of `cap` characters.
+ */
+function capBody(text: string, cap: number): string {
+  return text.length <= cap ? text : text.slice(0, cap)
+}
+
+/**
+ * Count characters the fold currently retains (nodes, traces, live buffer).
+ * Used by tests to assert long sessions stay bounded; not a heap measurement.
+ * @param state - a folded transcript.
+ * @returns retained character count.
+ */
+export function foldResidentChars(state: FoldState): number {
+  let total = 0
+  for (const node of state.nodes) {
+    if (node.kind === 'tool') total += node.detail.length + node.text.length
+    else if (node.kind === 'retry') total += node.retryId.length + node.provider.length
+    else if ('text' in node) total += node.text.length
+  }
+  for (const entry of state.trace) total += entry.text.length
+  if (state.live !== null) total += state.live.text.length + state.live.think.length
+  return total
+}
 
 /** Empty fold state. */
 export function initialState(): FoldState {
@@ -132,11 +174,16 @@ function flushThink(nodes: TuiNode[], id: number, text: string, durationMs: numb
     if (node === undefined) continue
     if (node.kind === 'user' || node.kind === 'assistant') break
     if (node.kind === 'think') {
-      nodes[index] = { ...node, text: node.text + text, id, durationMs: node.durationMs + durationMs }
+      nodes[index] = {
+        ...node,
+        text: capBody(node.text + text, MAX_THINK_TEXT),
+        id,
+        durationMs: node.durationMs + durationMs,
+      }
       return
     }
   }
-  nodes.push({ kind: 'think', id, text, durationMs })
+  nodes.push({ kind: 'think', id, text: capBody(text, MAX_THINK_TEXT), durationMs })
 }
 
 /** Producer label for a non-user message source. */
@@ -244,6 +291,23 @@ function appendTrace(
 }
 
 /**
+ * Keep only the newest `max` items. Replay-private buffers splice in place;
+ * live folds slice so published array identity changes only on eviction.
+ * @param items - nodes or traces.
+ * @param max - retained tail length.
+ * @param scratch - the fold stream (replay vs live).
+ * @returns the truncated array (possibly the same object).
+ */
+function trimRing<T>(items: T[], max: number, scratch: FoldScratch): T[] {
+  if (items.length <= max) return items
+  if (batchScratches.has(scratch)) {
+    items.splice(0, items.length - max)
+    return items
+  }
+  return items.slice(items.length - max)
+}
+
+/**
  * Fold one complete raw event log into transcript state (resume replay).
  * The same prefix contract as {@link applyEvent}: a persisted session's
  * full log folds into exactly the rows the live fold produced.
@@ -265,6 +329,8 @@ export function foldFromLog(events: readonly SessionEvent[]): { fold: FoldState;
 /**
  * Fold one session event into the transcript state. Pure: the input state is
  * never mutated; unknown and structural events fall through without a row.
+ * The fold working set keeps the newest {@link MAX_FOLD_NODES} rows and caps
+ * each body; the session log remains the full durable record.
  * @param state - the fold state before this event.
  * @param event - the next event in log order.
  * @param scratch - private per-stream bookkeeping (timing, tool starts).
@@ -295,8 +361,8 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       break
     }
     case 'user/message': {
-      const text = blocksText(event.data.content, 0)
       const source = event.data.source
+      const text = blocksText(event.data.content, source.kind === 'user' ? MAX_USER_TEXT : MAX_CONTEXT_TEXT)
       if (source.kind === 'user') {
         nodes = appendNode(nodes, { kind: 'user', id: event.seq, text }, scratch)
       } else {
@@ -318,11 +384,11 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       if (live === null) live = { text: '', think: '', thinkSince: null }
       const chunk = event.data.chunk
       if (chunk.type === 'text-delta') {
-        live = { ...live, text: live.text + chunk.text }
+        live = { ...live, text: capBody(live.text + chunk.text, MAX_ASSISTANT_TEXT) }
       } else if (chunk.type === 'reasoning-delta') {
         live = {
           ...live,
-          think: live.think + chunk.text,
+          think: capBody(live.think + chunk.text, MAX_THINK_TEXT),
           thinkSince: live.thinkSince ?? (live.think === '' ? event.time : live.thinkSince),
         }
       } else if (chunk.type === 'usage' && scratch.step !== null) {
@@ -339,7 +405,7 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
         nodes = writableNodes(nodes, scratch)
         flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)))
       }
-      const text = blocksText(event.data.message.content, 0)
+      const text = blocksText(event.data.message.content, MAX_ASSISTANT_TEXT)
       nodes = appendNode(nodes, {
         kind: 'assistant',
         id: event.seq,
@@ -398,8 +464,10 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       } else {
         nodes = appendNode(nodes, { kind: 'tool', id: event.seq, detail: 'tool', status, text, args: undefined, callCard: null, resultCard: null }, scratch)
       }
-      const start = scratch.toolStarts.get(toolResultCallId(event))
+      const callId = toolResultCallId(event)
+      const start = scratch.toolStarts.get(callId)
       if (start !== undefined) {
+        scratch.toolStarts.delete(callId)
         const duration = Math.max(0, event.time - start)
         stats = { ...stats, toolMs: stats.toolMs + duration }
         scratch.turnTools += duration
@@ -575,7 +643,16 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       // plugin-merged types are structural: no transcript row.
       break
   }
-  return { nodes, trace: traces, todos, live, stats, plan, goal, compaction }
+  return {
+    nodes: trimRing(nodes, MAX_FOLD_NODES, scratch),
+    trace: trimRing(traces, MAX_TRACE, scratch),
+    todos,
+    live,
+    stats,
+    plan,
+    goal,
+    compaction,
+  }
 }
 
 /**

@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest'
 import stringWidth from 'string-width'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
-import { anchorRetry, applyEvent, createScratch, foldFromLog, initialState } from '../src/fold'
+import {
+  anchorRetry, applyEvent, createScratch, foldFromLog, foldResidentChars, initialState,
+  MAX_ASSISTANT_TEXT, MAX_FOLD_NODES, MAX_THINK_TEXT, MAX_TRACE, MAX_USER_TEXT,
+} from '../src/fold'
 import type { FoldState } from '../src/types'
 import { parseMouseWheel, scrollOffsetForWheel, stripMouseReports } from '../src/mouse'
 import { fitStatsStrip, formatStats, localizeFoldStatus, markdownLines, renderNodePlain, welcomeText } from '../src/plain'
@@ -405,8 +408,8 @@ describe('session fold', () => {
       source: { kind: 'user' },
     }, index))
     const replayed = foldFromLog(events)
-    expect(replayed.fold.nodes).toHaveLength(events.length)
-    expect(replayed.fold.trace).toHaveLength(events.length)
+    expect(replayed.fold.nodes).toHaveLength(MAX_FOLD_NODES)
+    expect(replayed.fold.trace).toHaveLength(MAX_TRACE)
     expect(replayed.fold.nodes.at(-1)).toMatchObject({ kind: 'user', text: 'history 9999' })
 
     const replayNodes = replayed.fold.nodes
@@ -414,8 +417,9 @@ describe('session fold', () => {
       name: 'help', kind: 'success', text: 'after resume',
     }, events.length), replayed.scratch)
     expect(next.nodes).not.toBe(replayNodes)
-    expect(replayNodes).toHaveLength(events.length)
-    expect(next.nodes).toHaveLength(events.length + 1)
+    expect(replayNodes).toHaveLength(MAX_FOLD_NODES)
+    expect(next.nodes).toHaveLength(MAX_FOLD_NODES)
+    expect(next.nodes.at(-1)).toMatchObject({ kind: 'status', text: 'after resume' })
   })
 
   it('formats the stats strip per locale with the occupancy projection first', () => {
@@ -520,5 +524,58 @@ describe('session fold', () => {
     expect(tool?.kind === 'tool' && tool.callCard).toBeNull()
     expect(tool?.kind === 'tool' && tool.text.length).toBe(4000)
     expect(JSON.stringify(tool).length).toBeLessThan(huge.length)
+  })
+
+  it('caps assistant, user, and live-think bodies so the fold is not a second copy of the log', () => {
+    const huge = 'x'.repeat(50_000)
+    const live = foldAll([
+      event('step/start', { turn: 1, step: 1 }, 0, 0),
+      event('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 0, text: huge } }, 1, 10),
+      event('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'text-delta', index: 1, text: huge } }, 2, 20),
+    ])
+    expect(live.live?.think.length).toBe(MAX_THINK_TEXT)
+    expect(live.live?.text.length).toBe(MAX_ASSISTANT_TEXT)
+    const settled = foldAll([
+      event('user/message', { id: 'u1', role: 'user', content: [text(huge)], source: { kind: 'user' } }, 0, 0),
+      event('assistant/message', {
+        turn: 1,
+        step: 1,
+        message: { id: 'a1', role: 'assistant', content: [text(huge)], source: { kind: 'model' } },
+      }, 1, 10),
+    ])
+    expect(settled.nodes.find(node => node.kind === 'user')?.text.length).toBe(MAX_USER_TEXT)
+    expect(settled.nodes.find(node => node.kind === 'assistant')?.text.length).toBe(MAX_ASSISTANT_TEXT)
+  })
+
+  it('keeps only the newest fold rows and traces; stats still count dropped turns', () => {
+    const events: SessionEvent[] = []
+    let seq = 0
+    const body = 'x'.repeat(50_000)
+    const turns = 1_200
+    for (let turn = 1; turn <= turns; turn++) {
+      events.push(event('turn/start', { turn }, seq, seq))
+      seq += 1
+      events.push(event('user/message', {
+        id: `u${turn}`,
+        role: 'user',
+        content: [text(body)],
+        source: { kind: 'user' },
+      }, seq, seq))
+      seq += 1
+      events.push(event('assistant/message', {
+        turn,
+        step: 1,
+        message: { id: `a${turn}`, role: 'assistant', content: [text(body)], source: { kind: 'model' } },
+      }, seq, seq))
+      seq += 1
+      events.push(event('turn/end', { turn, reason: { kind: 'completed' } }, seq, seq))
+      seq += 1
+    }
+    const state = foldFromLog(events).fold
+    expect(state.nodes.length).toBe(MAX_FOLD_NODES)
+    expect(state.trace.length).toBe(MAX_TRACE)
+    expect(state.stats.turns).toBe(turns)
+    expect(foldResidentChars(state)).toBeLessThan(MAX_FOLD_NODES * MAX_ASSISTANT_TEXT + MAX_TRACE * 200)
+    expect(foldResidentChars(state)).toBeLessThan(turns * body.length)
   })
 })

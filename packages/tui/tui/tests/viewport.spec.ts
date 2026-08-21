@@ -32,6 +32,17 @@ describe('selectTranscriptViewport', () => {
     expect(viewport.lines.map(entry => entry.text)).toEqual(['l5', 'l6', 'l7', 'l8', 'l9'])
   })
 
+  it('keeps follow mode on the tail when lines append, and holds a scrolled window when offset grows by the delta', () => {
+    const first = Array.from({ length: 10 }, (_, index) => line(`l${index}`))
+    const grown = Array.from({ length: 14 }, (_, index) => line(`l${index}`))
+    expect(selectTranscriptViewport(first, 5, 0).lines.at(-1)?.text).toBe('l9')
+    expect(selectTranscriptViewport(grown, 5, 0).lines.at(-1)?.text).toBe('l13')
+    const scrolled = selectTranscriptViewport(first, 5, 3)
+    expect(scrolled.lines.map(entry => entry.text)).toEqual(['l2', 'l3', 'l4', 'l5', 'l6'])
+    const held = selectTranscriptViewport(grown, 5, 3 + 4)
+    expect(held.lines.map(entry => entry.text)).toEqual(['l2', 'l3', 'l4', 'l5', 'l6'])
+  })
+
   it('hides lines from the bottom as the offset grows', () => {
     const lines = Array.from({ length: 10 }, (_, index) => line(`l${index}`))
     const viewport = selectTranscriptViewport(lines, 5, 3)

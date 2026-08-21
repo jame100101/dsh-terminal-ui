@@ -853,9 +853,9 @@ async function boot(
     description: command.description,
     needsArgs: command.input !== undefined,
   }))
-  // First paint does NOT wait for the slow data loads: the model catalog
-  // starts as the selected route, the settings pages show their loading
-  // placeholder, and both refresh when their loads settle.
+  // First paint does not wait for catalog/settings/feedback I/O. Those
+  // loads start after this function yields so they cannot contend with
+  // Cordis boot or the first Ink frame. Print mode never starts them.
   const bootModels: ModelEntry[] = [{
     provider: created.selection.provider,
     model: created.selection.model,
@@ -930,16 +930,6 @@ async function boot(
       }).catch(() => {})
     })
   }
-  void loadPanels()
-  void resolveReasoning(ctx, created.selection.provider, created.selection.model).then((reasoning) => {
-    // The persisted selection's own effort wins over the adapter default.
-    surface.reasoning = {
-      effort: created.selection.reasoningEffort === undefined ? reasoning.effort : String(created.selection.reasoningEffort),
-      levels: reasoning.levels,
-    }
-    surface.version += 1
-    store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
-  }).catch(() => {})
   /** Publish one replaced feedback map. */
   const publishFeedback = (): void => {
     surface.version += 1
@@ -959,14 +949,26 @@ async function boot(
       // A sidecar read racing teardown must not disturb the surface.
     }
   }
-  void loadFeedback()
-  void subagentRows(ctx, surface.agent.id).then((rows) => {
-    surface.subagents = rows
-    surface.version += 1
-    store.set({ ...store.getSnapshot(), subagents: rows, version: surface.version })
-  }).catch(() => {
-    // A listing racing teardown must not disturb the exit path.
-  })
+  const loadReasoning = (): void => {
+    void resolveReasoning(ctx, created.selection.provider, created.selection.model).then((reasoning) => {
+      // The persisted selection's own effort wins over the adapter default.
+      surface.reasoning = {
+        effort: created.selection.reasoningEffort === undefined ? reasoning.effort : String(created.selection.reasoningEffort),
+        levels: reasoning.levels,
+      }
+      surface.version += 1
+      store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
+    }).catch(() => {})
+  }
+  // Catalog, settings, and feedback stay off the first-paint path. Subagent
+  // rows load when `/subagents` opens (`refreshPanels`), same as sessions.
+  if (intent.mode !== 'print') {
+    setImmediate(() => {
+      loadPanels()
+      loadReasoning()
+      void loadFeedback()
+    })
+  }
   // Session titles require inspecting persisted logs. Keep that work off the
   // startup path; opening /sessions calls refreshPanels() and loads the same
   // rows on demand after the first terminal frame is interactive.

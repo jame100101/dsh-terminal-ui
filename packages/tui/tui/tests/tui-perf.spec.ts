@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { countUiPublish, countUiRender, tuiPerfEnabled } from '../src/tui-perf'
+import {
+  countUiInputDelay, countUiPublish, countUiRender, resetTuiPerf, tuiPerfEnabled,
+} from '../src/tui-perf'
 
 describe('tuiPerf', () => {
   const original = process.env.TUI_PERF
   afterEach(() => {
+    resetTuiPerf()
     if (original === undefined) delete process.env.TUI_PERF
     else process.env.TUI_PERF = original
   })
@@ -13,10 +16,12 @@ describe('tuiPerf', () => {
     expect(tuiPerfEnabled()).toBe(false)
     countUiPublish()
     countUiRender()
+    countUiInputDelay(4)
   })
 
-  it('reports publish and render rates on stderr after one second', async () => {
+  it('reports publish, render, heap, wheel, and lag after one second', async () => {
     process.env.TUI_PERF = '1'
+    resetTuiPerf()
     expect(tuiPerfEnabled()).toBe(true)
     const chunks: string[] = []
     const write = process.stderr.write.bind(process.stderr)
@@ -30,9 +35,28 @@ describe('tuiPerf', () => {
     try {
       countUiPublish()
       countUiRender()
+      countUiInputDelay(Number.NaN)
+      countUiInputDelay(-2)
+      countUiInputDelay(1.25)
       current += 1_001
       countUiPublish()
-      expect(chunks.some(chunk => chunk.includes('[dsh-perf]'))).toBe(true)
+      expect(chunks.some(chunk =>
+        chunk.includes('[dsh-perf]')
+        && chunk.includes('heap=')
+        && chunk.includes('wheel_avg=')
+        && chunk.includes('lag='))).toBe(true)
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve)
+      })
+      current += 1_001
+      countUiRender()
+      expect(chunks.filter(chunk => chunk.includes('[dsh-perf]')).length).toBeGreaterThanOrEqual(1)
+      current += 1_001
+      countUiPublish()
+      delete process.env.TUI_PERF
+      await new Promise<void>((resolve) => {
+        setImmediate(resolve)
+      })
     } finally {
       Date.now = now
       process.stderr.write = write

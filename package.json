@@ -139,6 +139,7 @@
     "release:verify-packed-install": "tsx scripts/release/verify-packed-install.ts",
     "release:publish": "tsx scripts/release/publish.ts",
     "dsh": "node --import tsx/esm apps/cli/src/bin.ts",
+    "dsh:tui": "node apps/cli/lib/bin.js --profile tui",
     "dsh-tui": "node apps/tui-cli/bin/dsh-tui.js",
     "dsh-tui:assemble-runtime": "node apps/tui-cli/scripts/assemble-runtime.mjs",
     "demo:code-mode": "node scripts/demo-code-mode.mjs",

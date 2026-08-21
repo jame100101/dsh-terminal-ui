@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-20-tui-viewport-local-node-line-cache.md
-2026-08-20-tui-viewport-local-node-line-cache.md: 884495dd05afd7b7442931d9bf41dd05cf62e850
-2026-08-20-tui-viewport-local-node-line-cache.zh.md: 6d8ccf16dfc49dee320662205f6d5dd200f3e8b3
+2026-08-20-tui-viewport-local-node-line-cache.md: 802e1f2689756c2fc5cb13591fe9f5fcb032d974
+2026-08-20-tui-viewport-local-node-line-cache.zh.md: 66d3e4b53fd3012739ab3c243c915ddd6f24a28f

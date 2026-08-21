@@ -24,7 +24,7 @@ Scrollbar thumb position needs the full line total. Counts are cheap once record
 
 ## Consequences
 
-Scrolling to an evicted node re-projects it. Follow-mode streaming keeps the tail in cache. Issue #14 store splitting and heapUsed plateau tests are still open.
+Scrolling to an evicted node re-projects it. Follow-mode streaming keeps the tail in cache. The fold working set that bounds `snapshot.nodes` is [the later working-set note](2026-08-21-tui-fold-working-set-and-deferred-boot.md).
 
 ## Testing
 

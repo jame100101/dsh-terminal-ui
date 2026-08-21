@@ -66,7 +66,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行；composer `@` 补全工作区相对路径（Tab 插入，目录保留 `/`） |
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
 | 图片粘贴 | ✅ 终端无位图粘贴通道；等价路径 `/attach <图片路径>` 走同一 attachments 服务（输入即入下一消息） |
-| MessageList 虚拟化 | ⚠ 最近 3000 节点的投影窗口 + 节点级换行缓存 + 底部锚定视口；尚未采用 Web 的 50-message 向前分页 |
+| MessageList 虚拟化 | ⚠ fold 工作集最近 3000 节点（assistant ≤32 KiB，think/tool/context ≤4 KiB，user ≤8 KiB）+ 视口切片 + 节点行缓存；session log 仍是全文；尚未采用 Web 的 50-message 向前分页 |
 | 对话复制（拖选 / 输入框 / `/copy`） | ✅ 默认拖选复制提示词和回复；输入框 TUI 选区（Ctrl+A/C/V）；`/copy`；剩余项见 [bug.md](./bug.md) |
 
 ## Status
@@ -77,6 +77,8 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | Composer first wrap line swallowing a cell | Open — [bug.md](./bug.md) |
 | Paste of terminal text not collapsing the composer | Open — [bug.md](./bug.md) |
 | Streaming coalesce, incremental wrap, isolated shimmer, windowed hit-test, viewport-local node cache, stream publish skips panel recompute ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | Done |
+| Fold working set (3000 rows, capped bodies) + deferred catalog/settings/feedback after first paint; `pnpm dsh:tui` built launch | Done |
+| Keyless perf acceptance: 40 ms coalesce, incremental wrap, wheel p99, 100/500-turn fold heap, built `--version`/`--help` ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | Done |
 
 ## Known Limitations and Deferred Work
 
@@ -85,4 +87,5 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 - **Pending steering has no transcript bubble yet** (the queue dock shows the queued steer previews).
 - **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), the back-to-bottom button, and default drag-copy of prompt/reply text.
 - **Markdown styling covers headings, paragraphs, and GFM tables**: list items and blockquote interiors stay plain text (remaining GFM pass).
-- **Resume still reads the complete authoritative session log** because the resumed Agent requires complete replay; the TUI fold is linear and the display projection is bounded, but history transport is not yet Web-style backward paging.
+- **Resume still reads the complete authoritative session log** because the resumed Agent requires complete replay; the TUI fold is a 3000-row working set with capped bodies, and the display projection is windowed, but history transport is not yet Web-style backward paging.
+- **Daily launch uses built artifacts.** After `pnpm run build`, `pnpm dsh:tui` runs `apps/cli/lib/bin.js --profile tui` in one Node process. `pnpm dsh-tui` is the wrapper over the same built bin. `pnpm dsh --profile tui` is the tsx source path.
