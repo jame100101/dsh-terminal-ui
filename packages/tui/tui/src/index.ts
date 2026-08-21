@@ -76,6 +76,7 @@ import { collectCredentialRefs, collectPluginFields, groupProviders, sessionTitl
 import { createTuiStore } from './store'
 import { compactCallCard, compactResultCard } from './card-project'
 import { createUiPublishScheduler, shouldCoalesceSessionEvent } from './ui-publish'
+import { selectPanelSnapshot } from './publish-snapshot'
 import { buildTuiStartupProgram, parseTuiStartupIntent } from './startup-args'
 import type { StartupIntent } from './startup-args'
 import {
@@ -504,6 +505,25 @@ function subscribe(
   const publish = (reusePanels = false): void => {
     const previous = store.getSnapshot()
     surface.version += 1
+    const panels = selectPanelSnapshot(previous, reusePanels, () => ({
+      commands: previous.commands,
+      models: surface.models,
+      sessions: ctx.agents.list().map((agent): SessionEntry => ({
+        id: agent.id,
+        model: agent.options.model ?? '',
+        status: agent.status,
+      })),
+      queued: queuedEntries(surface.agent),
+      settings: surface.settings,
+      jobs: jobsRows(ctx, Date.now()),
+      subagents: surface.subagents,
+      workflows: [...surface.workflows.values()],
+      feedback: surface.feedback,
+      reasoning: surface.reasoning,
+      attachmentCount: surface.pendingAttachments.length,
+      sandbox: ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode,
+      occupancy: readOccupancy(ctx, surface.agent.session),
+    }))
     store.set({
       version: surface.version,
       nodes: surface.fold.nodes,
@@ -517,26 +537,10 @@ function subscribe(
       cwd: surface.cwd,
       pendingApproval: surface.pendingApproval,
       pendingQuestion: surface.pendingQuestion,
-      commands: previous.commands,
-      models: reusePanels ? previous.models : surface.models,
-      sessions: reusePanels ? previous.sessions : ctx.agents.list().map((agent): SessionEntry => ({
-        id: agent.id,
-        model: agent.options.model ?? '',
-        status: agent.status,
-      })),
-      queued: queuedEntries(surface.agent),
-      settings: surface.settings,
-      jobs: reusePanels ? previous.jobs : jobsRows(ctx, Date.now()),
-      subagents: surface.subagents,
-      workflows: reusePanels ? previous.workflows : [...surface.workflows.values()],
-      feedback: surface.feedback,
       plan: surface.fold.plan,
       goal: surface.fold.goal,
-      reasoning: surface.reasoning,
-      attachmentCount: surface.pendingAttachments.length,
       compaction: surface.fold.compaction,
-      sandbox: reusePanels ? previous.sandbox : ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode,
-      occupancy: reusePanels ? previous.occupancy : readOccupancy(ctx, surface.agent.session),
+      ...panels,
     })
   }
   const uiPublish = createUiPublishScheduler(() => { publish(true) })

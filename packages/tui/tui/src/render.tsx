@@ -46,6 +46,7 @@ import {
 } from './viewport'
 import type { TranscriptLine } from './viewport'
 import { copyToClipboard, pasteFromClipboard } from './clipboard'
+import { atTokenRange, listWorkspaceMentions, readWorkspaceDir, replaceAtToken } from './file-mention'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
 import {
   extractSelectedText, glyphSpanAt, selectionFromGlyphs, selectionIsDrag, selectionSpanOnLine, sliceDisplayParts,
@@ -85,6 +86,10 @@ interface Copy {
   stringPlaceholder: string
   paletteTitle: string
   paletteHint: string
+  filePaletteTitle: string
+  filePaletteHint: string
+  fileDir: string
+  fileFile: string
   noMatch: string
   approval: string
   allowOnce: string
@@ -175,6 +180,10 @@ const COPY: Record<Locale, Copy> = {
     stringPlaceholder: '输入新值，Enter 提交',
     paletteTitle: '╭─ 命令（↑↓ 选择 · Enter 执行 · Tab 补全 · Esc 取消）',
     paletteHint: '╰─ ↑↓ 选择 · Enter 执行 · Tab 补全 · Esc 关闭',
+    filePaletteTitle: '╭─ 文件（↑↓ 选择 · Tab 补全 · Esc 取消）',
+    filePaletteHint: '╰─ @路径 · Tab 补全 · 目录带 /',
+    fileDir: '目录',
+    fileFile: '文件',
     noMatch: '  没有匹配项',
     approval: '⚠ 请求工具执行许可：',
     allowOnce: '● Allow once (y)',
@@ -262,6 +271,10 @@ const COPY: Record<Locale, Copy> = {
     stringPlaceholder: 'New value, Enter to submit',
     paletteTitle: '╭─ commands (↑↓ select · Enter run · Tab complete · Esc close)',
     paletteHint: '╰─ ↑↓ select · Enter run · Tab complete · Esc close',
+    filePaletteTitle: '╭─ files (↑↓ select · Tab complete · Esc close)',
+    filePaletteHint: '╰─ @path · Tab completes · directories keep /',
+    fileDir: 'directory',
+    fileFile: 'file',
     noMatch: '  No matching options',
     approval: '⚠ tool execution request: ',
     allowOnce: '● Allow once (y)',
@@ -589,6 +602,8 @@ interface PaletteItem {
   label?: string
   /** Complete command executed when this finite option is selected. */
   command?: string
+  /** Replace the composer draft (file mentions) instead of running a command. */
+  insert?: string
 }
 
 /** The `dsh` slash catalog: host commands plus TUI-local commands. */
@@ -841,18 +856,22 @@ function nodeLines(
 }
 
 /** Per-node projection variants retained for the viewport-local working set. */
-interface NodeLineCache {
+export interface NodeLineCache {
   lines: Map<TuiNode, Map<string, TranscriptLine[]>>
   counts: WeakMap<TuiNode, Map<string, number>>
   recency: TuiNode[]
 }
 
-function createNodeLineCache(): NodeLineCache {
+/**
+ * Empty viewport-local node projection cache.
+ * @returns a cache with no painted rows.
+ */
+export function createNodeLineCache(): NodeLineCache {
   return { lines: new Map(), counts: new WeakMap(), recency: [] }
 }
 
 /** Max projected nodes whose line arrays stay in memory. */
-const MAX_NODE_LINE_CACHE = 256
+export const MAX_NODE_LINE_CACHE = 256
 
 function nodeLineVariantKey(
   node: TuiNode,
@@ -884,7 +903,13 @@ function touchNodeLineCache(cache: NodeLineCache, node: TuiNode): void {
   cache.recency.push(node)
 }
 
-function pruneNodeLineCache(cache: NodeLineCache, keep: ReadonlySet<TuiNode>): void {
+/**
+ * Drop painted rows until the cache is within {@link MAX_NODE_LINE_CACHE},
+ * preferring nodes that are not in `keep`.
+ * @param cache - the node projection cache.
+ * @param keep - nodes intersecting the current overscan window.
+ */
+export function pruneNodeLineCache(cache: NodeLineCache, keep: ReadonlySet<TuiNode>): void {
   while (cache.lines.size > MAX_NODE_LINE_CACHE) {
     const victim = cache.recency.find(entry => !keep.has(entry)) ?? cache.recency[0]
     if (victim === undefined) break
@@ -900,8 +925,17 @@ function sparseCountBlock(count: number): TranscriptLine[] {
   return block
 }
 
-/** Project one node once for a display-affecting input combination. */
-function cachedNodeLines(
+/**
+ * Project one node once for a display-affecting input combination.
+ * @param cache - the node projection cache.
+ * @param node - the immutable transcript node.
+ * @param width - wrap width in cells.
+ * @param expanded - whether collapsible bodies are open.
+ * @param feedback - assistant ratings by message id.
+ * @param locale - chrome locale.
+ * @returns painted rows for that node.
+ */
+export function cachedNodeLines(
   cache: NodeLineCache,
   node: TuiNode,
   width: number,
@@ -931,7 +965,17 @@ function cachedNodeLines(
   return lines
 }
 
-function cachedNodeLineCount(
+/**
+ * Line count for one node, using a stored count when the variant is known.
+ * @param cache - the node projection cache.
+ * @param node - the immutable transcript node.
+ * @param width - wrap width in cells.
+ * @param expanded - whether collapsible bodies are open.
+ * @param feedback - assistant ratings by message id.
+ * @param locale - chrome locale.
+ * @returns painted row count including none for empty non-user bodies.
+ */
+export function cachedNodeLineCount(
   cache: NodeLineCache,
   node: TuiNode,
   width: number,
@@ -946,7 +990,7 @@ function cachedNodeLineCount(
 }
 
 /** Three-row compact header plus a separator (DamnatioX header geometry). */
-function Header(props: {
+const Header = React.memo(function Header(props: {
   snapshot: ReturnType<TuiStore['getSnapshot']>
   width: number
   theme: 'dark' | 'light'
@@ -988,7 +1032,16 @@ function Header(props: {
       <Text dimColor>{'─'.repeat(Math.max(1, props.width))}</Text>
     </Box>
   )
-}
+}, (previous, next) => (
+  previous.width === next.width
+  && previous.theme === next.theme
+  && previous.snapshot.sessionId === next.snapshot.sessionId
+  && previous.snapshot.cwd === next.snapshot.cwd
+  && previous.snapshot.model === next.snapshot.model
+  && previous.snapshot.busy === next.snapshot.busy
+  && previous.snapshot.nodes.length === next.snapshot.nodes.length
+  && previous.snapshot.settings === next.snapshot.settings
+))
 
 /**
  * One already-wrapped row with an inverse mid-span. Segments partition by
@@ -1307,7 +1360,7 @@ function CommandPaletteView(props: {
         ? <Text dimColor>{copy.noMatch}</Text>
         : visibleItems.map((command, index) => {
           const absoluteIndex = start + index
-          const label = command.label ?? `/${command.name}`
+          const label = command.label ?? (command.insert !== undefined ? command.name : `/${command.name}`)
           const description = fitDisplayText(sanitizeTerminalText(command.description), Math.max(1, contentWidth - stringWidth(label) - 4))
           return (
             <Text
@@ -1745,7 +1798,7 @@ function NativeCursor({ x, y }: { x: number; y: number }): null {
 }
 
 /** The composer: a separator, the `› ` prompt, and the wrapping input. */
-function Composer(props: {
+const Composer = React.memo(function Composer(props: {
   draft: string
   onDraftChange: (value: string) => void
   onSubmit: (value: string, steer?: boolean) => void
@@ -1787,7 +1840,7 @@ function Composer(props: {
       </Box>
     </Box>
   )
-}
+})
 
 /** The wrapped read-only draft shown while the composer is disabled. */
 function DisabledComposerLines(props: { value: string; placeholder: string; width: number }): React.ReactElement {
@@ -1890,7 +1943,7 @@ function StatusBar(props: {
 }
 
 /** The pinned permission row above the composer: mode label colored by policy plus the Shift+Tab hint. */
-function PermissionBar(props: {
+const PermissionBar = React.memo(function PermissionBar(props: {
   snapshot: ReturnType<TuiStore['getSnapshot']>
   width: number
   locale: Locale
@@ -1911,7 +1964,12 @@ function PermissionBar(props: {
       {hintFits ? <Text dimColor wrap="truncate">{hint}</Text> : null}
     </Box>
   )
-}
+}, (previous, next) => (
+  previous.width === next.width
+  && previous.locale === next.locale
+  && previous.theme === next.theme
+  && previous.snapshot.sandbox === next.snapshot.sandbox
+))
 
 /** The approval/question takeover occupying the budgeted rows above the composer. */
 function Takeover(props: {
@@ -2229,12 +2287,29 @@ export function App(props: {
       .filter(command => command.name.startsWith(query.trim()))
       .sort((a, b) => a.name.localeCompare(b.name))
   }
+  const fileMatchesFor = (value: string): PaletteItem[] => {
+    const range = atTokenRange(value)
+    if (range === null) return []
+    const copy = COPY[locale]
+    return listWorkspaceMentions(snapshot.cwd, range.query, readWorkspaceDir).map((entry) => {
+      const suffix = entry.directory ? `${entry.relative}/` : `${entry.relative} `
+      return {
+        name: entry.relative,
+        label: `@${entry.relative}${entry.directory ? '/' : ''}`,
+        description: entry.directory ? copy.fileDir : copy.fileFile,
+        needsArgs: false,
+        insert: replaceAtToken(value, suffix),
+      }
+    })
+  }
   const palette = useMemo(() => {
     if (paletteDismissedInput === draft || panelOpen || pendingApproval !== null || pendingQuestion !== null) return null
-    const matches = slashMatchesFor(draft)
-    if (matches.length === 0) return null
-    return matches
-  }, [draft, paletteDismissedInput, panelOpen, pendingApproval, pendingQuestion, commands, locale, snapshot.reasoning.effort])
+    const slash = slashMatchesFor(draft)
+    if (slash.length > 0) return slash
+    const files = fileMatchesFor(draft)
+    if (files.length === 0) return null
+    return files
+  }, [draft, paletteDismissedInput, panelOpen, pendingApproval, pendingQuestion, commands, locale, snapshot.reasoning.effort, snapshot.cwd])
 
   useEffect(() => {
     setPaletteSelectedIndex(current =>
@@ -2790,6 +2865,12 @@ export function App(props: {
     if (palette === null) return
     const item = palette[Math.min(paletteSelectedIndex, palette.length - 1)]
     if (item === undefined) return
+    if (item.insert !== undefined) {
+      setDraft(item.insert)
+      setPaletteDismissedInput(item.insert.endsWith('/') ? null : item.insert)
+      setPaletteSelectedIndex(0)
+      return
+    }
     if (item.command !== undefined) {
       if (completeOnly) {
         setDraft(item.command)
@@ -3578,7 +3659,9 @@ export function App(props: {
                 ? '╰─ off / low / high / max · Enter 应用'
                 : '╰─ off / low / high / max · Enter applies',
             }
-            : {}}
+            : palette.some(item => item.insert !== undefined)
+              ? { title: copy.filePaletteTitle, hint: copy.filePaletteHint }
+              : {}}
         />
       ) : null}
       {takeoverH > 0 ? (

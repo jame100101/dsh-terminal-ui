@@ -1293,6 +1293,20 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 30_000)
 
+  it('opens the @ file palette from the workspace cwd', async () => {
+    const { store, capture, unmount, type } = await mount()
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({ ...snapshot, version: snapshot.version + 1, cwd: process.cwd() })
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      await type('@')
+      const lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('文件') || line.includes('files'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
   it('shows a floating back-to-bottom button when scrolled up and returns on click', async () => {
     const nodes: TuiNode[] = Array.from({ length: 40 }, (_, index) => ({
       kind: 'user', id: index, text: `第${index}行`,

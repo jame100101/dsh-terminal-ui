@@ -63,7 +63,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | plan 模式条 / goal 面板 | ✅ 状态栏 `◈ plan`（含 pending 状态）+ transcript 尾 goal dock + `/goal` 详情 |
 | 消息反馈（feedback） | ⚠️ `message-feedback` sidecar 与已有评分展示保留；TUI 不再占用 Tab/↑↓/Space/g/b 组合键进入消息选择模式 |
 | `/attach` 附件、`/workspace`/`/rename`、fork | ✅ `/rename <标题>`（sessionTitle.rename）、`/workspace <目录>`（chdir，新会话继承）、`/attach <图片>`（attachments.saveImage，随下一条消息发送 + dock）、`/fork [eventSeq]`（seed 分叉到新会话，可经 /sessions 恢复） |
-| 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行覆盖可见性；交互 chips/@提及补全留后续 |
+| 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行；composer `@` 补全工作区相对路径（Tab 插入，目录保留 `/`） |
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
 | 图片粘贴 | ✅ 终端无位图粘贴通道；等价路径 `/attach <图片路径>` 走同一 attachments 服务（输入即入下一消息） |
 | MessageList 虚拟化 | ⚠ 最近 3000 节点的投影窗口 + 节点级换行缓存 + 底部锚定视口；尚未采用 Web 的 50-message 向前分页 |
@@ -76,7 +76,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | Drag-copy of prompts and replies; composer Ctrl+A/C/V; `/copy` | Done |
 | Composer first wrap line swallowing a cell | Open — [bug.md](./bug.md) |
 | Paste of terminal text not collapsing the composer | Open — [bug.md](./bug.md) |
-| Streaming coalesce, incremental wrap, isolated shimmer, windowed hit-test, viewport-local node cache ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | In progress |
+| Streaming coalesce, incremental wrap, isolated shimmer, windowed hit-test, viewport-local node cache, stream publish skips panel recompute ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | Done |
 
 ## Known Limitations and Deferred Work
 
