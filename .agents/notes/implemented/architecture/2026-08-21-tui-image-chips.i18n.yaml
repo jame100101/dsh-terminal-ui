@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-21-tui-image-chips.md
+2026-08-21-tui-image-chips.md: 49f4ab8ea6b790c8b60d6938f2de29739b44e1a8
+2026-08-21-tui-image-chips.zh.md: 38c7f63cef627b2b17ef94a6c4110cd7e29607d6

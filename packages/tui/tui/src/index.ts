@@ -74,6 +74,12 @@ import type { FoldState } from './types'
 import { renderAssistantResultPlain, renderNodePlain } from './plain'
 import { collectCredentialRefs, collectPluginFields, groupProviders, sessionTitlesById } from './settings-data'
 import { createTuiStore } from './store'
+import type { PendingImageChip } from './store'
+import {
+  attachmentsForSubmit, formatByteSize, imageChip, keepAttachmentsByChips, mediaTypeFromPath, rejectImageBatch,
+  sniffMediaType, stripImageChips,
+} from './image-intake'
+import { readClipboardImage } from './image-clipboard'
 import { compactCallCard, compactResultCard } from './card-project'
 import { createUiPublishScheduler, shouldCoalesceSessionEvent } from './ui-publish'
 import { selectPanelSnapshot } from './publish-snapshot'
@@ -163,6 +169,18 @@ const IMAGE_MEDIA_BY_EXT: Record<string, ImageMediaType> = {
   jpeg: 'image/jpeg',
   gif: 'image/gif',
   webp: 'image/webp',
+}
+
+/** Project pending refs into Grok chips for the dock. */
+function pendingImageChips(refs: readonly ImageAttachmentRef[]): PendingImageChip[] {
+  return refs.map((ref, index) => ({
+    chip: imageChip(index),
+    name: ref.name ?? `image-${index + 1}`,
+    bytes: ref.bytes,
+    width: ref.width,
+    height: ref.height,
+    mediaType: ref.mediaType,
+  }))
 }
 
 /** Process-facing facts the surface owns across publishes. */
@@ -521,6 +539,7 @@ function subscribe(
       feedback: surface.feedback,
       reasoning: surface.reasoning,
       attachmentCount: surface.pendingAttachments.length,
+      pendingImages: pendingImageChips(surface.pendingAttachments),
       sandbox: ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode,
       occupancy: readOccupancy(ctx, surface.agent.session),
     }))
@@ -714,7 +733,12 @@ async function loadModels(ctx: Context, current: { provider: string; model: stri
     try {
       const models = await llm.listModels(provider.id)
       for (const model of models) {
-        entries.push({ provider: provider.id, model: model.id, label: model.name === model.id ? model.id : `${model.name} (${model.id})` })
+        entries.push({
+          provider: provider.id,
+          model: model.id,
+          label: model.name === model.id ? model.id : `${model.name} (${model.id})`,
+          ...(model.inputModalities?.includes('image') === true ? { acceptsImage: true } : {}),
+        })
       }
     } catch {
       // A provider that cannot list models still routes; skip its catalog.
@@ -887,6 +911,7 @@ async function boot(
     goal: null,
     reasoning: { effort: undefined, levels: [] },
     attachmentCount: 0,
+    pendingImages: [],
     compaction: false,
     sandbox: ctx.sandboxPolicy.resolve({ session: created.agent.session }).mode,
     occupancy: null,
@@ -992,10 +1017,74 @@ async function boot(
   // matching the non-TTY fallback semantics.
   if (isTty && intent.mode !== 'print') mountAnswerers(ctx, store, surface)
   /** Host-command passthrough: registered slash commands dispatch without a model turn; unknown lines go to the model. */
+  const publishPendingImages = (): void => {
+    surface.version += 1
+    store.set({
+      ...store.getSnapshot(),
+      attachmentCount: surface.pendingAttachments.length,
+      pendingImages: pendingImageChips(surface.pendingAttachments),
+      version: surface.version,
+    })
+  }
+  const currentModelAcceptsImage = (): boolean =>
+    surface.models.some(entry => entry.model === surface.currentModel && entry.acceptsImage === true)
+  const ingestImageBytes = async (input: { data: Uint8Array; mediaType: ImageMediaType; name: string }): Promise<string | null> => {
+    const attachments = ctx.get('attachments')
+    if (attachments === undefined) {
+      return uiText('附件服务未加载（bundle 缺 dsh-attachment-local）', 'Attachment service is not loaded (bundle lacks dsh-attachment-local)')
+    }
+    const refused = rejectImageBatch(
+      surface.pendingAttachments.length,
+      surface.pendingAttachments.reduce((sum, ref) => sum + ref.bytes, 0),
+      [{ bytes: input.data.byteLength, mediaType: input.mediaType }],
+      attachments.imageLimits,
+    )
+    if (refused !== null) {
+      switch (refused.code) {
+        case 'unsupported-type':
+          return uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported')
+        case 'too-many':
+          return uiText(`一条消息最多添加 ${refused.max} 张图片`, `A message can include up to ${refused.max} images`)
+        case 'file-too-large':
+          return uiText(`单张图片不能超过 ${formatByteSize(refused.max)}`, `Each image must be smaller than ${formatByteSize(refused.max)}`)
+        case 'total-too-large':
+          return uiText(`图片总大小超过 ${formatByteSize(refused.max)}，请移除部分图片`, `Images exceed ${formatByteSize(refused.max)} in total; remove some and try again`)
+      }
+    }
+    try {
+      const ref = await attachments.saveImage({ data: input.data, mediaType: input.mediaType, name: input.name })
+      surface.pendingAttachments = [...surface.pendingAttachments, ref]
+      publishPendingImages()
+      return null
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String((error as { code: unknown }).code)
+        : ''
+      if (code === 'IMAGE_TOO_MANY_PIXELS') {
+        return uiText('图片分辨率过大，请压缩后重试', 'Image resolution is too high; compress it and try again')
+      }
+      if (code === 'IMAGE_DIMENSION_TOO_LARGE') {
+        return uiText('图片边长过大，请压缩后重试', 'Image dimension is too large; compress it and try again')
+      }
+      return `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}`
+    }
+  }
   const dispatchOrFollowup = (text: string, steer: boolean): void => {
     const submit = (): void => {
-      const message = userMessage(text, surface.pendingAttachments)
+      const sending = attachmentsForSubmit(text, surface.pendingAttachments)
+      surface.pendingAttachments = sending
+      const prose = stripImageChips(text)
+      if (sending.length > 0 && !currentModelAcceptsImage()) {
+        publishPendingImages()
+        process.stderr.write(`${uiText(
+          '当前模型不接受图片。请在 /settings models 选择带 · 图 的模型，或在 settings.yaml 为该模型声明 input: [text, image]。',
+          'The current model does not accept images. Pick a model marked · image in /settings models, or set input: [text, image] for it in settings.yaml.',
+        )}\n`)
+        return
+      }
+      const message = userMessage(prose, sending)
       surface.pendingAttachments = []
+      publishPendingImages()
       if (steer) surface.agent.steer(message)
       else surface.agent.followup(message)
     }
@@ -1336,22 +1425,35 @@ async function boot(
           }
         },
         attachFile: async (path) => {
-          const attachments = ctx.get('attachments')
-          if (attachments === undefined) {
-            return uiText('附件服务未加载（bundle 缺 dsh-attachment-local）', 'Attachment service is not loaded (bundle lacks dsh-attachment-local)')
-          }
           try {
-            const bytes = readFileSync(resolve(path))
-            const mediaType = IMAGE_MEDIA_BY_EXT[extname(path).slice(1).toLowerCase()]
-            if (mediaType === undefined) return uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported')
-            const ref = await attachments.saveImage({ data: new Uint8Array(bytes), mediaType, name: basename(path) })
-            surface.pendingAttachments = [...surface.pendingAttachments, ref]
-            surface.version += 1
-            store.set({ ...store.getSnapshot(), attachmentCount: surface.pendingAttachments.length, version: surface.version })
-            return null
+            const absolute = resolve(path)
+            const bytes = new Uint8Array(readFileSync(absolute))
+            const mediaType = sniffMediaType(bytes)
+              ?? mediaTypeFromPath(absolute)
+              ?? IMAGE_MEDIA_BY_EXT[extname(absolute).slice(1).toLowerCase()]
+            if (mediaType === undefined) {
+              return uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported')
+            }
+            return ingestImageBytes({ data: bytes, mediaType, name: basename(absolute) })
           } catch (error) {
             return `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}`
           }
+        },
+        attachClipboardImage: async () => {
+          const image = await readClipboardImage()
+          if (image === null) {
+            return uiText('剪贴板里没有图片（Windows 请用 Alt+V）', 'No image on the clipboard (on Windows use Alt+V)')
+          }
+          return ingestImageBytes(image)
+        },
+        syncImageChips: (draft) => {
+          const next = keepAttachmentsByChips(draft, surface.pendingAttachments)
+          if (next.attachments.length === surface.pendingAttachments.length
+            && next.attachments.every((ref, index) => ref === surface.pendingAttachments[index])) {
+            return
+          }
+          surface.pendingAttachments = next.attachments
+          publishPendingImages()
         },
         forkSession: async (atSeq) => {
           try {

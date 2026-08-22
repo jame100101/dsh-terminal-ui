@@ -91,7 +91,7 @@ export function buildSettingsRows(
           const isDefault = model.id === snapshot.model
           rows.push({
             key: `m-${provider.provider}-${model.id}`,
-            text: `${isDefault ? '●' : '○'} ${model.id}${isDefault ? (locale === 'en' ? ' · default' : ' · 默认') : ''}`,
+            text: `${isDefault ? '●' : '○'} ${model.id}${model.acceptsImage === true ? (locale === 'en' ? ' · image' : ' · 图') : ''}${isDefault ? (locale === 'en' ? ' · default' : ' · 默认') : ''}`,
             action: 'select-model',
             meta: { provider: provider.provider, model: model.id },
           })
@@ -527,14 +527,18 @@ export function collectCredentialRefs(schemaJson: unknown, value: unknown): Cred
  * @param models - the routes (provider + model ids).
  * @returns one row per provider with its model ids.
  */
-export function groupProviders(models: readonly { provider: string; model: string }[]): SettingsProviderRow[] {
+export function groupProviders(models: readonly { provider: string; model: string; acceptsImage?: boolean }[]): SettingsProviderRow[] {
   const rows: SettingsProviderRow[] = []
-  const byProvider = new Map<string, string[]>()
+  const byProvider = new Map<string, { id: string; acceptsImage?: boolean }[]>()
   for (const entry of models) {
     const modelsOf = byProvider.get(entry.provider)
-    if (modelsOf === undefined) byProvider.set(entry.provider, [entry.model])
-    else if (!modelsOf.includes(entry.model)) modelsOf.push(entry.model)
+    const row = {
+      id: entry.model,
+      ...(entry.acceptsImage === true ? { acceptsImage: true as const } : {}),
+    }
+    if (modelsOf === undefined) byProvider.set(entry.provider, [row])
+    else if (!modelsOf.some(model => model.id === entry.model)) modelsOf.push(row)
   }
-  for (const [provider, ids] of byProvider) rows.push({ provider, models: ids.map(id => ({ id })) })
+  for (const [provider, ids] of byProvider) rows.push({ provider, models: ids })
   return rows
 }

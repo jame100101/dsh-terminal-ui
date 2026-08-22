@@ -299,6 +299,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     goal: null,
     reasoning: { effort: undefined, levels: [] },
     attachmentCount: 0,
+    pendingImages: [],
     compaction: false,
     sandbox: 'read-only',
     occupancy: null,
@@ -326,6 +327,8 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     renameSession: () => Promise.resolve(null),
     changeWorkspace: () => Promise.resolve(null),
     attachFile: () => Promise.resolve(null),
+    attachClipboardImage: () => Promise.resolve(null),
+    syncImageChips: () => {},
     forkSession: () => Promise.resolve(null),
     ...hostOverrides,
   }

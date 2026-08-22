@@ -65,7 +65,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | `/attach` 附件、`/workspace`/`/rename`、fork | ✅ `/rename <标题>`（sessionTitle.rename）、`/workspace <目录>`（chdir，新会话继承）、`/attach <图片>`（attachments.saveImage，随下一条消息发送 + dock）、`/fork [eventSeq]`（seed 分叉到新会话，可经 /sessions 恢复） |
 | 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行；输入框 `@` 补全工作区相对路径（Tab 插入，目录保留 `/`） |
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
-| 图片粘贴 | ✅ 终端无位图粘贴通道；等价路径 `/attach <图片路径>` 走同一 attachments 服务（输入即入下一消息） |
+| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：拖入/粘贴图片路径升级为 chip；Windows **Alt+V** 读位图剪贴板；`/attach` 仍可用；提交走 `attachments.saveImage`；纯文本模型提交前拒绝 |
 | MessageList 虚拟化 | ⚠ fold 工作集最近 3000 节点（assistant ≤32 KiB，think/tool/context ≤4 KiB，user ≤8 KiB）+ 视口切片 + 节点行缓存；session log 仍是全文；尚未采用 Web 的 50-message 向前分页 |
 | 对话复制（拖选 / 输入框 / `/copy`） | ✅ 默认拖选复制提示词和回复；输入框 TUI 选区（Ctrl+A/C/V）；`/copy`；剩余项见 [bug.md](./bug.md) |
 
@@ -79,6 +79,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | 流式合并发布、增量折行、独立微光、窗口化命中、视口局部节点缓存、流式发布跳过面板重算（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 已完成 |
 | fold 工作集（3000 行、正文封顶）+ 首帧后再加载目录/设置/反馈；`pnpm dsh:tui` 走构建产物 | 已完成 |
 | 无密钥性能验收：40 ms 合并发布、增量折行、滚轮 p99、100/500 轮 fold heap、构建产物 `--version`/`--help`（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 已完成 |
+| Grok `[Image #N]` chip、Alt+V / 路径粘贴、Web 整批上限、纯文本模型拒图 | 已完成 |
 
 ## Known Limitations and Deferred Work
 

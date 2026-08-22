@@ -89,6 +89,20 @@ describe('buildSettingsRows reasoning effort', () => {
     ])
     expect(effortRows[2]?.meta).toEqual({ provider: 'deepseek-official', model: 'deepseek-v4-pro', effort: 'high' })
   })
+
+  it('marks models that accept image input', () => {
+    const fixture = modelsSettings()
+    fixture.settings.models.providers = [{
+      provider: 'deepseek-official',
+      models: [
+        { id: 'deepseek-v4-pro' },
+        { id: 'vision', acceptsImage: true },
+      ],
+    }]
+    const rows = buildSettingsRows(fixture, 'models', 'zh')
+    expect(rows.some(row => row.text.includes('vision') && row.text.includes('· 图'))).toBe(true)
+    expect(rows.some(row => row.text.includes('deepseek-v4-pro') && row.text.includes('· 图'))).toBe(false)
+  })
 })
 
 describe('buildSettingsRows locale', () => {
@@ -217,6 +231,11 @@ describe('groupProviders', () => {
     expect(rows).toEqual([
       { provider: 'deepseek-official', models: [{ id: 'deepseek-v4-flash' }, { id: 'deepseek-v4-pro' }] },
       { provider: 'openai', models: [{ id: 'gpt-5' }] },
+    ])
+    expect(groupProviders([
+      { provider: 'deepseek-official', model: 'vision', acceptsImage: true },
+    ])).toEqual([
+      { provider: 'deepseek-official', models: [{ id: 'vision', acceptsImage: true }] },
     ])
   })
 

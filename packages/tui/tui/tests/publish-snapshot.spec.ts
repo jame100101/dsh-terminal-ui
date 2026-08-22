@@ -31,6 +31,7 @@ function snapshot(overrides: Partial<TuiSnapshot> = {}): TuiSnapshot {
     goal: null,
     reasoning: { effort: undefined, levels: [] },
     attachmentCount: 0,
+    pendingImages: [],
     compaction: false,
     sandbox: 'read-only',
     occupancy: null,
@@ -71,6 +72,7 @@ describe('selectPanelSnapshot', () => {
       feedback: previous.feedback,
       reasoning: previous.reasoning,
       attachmentCount: 2,
+      pendingImages: [],
       sandbox: 'workspace-write' as const,
       occupancy: { projectedTokens: 1, contextWindow: 2 },
     }

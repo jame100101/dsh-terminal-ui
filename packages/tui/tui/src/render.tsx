@@ -50,6 +50,9 @@ import { MAX_FOLD_NODES, MAX_TRACE } from './fold'
 import { atTokenRange, listWorkspaceMentions, readWorkspaceDir, replaceAtToken } from './file-mention'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
 import {
+  attachmentsForSubmit, classifyPastedPath, formatByteSize, insertImageChip, stripImageChips,
+} from './image-intake'
+import {
   extractSelectedText, glyphSpanAt, selectionFromGlyphs, selectionIsDrag, selectionSpanOnLine, sliceDisplayParts,
 } from './selection'
 import type { GlyphAnchor, TextSelection } from './selection'
@@ -133,6 +136,9 @@ interface Copy {
   workspaceDone: (path: string) => string
   attachUsage: string
   attachDone: (path: string) => string
+  imageModelRefused: string
+  imagePreview: (chip: string, name: string, width: number, height: number, bytes: string) => string
+  clipboardNoImage: string
   forkUsage: string
   forkDone: string
   inputTooLarge: (bytes: number, max: number) => string
@@ -225,8 +231,11 @@ const COPY: Record<Locale, Copy> = {
     renameDone: title => `会话标题 → ${title}`,
     workspaceUsage: '用法：/workspace <目录路径>',
     workspaceDone: path => `工作目录 → ${path}`,
-    attachUsage: '用法：/attach <图片路径>（png/jpg/gif/webp）',
+    attachUsage: '用法：/attach <图片路径>（png/jpg/gif/webp）；Windows 截图用 Alt+V',
     attachDone: path => `已附加 ${path}（随下一条消息发送）`,
+    imageModelRefused: '当前模型不接受图片。请在 /settings models 选择带 · 图 的模型，或在 settings.yaml 声明 input: [text, image]。',
+    imagePreview: (chip, name, width, height, bytes) => `${chip} ${name} · ${width}×${height} · ${bytes}`,
+    clipboardNoImage: '剪贴板里没有图片（Windows 请用 Alt+V）',
     forkUsage: '用法：/fork 或 /fork <eventSeq>',
     forkDone: '已分叉新会话（/sessions 可见，可恢复）',
     inputTooLarge: (bytes, max) => `输入过大：${bytes} bytes（上限 ${max}）`,
@@ -316,8 +325,11 @@ const COPY: Record<Locale, Copy> = {
     renameDone: title => `session title → ${title}`,
     workspaceUsage: 'Usage: /workspace <directory>',
     workspaceDone: path => `workspace → ${path}`,
-    attachUsage: 'Usage: /attach <image path> (png/jpg/gif/webp)',
+    attachUsage: 'Usage: /attach <image path> (png/jpg/gif/webp); Windows screenshots: Alt+V',
     attachDone: path => `attached ${path} (sent with the next message)`,
+    imageModelRefused: 'The current model does not accept images. Pick a model marked · image in /settings models, or set input: [text, image] in settings.yaml.',
+    imagePreview: (chip, name, width, height, bytes) => `${chip} ${name} · ${width}×${height} · ${bytes}`,
+    clipboardNoImage: 'No image on the clipboard (on Windows use Alt+V)',
     forkUsage: 'Usage: /fork or /fork <eventSeq>',
     forkDone: 'Forked a new session (visible in /sessions, resumable)',
     inputTooLarge: (bytes, max) => `input too large: ${bytes} bytes (limit ${max})`,
@@ -576,6 +588,10 @@ export interface TuiHost {
   changeWorkspace(path: string): Promise<string | null>
   /** Attach one image file to the next user message. */
   attachFile(path: string): Promise<string | null>
+  /** Attach a bitmap from the desktop clipboard (Windows: Alt+V). */
+  attachClipboardImage(): Promise<string | null>
+  /** Drop pending images whose chips disappeared from the draft. */
+  syncImageChips(draft: string): void
   /** Fork the session at the last completed turn (or the turn containing atSeq). */
   forkSession(atSeq?: number): Promise<string | null>
   /** Boot-time panel request: open this panel (with an optional filter) once the app mounts. */
@@ -1449,6 +1465,10 @@ function ImeTextInput(props: {
   /** Bumped to drop the composer highlight (Esc). */
   clearSeq?: number
   moreLines: (count: number) => string
+  /** Windows Alt+V / macOS-Linux image clipboard. */
+  onClipboardImage?: () => void
+  /** Return true to consume a paste (image path upgraded to a chip). */
+  onPasteText?: (text: string) => boolean
 }): React.ReactElement {
   const [cursorOffset, setCursorOffset] = useState(props.value.length)
   const cursorOffsetRef = useRef(props.value.length)
@@ -1697,6 +1717,10 @@ function ImeTextInput(props: {
         }
         return
       }
+      if ((key.alt === true || key.meta === true) && (input === 'v' || input === 'V')) {
+        props.onClipboardImage?.()
+        return
+      }
       const safeInput = sanitizeTerminalText(stripMouseReports(input))
       if (!safeInput) return
       replaceSelection(safeInput)
@@ -1707,6 +1731,7 @@ function ImeTextInput(props: {
     (pasted: string) => {
       const safePaste = sanitizeTerminalText(stripMouseReports(pasted))
       if (!props.focus || !safePaste) return
+      if (props.onPasteText?.(safePaste) === true) return
       replaceSelection(safePaste)
     },
     { isActive: props.focus },
@@ -1812,6 +1837,8 @@ const Composer = React.memo(function Composer(props: {
   markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
   clearSeq?: number
   locale: Locale
+  onClipboardImage?: () => void
+  onPasteText?: (text: string) => boolean
 }): React.ReactElement {
   const safeValue = sanitizeTerminalText(props.draft)
   const boxWidth = Math.max(1, props.width - 2)
@@ -1836,6 +1863,8 @@ const Composer = React.memo(function Composer(props: {
               {...(props.markOutRef !== undefined ? { markOutRef: props.markOutRef } : {})}
               {...(props.clearSeq !== undefined ? { clearSeq: props.clearSeq } : {})}
               moreLines={moreLines}
+              {...(props.onClipboardImage !== undefined ? { onClipboardImage: props.onClipboardImage } : {})}
+              {...(props.onPasteText !== undefined ? { onPasteText: props.onPasteText } : {})}
             />
           )}
       </Box>
@@ -2591,12 +2620,22 @@ export function App(props: {
         color: 'yellow',
       })
     }
-    if (snapshot.attachmentCount > 0) {
+    if (snapshot.pendingImages.length > 0) {
+      const chips = snapshot.pendingImages
+        .map(image => `${image.chip} ${image.name} ${image.width}×${image.height} ${formatByteSize(image.bytes)}`)
+        .join(' · ')
+      lines.push({
+        key: 'attach-dock',
+        text: fitDisplayText(`${copy.attachCount(snapshot.pendingImages.length)} · ${chips}`, transcriptContentWidth),
+        color: 'yellow',
+      })
+    } else if (snapshot.attachmentCount > 0) {
       lines.push({ key: 'attach-dock', text: fitDisplayText(copy.attachCount(snapshot.attachmentCount), transcriptContentWidth), color: 'yellow' })
     }
     return lines
   }, [
-    notice, transcriptContentWidth, snapshot.queued, snapshot.todos, snapshot.goal, snapshot.attachmentCount, copy,
+    notice, transcriptContentWidth, snapshot.queued, snapshot.todos, snapshot.goal, snapshot.attachmentCount,
+    snapshot.pendingImages, copy,
   ])
 
   // The view stays on the same CONTENT while new lines stream in at the
@@ -2835,13 +2874,20 @@ export function App(props: {
 
   const submit = useCallback((value: string, steer = false): void => {
     const trimmed = value.trim()
-    if (!trimmed) return
     if (trimmed.startsWith('/')) {
       setDraft('')
       executeCommand(trimmed)
       return
     }
-    const inputBytes = Buffer.byteLength(trimmed, 'utf8')
+    const sending = attachmentsForSubmit(trimmed, snapshot.pendingImages)
+    const prose = stripImageChips(trimmed)
+    const hasImages = sending.length > 0
+    if (prose === '' && !hasImages) return
+    if (hasImages && !snapshot.models.some(entry => entry.model === snapshot.model && entry.acceptsImage === true)) {
+      setNotice(copy.imageModelRefused)
+      return
+    }
+    const inputBytes = Buffer.byteLength(prose, 'utf8')
     if (inputBytes > MAX_TURN_INPUT_BYTES) {
       setNotice(copy.inputTooLarge(inputBytes, MAX_TURN_INPUT_BYTES))
       return
@@ -2854,13 +2900,20 @@ export function App(props: {
       : steer
     props.host.submit(trimmed, effectiveSteer)
     setNotice('')
-    // Record the submission for shell-style ↑/↓ recall (consecutive
-    // duplicates collapse, like cmd/PowerShell).
     const history = historyRef.current
     if (history[history.length - 1] !== trimmed) history.push(trimmed)
     historyScratchRef.current = ''
     setHistoryIndex(-1)
-  }, [executeCommand, snapshot.busy, snapshot.settings?.general.busyEnter, props.host, copy])
+  }, [
+    executeCommand,
+    snapshot.busy,
+    snapshot.settings?.general.busyEnter,
+    snapshot.pendingImages,
+    snapshot.models,
+    snapshot.model,
+    props.host,
+    copy,
+  ])
 
   const applyPalette = useCallback((completeOnly: boolean): void => {
     if (palette === null) return
@@ -3694,6 +3747,7 @@ export function App(props: {
               setPaletteDismissedInput(null)
               if (historyIndex !== -1 && value !== '') setHistoryIndex(-1)
               setDraft(value)
+              props.host.syncImageChips(value)
             }}
         onSubmit={submitComposer}
         disabled={pluginEdit !== null || settingsEdit !== null
@@ -3709,6 +3763,29 @@ export function App(props: {
         markOutRef={composerMarkRef}
         clearSeq={composerClearSeq}
         {...(pluginEdit?.kind === 'secret' ? { mask: '•' } : {})}
+        onClipboardImage={() => {
+          void props.host.attachClipboardImage().then((error) => {
+            if (error !== null) {
+              setNotice(error)
+              return
+            }
+            setDraft(current => insertImageChip(current, current.length).draft)
+            setNotice(copy.attachDone('clipboard'))
+          })
+        }}
+        onPasteText={(text) => {
+          const classified = classifyPastedPath(text)
+          if (classified === null || classified.kind === 'file') return false
+          void props.host.attachFile(classified.path).then((error) => {
+            if (error !== null) {
+              setNotice(error)
+              return
+            }
+            setDraft(current => insertImageChip(current, current.length).draft)
+            setNotice(copy.attachDone(classified.path))
+          })
+          return true
+        }}
       />
       <StatusBar
         snapshot={snapshot}

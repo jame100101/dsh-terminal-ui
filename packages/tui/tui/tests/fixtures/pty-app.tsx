@@ -53,6 +53,7 @@ const store = createTuiStore({
   goal: null,
   reasoning: { effort: undefined, levels: [] },
   attachmentCount: 0,
+  pendingImages: [],
   compaction: false,
   sandbox: 'read-only',
   occupancy: null,
@@ -81,6 +82,8 @@ const host: TuiHost = {
   renameSession: () => Promise.resolve(null),
   changeWorkspace: () => Promise.resolve(null),
   attachFile: () => Promise.resolve(null),
+  attachClipboardImage: () => Promise.resolve(null),
+  syncImageChips: () => {},
   forkSession: () => Promise.resolve(null),
 }
 

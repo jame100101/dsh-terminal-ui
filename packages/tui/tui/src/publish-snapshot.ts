@@ -19,6 +19,7 @@ export type PanelSnapshot = Pick<TuiSnapshot,
   | 'feedback'
   | 'reasoning'
   | 'attachmentCount'
+  | 'pendingImages'
   | 'sandbox'
   | 'occupancy'
 >
@@ -48,6 +49,7 @@ export function selectPanelSnapshot(
     feedback: previous.feedback,
     reasoning: previous.reasoning,
     attachmentCount: previous.attachmentCount,
+    pendingImages: previous.pendingImages,
     sandbox: previous.sandbox,
     occupancy: previous.occupancy,
   }

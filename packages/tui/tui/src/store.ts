@@ -30,6 +30,8 @@ export interface ModelEntry {
   provider: string
   model: string
   label: string
+  /** True when `inputModalities` includes `image`. */
+  acceptsImage?: boolean
 }
 
 /** One live agent or persisted-session row for /sessions. */
@@ -92,7 +94,17 @@ export interface CredentialRow {
 /** One provider group on the /settings models page. */
 export interface SettingsProviderRow {
   provider: string
-  models: { id: string }[]
+  models: { id: string; acceptsImage?: boolean }[]
+}
+
+/** One pending composer image chip (Grok `[Image #N]`). */
+export interface PendingImageChip {
+  chip: string
+  name: string
+  bytes: number
+  width: number
+  height: number
+  mediaType: string
 }
 
 /** One plugin row on the /settings plugins page (loader-tree inventory). */
@@ -228,6 +240,8 @@ export interface TuiSnapshot {
   reasoning: { effort: string | undefined; levels: readonly string[] }
   /** Image attachments queued for the next user message. */
   attachmentCount: number
+  /** Grok-style chips for the pending images (name, pixels, bytes). */
+  pendingImages: readonly PendingImageChip[]
   /** Whether a compaction run is in flight (drives the live gradient row). */
   compaction: boolean
   /** The resolved session file-policy mode (sandbox/mode override or default). */
