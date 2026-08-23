@@ -1,47 +1,50 @@
 /**
- * The first-load welcome banner: the DeepSeek whale pixel art (an immutable
- * literal, never generated at runtime) over a block-style 3D `DEEPSEEK
- * HARNESS` title with a bottom-right shadow. Both center horizontally; the
- * whole block degrades instead of wrapping when the terminal is too narrow
- * or short, so the art can never break apart.
+ * The first-load welcome banner: immutable half-block DeepSeek whale art
+ * over a compact `DEEPSEEK HARNESS` wordmark. The fixed-cell canvas centers
+ * as one object and degrades instead of wrapping in a narrow or short
+ * terminal.
  * @module @deepseek-ai/dsh-tui/src/welcome-banner
  */
 
 import stringWidth from 'string-width'
 
 /**
- * The DeepSeek whale art as one raw multi-line string — verbatim: never
- * trimmed, dedented, formatted, wrapped, or re-flowed. Leading indentation
- * is plain ASCII spaces (U+0020, no tabs). Every glyph is a single-cell
- * block shade (`█` `▓` `▒` `░`) or an ASCII space, so Cascadia Mono,
- * JetBrains Mono, and Consolas all render exactly one terminal cell per
- * character with no font fallback and no width drift.
+ * The 52-by-19 whale canvas. Full blocks paint solid body cells; upper and
+ * lower half blocks preserve the reference silhouette at twice the vertical
+ * cell resolution. Leading ASCII spaces are coordinates within the canvas,
+ * so rows are never trimmed, dedented, centered independently, or reflowed.
  */
-export const WHALE_ART_RAW: string = `                ░░▒▓▓▓░     ▒█░
-      ░▒▓▓████████████░      ███▓▒       ▒▓
-  ▓█████████████████████▒   ░████████████░
- █████████████████████████▒  ░▓████████▓░
-▓██▓▓▓▓█████████████████████▒░ ▓███▓▒░
-███      ░▒▓██████████▒▒▓██████████▒
-███          ░▓███████▒█  ▓████████
-███▓           ░▓███████░  ░██████▒
-▒███░            ░███████▓▓██████▓
- ░████▒      ░▒░    ▒██████████▒
-  ░▓████▒░   ░███▒░  ░███████▓░
-      ░▓███████████████▓▓▓▒▒▓▓▓▓▒░
-         ░▒▓▓███████▓▓▒░`
+export const WHALE_ART_RAW: string = `                      ▄▄▄▄▄▄       ▄█
+         ▄▄▄██████████████▀       ▄███▄           ▄
+      ▄███████████████████▄       ███████▄  ▄▄▄▄▄███
+    ▄███████████████████████▄▄     ███████▄████████
+   ████████████████████████████▄   ▀██████████████▀
+  ███████████████████████████████▄   ▀██████████▀
+ ██████████████████████████████████▄  ██████▀▀
+ ███        ▀▀█████████████▀▀▀█████████████▀
+████▄           ▀████████████▄ ▀███████████
+ ████              ▀██████████   ▀█████████
+ ████▄               █████████▄▄ ▄████████
+ █████▄               ▀██████████████████
+  █████▄                ████████████████▀
+   ██████        ▄▄      ▀████████████▀
+    ▀█████▄      ████▄    ▀██████████▀
+     ▀███████▄▄   ██████▄   ▀████████▄▄▄
+       ▀▀██████████████████▄▄▄███████████
+          ▀███████████████████▀    ▀▀▀▀
+              ▀▀▀███████▀▀▀▀`
 
-/** The raw whale art split into lines; `split` never trims or re-flows. */
-export const WHALE_ART: readonly string[] = WHALE_ART_RAW.split('\n')
+/** The raw whale art split into immutable canvas rows. */
+export const WHALE_ART: readonly string[] = Object.freeze(WHALE_ART_RAW.split('\n'))
 
-/** DeepSeek brand blue for the whale (ANSI TrueColor). */
+/** DeepSeek brand blue shared by the whale and wordmark. */
 export const WHALE_COLOR = '#4D6BFE'
 
-/** Bright light-blue main glyphs of the 3D title. */
-export const TITLE_MAIN_COLOR = '#7C9BFF'
+/** The wordmark uses spaced terminal letters from the reference banner. */
+export const TITLE_TEXT = 'D E E P S E E K  H A R N E S S'
 
-/** Darker blue-gray shadow layer of the 3D title. */
-export const TITLE_SHADOW_COLOR = '#2B3A66'
+/** The wordmark color. */
+export const TITLE_MAIN_COLOR = WHALE_COLOR
 
 /** One colored segment of a banner row. */
 export interface BannerRun {
@@ -52,95 +55,23 @@ export interface BannerRun {
 /** One precomputed banner row. */
 export interface BannerRow {
   runs: BannerRun[]
-  /** The row's cell width (for centering). */
+  /** The row's cell width for centering. */
   width: number
 }
 
-/**
- * 6-column x 5-row block glyphs for the title's letters, drawn in `█` only.
- * ANSI-Shadow-inspired letterforms; the 3D depth comes from the computed
- * `░` shadow layer, never from box-drawing or fullwidth characters.
- */
-const FONT: Record<string, readonly string[]> = {
-  D: ['█████ ', '██  ██', '██  ██', '██  ██', '█████ '],
-  E: ['██████', '██    ', '█████ ', '██    ', '██████'],
-  P: ['█████ ', '██  ██', '█████ ', '██    ', '██    '],
-  S: ['██████', '██    ', '█████ ', '    ██', '██████'],
-  K: ['██  ██', '██ ██ ', '████  ', '██ ██ ', '██  ██'],
-  H: ['██  ██', '██  ██', '██████', '██  ██', '██  ██'],
-  A: [' ████ ', '██  ██', '██████', '██  ██', '██  ██'],
-  R: ['█████ ', '██  ██', '█████ ', '██ ██ ', '██  ██'],
-  N: ['██  ██', '███ ██', '██ ███', '██  ██', '██  ██'],
-}
+/** The precomputed single-row `DEEPSEEK HARNESS` wordmark. */
+export const TITLE_ROWS: readonly BannerRow[] = Object.freeze([{
+  runs: [{ text: TITLE_TEXT, color: TITLE_MAIN_COLOR }],
+  width: stringWidth(TITLE_TEXT),
+}])
 
-const LETTER_WIDTH = 6
-const LETTER_GAP = 1
-const SPACE_WIDTH = 3
-const GLYPH_ROWS = 5
+/** The fixed whale canvas width in terminal cells. */
+export const WHALE_WIDTH: number = 52
 
-/**
- * Precompute the 3D title: `GLYPH_ROWS` rows of block text plus one trailing
- * shadow row, offset one row down and one column right. A shadow cell is
- * drawn as a `░` where the main glyph does not already paint. Deterministic
- * module-scope build — no external commands, no runtime generation.
- * @param text - the title text.
- * @returns the precomputed rows.
- */
-function buildTitleRows(text: string): BannerRow[] {
-  const glyphs = [...text].map(character => FONT[character] ?? null)
-  const totalWidth = glyphs.reduce((width, glyph) => width + (glyph === null ? SPACE_WIDTH : LETTER_WIDTH + LETTER_GAP), -LETTER_GAP)
-  const grid: string[][] = Array.from({ length: GLYPH_ROWS + 1 }, () => Array.from({ length: totalWidth }, () => ' '))
-  let column = 0
-  for (const glyph of glyphs) {
-    if (glyph === null) {
-      column += SPACE_WIDTH + LETTER_GAP
-      continue
-    }
-    for (let row = 0; row < GLYPH_ROWS; row += 1) {
-      const gridRow = grid[row]
-      const glyphRow = glyph[row]
-      if (gridRow === undefined || glyphRow === undefined) continue
-      for (let cell = 0; cell < LETTER_WIDTH; cell += 1) {
-        gridRow[column + cell] = glyphRow[cell] ?? ' '
-      }
-    }
-    column += LETTER_WIDTH + LETTER_GAP
-  }
-  const rows: BannerRow[] = []
-  for (let row = 0; row < GLYPH_ROWS + 1; row += 1) {
-    const runs: BannerRun[] = []
-    let current = ''
-    let currentColor = ''
-    for (let cell = 0; cell < totalWidth; cell += 1) {
-      const gridRow = grid[row] ?? []
-      const main = gridRow[cell] === '█'
-      const shadow = row > 0 && cell > 0 && (grid[row - 1]?.[cell - 1] ?? '') === '█' && gridRow[cell] !== '█'
-      const color = main ? TITLE_MAIN_COLOR : shadow ? TITLE_SHADOW_COLOR : ''
-      const character = main ? '█' : shadow ? '░' : ' '
-      if (color === currentColor) {
-        current += character
-      } else {
-        if (current !== '') runs.push({ text: current, color: currentColor })
-        current = character
-        currentColor = color
-      }
-    }
-    if (current !== '') runs.push({ text: current, color: currentColor })
-    rows.push({ runs, width: totalWidth })
-  }
-  return rows
-}
-
-/** The precomputed 3D `DEEPSEEK HARNESS` title rows. */
-export const TITLE_ROWS: readonly BannerRow[] = buildTitleRows('DEEPSEEK HARNESS')
-
-/** The widest whale art line, in cells. */
-export const WHALE_WIDTH: number = WHALE_ART.reduce((width, line) => Math.max(width, stringWidth(line)), 0)
-
-/** The title width, in cells. */
+/** The title width in terminal cells. */
 export const TITLE_WIDTH: number = TITLE_ROWS[0]?.width ?? 0
 
-/** The full banner's height (whale + title). */
+/** The full banner height: whale and wordmark. */
 export const BANNER_HEIGHT: number = WHALE_ART.length + TITLE_ROWS.length
 
 /**
@@ -166,31 +97,34 @@ export interface WelcomeBannerLine {
 }
 
 /**
- * Compose the welcome banner for one viewport: whale + 3D title, both
- * centered. Degrades instead of wrapping — a too-narrow or too-short
- * viewport drops the title first, then the whale, and finally returns an
- * empty list so the renderer can fall back to the plain welcome card.
+ * Append the whale with one shared canvas offset. Per-row centering would
+ * move trimmed right edges independently and deform the silhouette.
+ * @param lines - destination banner lines.
+ * @param contentWidth - the available cells.
+ */
+function appendWhale(lines: WelcomeBannerLine[], contentWidth: number): void {
+  const pad = Math.max(0, Math.floor((contentWidth - WHALE_WIDTH) / 2))
+  for (const art of WHALE_ART) lines.push({ text: `${' '.repeat(pad)}${art}`, color: WHALE_COLOR })
+}
+
+/**
+ * Compose the welcome banner for one viewport. A constrained viewport drops
+ * the wordmark first, then the whale, before the renderer selects the plain
+ * welcome card.
  * @param contentWidth - available cells.
  * @param height - available rows.
- * @returns the banner lines (empty when nothing fits).
+ * @returns the banner lines, or an empty list when the art does not fit.
  */
 export function welcomeBanner(contentWidth: number, height: number): WelcomeBannerLine[] {
   const lines: WelcomeBannerLine[] = []
-  if (contentWidth >= WHALE_WIDTH + 4 && height >= BANNER_HEIGHT + 1) {
-    for (const art of WHALE_ART) {
-      const pad = Math.max(0, Math.floor((contentWidth - stringWidth(art)) / 2))
-      lines.push({ text: `${' '.repeat(pad)}${art}`, color: WHALE_COLOR })
-    }
-    for (const row of TITLE_ROWS) {
-      lines.push({ text: '', runs: centerRow(row.runs, row.width, contentWidth) })
-    }
+  const requiredWidth = Math.max(WHALE_WIDTH, TITLE_WIDTH) + 4
+  if (contentWidth >= requiredWidth && height >= BANNER_HEIGHT) {
+    appendWhale(lines, contentWidth)
+    for (const row of TITLE_ROWS) lines.push({ text: '', runs: centerRow(row.runs, row.width, contentWidth) })
     return lines
   }
-  if (contentWidth >= WHALE_WIDTH + 4 && height >= WHALE_ART.length + 1) {
-    for (const art of WHALE_ART) {
-      const pad = Math.max(0, Math.floor((contentWidth - stringWidth(art)) / 2))
-      lines.push({ text: `${' '.repeat(pad)}${art}`, color: WHALE_COLOR })
-    }
+  if (contentWidth >= WHALE_WIDTH + 4 && height >= WHALE_ART.length) {
+    appendWhale(lines, contentWidth)
     return lines
   }
   return []

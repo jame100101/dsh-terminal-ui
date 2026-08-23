@@ -355,9 +355,9 @@ describe('Ink 7 full-screen render', () => {
     try {
       const lines = lastFrameLines(capture.output)
       expect(frameRows(lines)).toBe(ROWS)
-      // The first-load whale banner: braille pixel art + the block title.
-      expect(lines.some(line => line.includes('░▒▓▓████'))).toBe(true) // whale art (single-cell blocks only)
-      expect(lines.some(line => line.includes('███'))).toBe(true) // 3D block title
+      // The first-load whale banner: fixed-canvas half-block art + compact wordmark.
+      expect(lines.some(line => line.includes('▄▄▄██████████████▀'))).toBe(true) // whale silhouette
+      expect(lines.some(line => line.includes('D E E P S E E K'))).toBe(true) // wordmark
       expect(lines.some(line => line.includes('session session-abc12345'))).toBe(true) // full session id in the header
       // Full blocks in ordinary chrome remain ordinary text. Only the private
       // scrollbar marker may ask patched Ink to emit right-edge CHA.
