@@ -39,7 +39,7 @@
   "license": "MIT",
   "dependencies": {
     "@deepseek-ai/schemastery": "workspace:^",
-    "ws": "^8.21.0"
+    "ws": "^8.21.1"
   },
   "files": [
     "lib/index.js",

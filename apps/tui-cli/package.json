@@ -78,7 +78,7 @@
     "use-sync-external-store": "1.2.0",
     "widest-line": "6.0.0",
     "wrap-ansi": "10.0.0",
-    "ws": "8.21.0",
+    "ws": "8.21.1",
     "yaml": "2.9.0",
     "yoga-layout": "3.2.1",
     "zod": "4.4.3",
