@@ -42,7 +42,7 @@
     "@deepseek-ai/cordis": "workspace:^"
   },
   "dependencies": {
-    "koffi": "^3.1.0"
+    "koffi": "^3.1.2"
   },
   "devDependencies": {
     "@deepseek-ai/dsh-invariants": "workspace:^",
