@@ -6,7 +6,7 @@ English | [中文](README.zh.md)
 terminal surface. It boots the TUI profile with a small user-facing flag
 grammar; all sessions, agents, and rendering stay in the bundled runtime.
 
-> **Release Candidate** — `0.1.0-rc.10`, published on npm under the `rc`
+> **Release Candidate** — `0.1.0-rc.11`, published on npm under the `rc`
 > dist-tag. Clean-room installation verified on Windows, macOS, and Linux.
 
 ## Install
@@ -15,7 +15,7 @@ grammar; all sessions, agents, and rendering stay in the bundled runtime.
 npm install -g @jame100101/dsh-tui@rc
 ```
 
-(or `npm install -g @jame100101/dsh-tui@0.1.0-rc.10` to pin the version)
+(or `npm install -g @jame100101/dsh-tui@0.1.0-rc.11` to pin the version)
 
 The package ships the built dsh runtime inside `runtime/`, so the global
 install needs no other DeepSeek Harness package — external dependencies
