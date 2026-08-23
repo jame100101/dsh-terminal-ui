@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-The dsh terminal surface: an in-process TUI plugin restructured after the **DamnatioX TypeScript TUI** (Ink 7 + React 19). v0.0.13 builds on the v0.0.12 surface ([TUI frontend plan](../../../dsh-TUI-前端完整方案.md)):
+The dsh terminal surface: an in-process TUI plugin restructured after the **DamnatioX TypeScript TUI** (Ink 7 + React 19).:
 
 - **DamnatioX geometry**: a fixed-height root Box (`(terminal width - 1) × height` + `overflow="hidden"`) leaves the physical right-margin cell blank so DECAWM pending-wrap state cannot shift repaints. Layout: 4-row header (`🐋 DSH-TUI` / cwd / model · busyEnter + a separator) · transcript viewport · slash picker · composer · status bar (activity row + Web-stats strip).
 - **Toolkit-native caret**: the composer caret anchors through Ink's own `useCursor()`/`measureElement()` (no manual ANSI CUP writes anywhere). The single-line input renders a horizontal viewport around the caret with `…` ellipses and reserves one cell for the native cursor — Windows Terminal IME composition anchors at the draft.
@@ -26,21 +26,7 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **Slash picker** (`/`) over host commands plus TUI-local ones, listed **alphabetically (a–z)** in the DamnatioX palette style; host commands get Chinese descriptions in the zh locale and dispatch through `ctx.commands` without a model turn.
 - **Approval and ask_user takeovers** (allow-once / deny / options / custom answers); **`/trajectory`** structured view; **todo and queue docks** at the transcript tail.
 - **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits. 输入框里有选区时 `Ctrl+C` 复制该选区，不取消任务。
-- **复制**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；松开鼠标即复制并清掉高亮。单击且没有拖动不会选中整条消息。消息之间的空行可以起选或继续拖选，但不会进入剪贴板。拖到会话顶部或底部会滚动，以便继续选中当前看不见的历史。输入框是 TUI 自己的编辑器：拖选或 `Ctrl+A` 用蓝色背景选中，`Ctrl+C` 复制，`Ctrl+V`（或终端粘贴）插入，输入或粘贴会替换当前选区。每一折行都画 2 格的 `› `/缩进，第一行和后面的行共用同一折行宽度；折行比绘制盒子少 1 格，满行不会把末字裁掉。硬换行达到 4 行及以上时收成一行预览加 `… N 行`（Claude Code 粘贴）。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
-
-## Model Experience
-
-### What the model sees
-
-Nothing from this package. It registers no tools, no prompt sections, no dynamic context, and no title providers; the answerers and question provider only answer interactive prompts and never alter the request envelope.
-
-### Token effect
-
-None.
-
-### KV Cache effect
-
-None. The request envelope is byte-identical to a surface-less composition, so provider prompt-cache hit rates are unchanged by construction (the cache-safety contract in the TUI plan, §3.6).
+- **复制**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；松开鼠标即复制并清掉高亮。单击且没有拖动不会选中整条消息。消息之间的空行可以起选或继续拖选，但不会进入剪贴板。拖到会话顶部或底部会滚动，以便继续选中当前看不见的历史。输入框是 TUI 自己的编辑器：拖选或 `Ctrl+A` 用蓝色背景选中，`Ctrl+C` 复制，`Ctrl+V`（或终端粘贴）插入，输入或粘贴会替换当前选区。每一折行都画 2 格的 `› `/缩进，第一行和后面的行共用同一折行宽度；折行比绘制盒子少 1 格，满行不会把末字裁掉。一次粘贴达到 1,000 个 Unicode 字符时会收成一个可原子删除的 `[Pasted text #N +M lines]` token，提交时仍使用保留的完整原文；普通手动输入的多行草稿继续使用五行光标窗口。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
 
 ## Web 功能差距核对（v0.0.12 · packages/client/* 对照）
 
@@ -65,7 +51,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | `/attach` 附件、`/workspace`/`/rename`、fork | ✅ `/rename <标题>`（sessionTitle.rename）、`/workspace <目录>`（chdir，新会话继承）、`/attach <图片>`（attachments.saveImage，随下一条消息发送 + dock）、`/fork [eventSeq]`（seed 分叉到新会话，可经 /sessions 恢复） |
 | 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行；输入框 `@` 补全工作区相对路径（Tab 插入，目录保留 `/`） |
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
-| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：拖入/粘贴图片路径升级为 chip；Windows **Alt+V** 读位图剪贴板；`/attach` 仍可用；提交走 `attachments.saveImage`；纯文本模型提交前拒绝 |
+| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：拖入/粘贴图片路径升级为 chip；Windows **Alt+V**、macOS/Linux Ctrl/Meta+V 读位图剪贴板；`/attach` 仍可用；`/image [N]` 显示 fallback 预览信息；提交走 `attachments.saveImage`；纯文本模型提交前拒绝 |
 | MessageList 虚拟化 | ⚠ fold 工作集最近 3000 节点（assistant ≤32 KiB，think/tool/context ≤4 KiB，user ≤8 KiB）+ 视口切片 + 节点行缓存；session log 仍是全文；尚未采用 Web 的 50-message 向前分页 |
 | 对话复制（拖选 / 输入框 / `/copy`） | ✅ 默认拖选复制提示词和回复；输入框 TUI 选区（Ctrl+A/C/V）；`/copy`；剩余项见 [bug.md](./bug.md) |
 
@@ -75,18 +61,37 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 |---|---|
 | 拖选复制提示词和回复；输入框 Ctrl+A/C/V；`/copy` | 已完成 |
 | 输入框第一折行仍吞一格 | 待办 — [bug.md](./bug.md) |
-| 粘贴终端内容不自动收成预览行 | 待办 — [bug.md](./bug.md) |
+| 大段终端粘贴折叠 token 与完整原文提交 | 已完成 |
 | 流式合并发布、增量折行、独立微光、窗口化命中、视口局部节点缓存、流式发布跳过面板重算（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 已完成 |
 | fold 工作集（3000 行、正文封顶）+ 首帧后再加载目录/设置/反馈；`pnpm dsh:tui` 走构建产物 | 已完成 |
 | 无密钥性能验收：40 ms 合并发布、增量折行、滚轮 p99、100/500 轮 fold heap、构建产物 `--version`/`--help`（[#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)） | 已完成 |
-| Grok `[Image #N]` chip、Alt+V / 路径粘贴、Web 整批上限、纯文本模型拒图 | 已完成 |
+| Grok `[Image #N]` chip、跨平台图片粘贴、原子删除、Web 整批上限、精确路由识图检查 | 已完成 |
+
+## Model Experience
+
+### 用户图片 block
+
+#### What the model sees
+
+本包不注册工具、prompt section、动态 context 或 title provider。用户选择的图片经 `ctx.attachments` 持久化，并以图片 block 进入 user message；`[Image #N]` 只属于 composer chrome，提交前会从文本 block 中移除。
+
+大段粘贴 token 同样只属于 composer chrome。提交时会先展开成保留的完整粘贴文本，再交给模型或已注册的斜杠命令。
+
+#### Token effect
+
+TUI 自身不增加文本 token。图片 token 计量由具体模型和 provider 决定。
+
+#### KV Cache effect
+
+纯文本请求与不挂载表层时保持字节一致。图片请求会按设计携带用户选择的耐久图片 block；当前 Harness adapter 负责请求图片投影和 provider 上传复用。
 
 ## Known Limitations and Deferred Work
 
 - **Non-TTY fallback is fail-closed**: the linear REPL mounts no answerer, so approval asks deny and `ask_user` fails — headless-strict semantics, matching `phi run`. TUI-local slash commands print a "linear mode" notice instead of leaking into a model turn.
-- **输入框折行**最多 5 行，硬换行达到 4 行及以上时收成预览加行数。尚未修好的折行/粘贴问题见 [bug.md](./bug.md)。
+- **输入框折行**使用最多五行的光标窗口。尚未修好的第一折行单元格问题见 [bug.md](./bug.md)。
 - **Pending steering has no transcript bubble yet** (the queue dock shows the queued steer previews).
 - **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), the back-to-bottom button, and default drag-copy of prompt/reply text.
+- **图片预览使用终端安全的元数据**：`/image [N]` 显示待发送文件名、内蕴尺寸和字节数。TUI 不在 Ink 的备用屏 repaint 生命周期之外写 Kitty/iTerm 图形协议。
 - **Markdown styling covers headings, paragraphs, and GFM tables**: list items and blockquote interiors stay plain text (remaining GFM pass).
 - **Resume still reads the complete authoritative session log** because the resumed Agent requires complete replay; the TUI fold is a 3000-row working set with capped bodies, and the display projection is windowed, but history transport is not yet Web-style backward paging.
 - **日常启动走构建产物。** `pnpm run build` 之后用 `pnpm dsh:tui`（单进程、`apps/cli/lib/bin.js --profile tui`）或 `pnpm dsh-tui`。`pnpm dsh --profile tui` 是 tsx 源码路径。

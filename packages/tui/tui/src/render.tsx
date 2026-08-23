@@ -11,6 +11,7 @@
  */
 
 import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { resolve } from 'node:path'
 import {
   Box, Text, measureElement, render, useApp, useCursor, useInput, usePaste, useStdout,
 } from 'ink'
@@ -38,8 +39,8 @@ import type { TuiStore } from './store'
 import type { TuiNode } from './types'
 import {
   composerGlyphAt, composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth,
-  composerVisibleRowCount, countComposerHardLines, lineSelectableWidth, nextCodePointBoundary,
-  previousCodePointBoundary, COMPOSER_COLLAPSE_HARD_LINES, COMPOSER_PROMPT_WIDTH,
+  composerVisibleRowCount, lineSelectableWidth, nextCodePointBoundary,
+  previousCodePointBoundary, COMPOSER_PROMPT_WIDTH,
   rememberTranscriptWindow, scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport,
   wrapComposerRanges, selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow,
   selectTranscriptViewport, transcriptCellAt, transcriptLineAtRow, TRANSCRIPT_LINE_OVERSCAN,
@@ -50,8 +51,14 @@ import { MAX_FOLD_NODES, MAX_TRACE } from './fold'
 import { atTokenRange, listWorkspaceMentions, readWorkspaceDir, replaceAtToken } from './file-mention'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
 import {
-  attachmentsForSubmit, classifyPastedPath, formatByteSize, insertImageChip, stripImageChips,
+  attachmentsForSubmit, classifyPastedPath, formatByteSize, imageChipDeletionRange, insertImageChip,
+  modelRouteAcceptsImages, stripImageChips,
 } from './image-intake'
+import {
+  createPastedTextBlock, expandPastedTextBlocks, pastedTextDeletionRange,
+  retainPastedTextBlocks, shouldCollapsePastedText,
+} from './pasted-text'
+import type { PastedTextBlock } from './pasted-text'
 import {
   extractSelectedText, glyphSpanAt, selectionFromGlyphs, selectionIsDrag, selectionSpanOnLine, sliceDisplayParts,
 } from './selection'
@@ -136,6 +143,7 @@ interface Copy {
   workspaceDone: (path: string) => string
   attachUsage: string
   attachDone: (path: string) => string
+  imageUsage: string
   imageModelRefused: string
   imagePreview: (chip: string, name: string, width: number, height: number, bytes: string) => string
   clipboardNoImage: string
@@ -168,7 +176,6 @@ interface Copy {
   copyRange: (n: string, total: number) => string
   copyDone: string
   copyFailed: (reason: string) => string
-  composerMoreLines: (count: number) => string
 }
 
 /** The chrome copy table. */
@@ -233,6 +240,7 @@ const COPY: Record<Locale, Copy> = {
     workspaceDone: path => `工作目录 → ${path}`,
     attachUsage: '用法：/attach <图片路径>（png/jpg/gif/webp）；Windows 截图用 Alt+V',
     attachDone: path => `已附加 ${path}（随下一条消息发送）`,
+    imageUsage: '用法：/image [编号]（预览待发送图片；默认最后一张）',
     imageModelRefused: '当前模型不接受图片。请在 /settings models 选择带 · 图 的模型，或在 settings.yaml 声明 input: [text, image]。',
     imagePreview: (chip, name, width, height, bytes) => `${chip} ${name} · ${width}×${height} · ${bytes}`,
     clipboardNoImage: '剪贴板里没有图片（Windows 请用 Alt+V）',
@@ -265,7 +273,6 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `没有第 ${n} 条最近回复（共 ${total} 条）`,
     copyDone: '已复制',
     copyFailed: reason => `复制失败：${reason}`,
-    composerMoreLines: n => `… ${n} 行`,
   },
   en: {
     idle: '▣ idle · Enter send · /help',
@@ -327,6 +334,7 @@ const COPY: Record<Locale, Copy> = {
     workspaceDone: path => `workspace → ${path}`,
     attachUsage: 'Usage: /attach <image path> (png/jpg/gif/webp); Windows screenshots: Alt+V',
     attachDone: path => `attached ${path} (sent with the next message)`,
+    imageUsage: 'Usage: /image [number] (preview a pending image; defaults to the last one)',
     imageModelRefused: 'The current model does not accept images. Pick a model marked · image in /settings models, or set input: [text, image] in settings.yaml.',
     imagePreview: (chip, name, width, height, bytes) => `${chip} ${name} · ${width}×${height} · ${bytes}`,
     clipboardNoImage: 'No image on the clipboard (on Windows use Alt+V)',
@@ -359,7 +367,6 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `No ${n}-latest reply (${total} available)`,
     copyDone: 'Copied',
     copyFailed: reason => `Copy failed: ${reason}`,
-    composerMoreLines: n => `… ${n} lines`,
   },
 }
 
@@ -549,6 +556,16 @@ function installTerminalTitle(stdout: { write(chunk: string): unknown }, report:
     if (report.current !== '') stdout.write(`\x1b]0;${report.current}\x07`)
   }
 }
+/** Result of one host image intake attempt. */
+export interface ImageAttachResult {
+  /** Localized failure text, or null after the attachment entered the pending list. */
+  error: string | null
+  /** Stable chip label assigned by the host after a successful append. */
+  chip?: string
+  /** Clipboard probe found no image; callers may fall back to text paste. */
+  empty?: boolean
+}
+
 /** Host callbacks the renderer drives; supplied by the plugin. */
 export interface TuiHost {
   submit(text: string, steer: boolean): void
@@ -587,11 +604,11 @@ export interface TuiHost {
   /** Switch the workspace directory for this and future sessions. */
   changeWorkspace(path: string): Promise<string | null>
   /** Attach one image file to the next user message. */
-  attachFile(path: string): Promise<string | null>
+  attachFile(path: string): Promise<ImageAttachResult>
   /** Attach a bitmap from the desktop clipboard (Windows: Alt+V). */
-  attachClipboardImage(): Promise<string | null>
-  /** Drop pending images whose chips disappeared from the draft. */
-  syncImageChips(draft: string): void
+  attachClipboardImage(): Promise<ImageAttachResult>
+  /** Drop pending images whose chips disappeared and return renumbered chip text. */
+  syncImageChips(previousDraft: string, nextDraft: string): string
   /** Fork the session at the last completed turn (or the turn containing atSeq). */
   forkSession(atSeq?: number): Promise<string | null>
   /** Boot-time panel request: open this panel (with an optional filter) once the app mounts. */
@@ -643,6 +660,7 @@ function localCommands(locale: Locale): PaletteItem[] {
     { name: 'rename', description: zh ? '重命名当前会话标题' : 'rename the current session title', needsArgs: true },
     { name: 'workspace', description: zh ? '切换工作目录' : 'switch the workspace directory', needsArgs: true },
     { name: 'attach', description: zh ? '附加图片到下一消息（png/jpg/gif/webp）' : 'attach an image to the next message (png/jpg/gif/webp)', needsArgs: true },
+    { name: 'image', description: zh ? '预览待发送图片的名称、尺寸和大小' : 'preview pending image metadata', needsArgs: true },
     { name: 'fork', description: zh ? '在最后完成回合处分叉会话' : 'fork the session at the last completed turn', needsArgs: false },
     { name: 'new', description: zh ? '开始新会话' : 'start a new session', needsArgs: false },
     { name: 'quit', description: zh ? '保存并退出' : 'save and exit', needsArgs: false },
@@ -1464,11 +1482,10 @@ function ImeTextInput(props: {
   markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
   /** Bumped to drop the composer highlight (Esc). */
   clearSeq?: number
-  moreLines: (count: number) => string
-  /** Windows Alt+V / macOS-Linux image clipboard. */
-  onClipboardImage?: () => void
-  /** Return true to consume a paste (image path upgraded to a chip). */
-  onPasteText?: (text: string) => boolean
+  /** Windows Alt+V / macOS-Linux Ctrl/Meta+V image clipboard. */
+  onClipboardImage?: (fallbackToText: boolean) => Promise<boolean>
+  /** Return replacement text, `''` to consume an image path, or null for ordinary paste. */
+  onPasteText?: (text: string) => string | null
 }): React.ReactElement {
   const [cursorOffset, setCursorOffset] = useState(props.value.length)
   const cursorOffsetRef = useRef(props.value.length)
@@ -1511,8 +1528,6 @@ function ImeTextInput(props: {
   wrapWidthRef.current = textWrapWidth
   const layout = selectComposerLayout(displayValue, displayCursorOffset, textWrapWidth, MAX_COMPOSER_LINES)
   const composerRanges = wrapComposerRanges(displayValue, textWrapWidth)
-  const hardLineCount = countComposerHardLines(displayValue)
-  const collapsed = hardLineCount >= COMPOSER_COLLAPSE_HARD_LINES
   useLayoutEffect(() => {
     if (inputRef.current === null) return
     const metrics = measureElement(inputRef.current)
@@ -1561,6 +1576,14 @@ function ImeTextInput(props: {
     commitEdit(`${currentValue.slice(0, currentOffset)}${insert}${currentValue.slice(currentOffset)}`, currentOffset + insert.length)
   }, [commitEdit])
 
+  const replacePaste = useCallback((pasted: string): void => {
+    const safePaste = sanitizeTerminalText(stripMouseReports(pasted))
+    if (!safePaste) return
+    const replacement = props.onPasteText?.(safePaste)
+    if (replacement === '') return
+    replaceSelection(replacement ?? safePaste)
+  }, [props.onPasteText, replaceSelection])
+
   useInput(
     (input, key) => {
       const mouse = parseMouseReport(input)
@@ -1571,9 +1594,7 @@ function ImeTextInput(props: {
         const localCol = mouse.column - 1 - origin.x
         const widthNow = wrapWidthRef.current
         const layoutNow = selectComposerLayout(latestValueRef.current, cursorOffsetRef.current, widthNow, MAX_COMPOSER_LINES)
-        const hardCount = countComposerHardLines(latestValueRef.current)
-        const collapsedNow = hardCount >= COMPOSER_COLLAPSE_HARD_LINES
-        const paintedRows = collapsedNow ? 2 : layoutNow.visibleLines.length
+        const paintedRows = layoutNow.visibleLines.length
         if (mouse.action === 'press' && mouse.button === 0) {
           if (localRow < 0 || localCol < 0 || localRow >= paintedRows) {
             publishMark(null)
@@ -1583,16 +1604,12 @@ function ImeTextInput(props: {
           return
         }
         const col = Math.max(0, localCol - COMPOSER_PROMPT_WIDTH)
-        const glyph = collapsedNow
-          ? (localRow <= 0
-            ? composerGlyphAt(latestValueRef.current.split('\n')[0] ?? '', widthNow, 0, col)
-            : { start: 0, end: latestValueRef.current.length })
-          : composerGlyphAt(
-            latestValueRef.current,
-            widthNow,
-            layoutNow.windowStart + Math.max(0, Math.min(localRow, layoutNow.visibleLines.length - 1)),
-            col,
-          )
+        const glyph = composerGlyphAt(
+          latestValueRef.current,
+          widthNow,
+          layoutNow.windowStart + Math.max(0, Math.min(localRow, layoutNow.visibleLines.length - 1)),
+          col,
+        )
         if ((mouse.button & 32) !== 0) {
           const press = pressGlyphRef.current ?? glyph
           const next = {
@@ -1664,10 +1681,19 @@ function ImeTextInput(props: {
         return
       }
       if (key.ctrl && input.toLowerCase() === 'v') {
-        void pasteFromClipboard().then((text) => {
-          if (text === null || text === '') return
-          replaceSelection(sanitizeTerminalText(stripMouseReports(text)))
-        })
+        const pasteText = (): void => {
+          void pasteFromClipboard().then((text) => {
+            if (text === null || text === '') return
+            replacePaste(text)
+          })
+        }
+        if (process.platform !== 'win32' && props.onClipboardImage !== undefined) {
+          void props.onClipboardImage(true).then((attached) => {
+            if (!attached) pasteText()
+          })
+        } else {
+          pasteText()
+        }
         return
       }
       if (key.end || (key.ctrl && input.toLowerCase() === 'e')) {
@@ -1711,14 +1737,29 @@ function ImeTextInput(props: {
         }
         const currentValue = latestValueRef.current
         const currentOffset = cursorOffsetRef.current
-        const start = previousCodePointBoundary(currentValue, currentOffset)
-        if (start !== currentOffset) {
-          commitEdit(`${currentValue.slice(0, start)}${currentValue.slice(currentOffset)}`, start)
+        const direction = key.backspace ? 'backspace' : 'delete'
+        const chipRange = imageChipDeletionRange(currentValue, currentOffset, direction)
+          ?? pastedTextDeletionRange(currentValue, currentOffset, direction)
+        if (chipRange !== null) {
+          commitEdit(
+            `${currentValue.slice(0, chipRange.start)}${currentValue.slice(chipRange.end)}`,
+            chipRange.start,
+          )
+          return
+        }
+        const edge = direction === 'backspace'
+          ? previousCodePointBoundary(currentValue, currentOffset)
+          : nextCodePointBoundary(currentValue, currentOffset)
+        if (edge !== currentOffset) {
+          const start = Math.min(edge, currentOffset)
+          const end = Math.max(edge, currentOffset)
+          commitEdit(`${currentValue.slice(0, start)}${currentValue.slice(end)}`, start)
         }
         return
       }
-      if ((key.alt === true || key.meta === true) && (input === 'v' || input === 'V')) {
-        props.onClipboardImage?.()
+      const clipboardImageKey = process.platform === 'win32' ? key.meta : key.meta || key.super
+      if (clipboardImageKey && (input === 'v' || input === 'V')) {
+        void props.onClipboardImage?.(false)
         return
       }
       const safeInput = sanitizeTerminalText(stripMouseReports(input))
@@ -1729,10 +1770,8 @@ function ImeTextInput(props: {
   )
   usePaste(
     (pasted: string) => {
-      const safePaste = sanitizeTerminalText(stripMouseReports(pasted))
-      if (!props.focus || !safePaste) return
-      if (props.onPasteText?.(safePaste) === true) return
-      replaceSelection(safePaste)
+      if (!props.focus) return
+      replacePaste(pasted)
     },
     { isActive: props.focus },
   )
@@ -1763,55 +1802,28 @@ function ImeTextInput(props: {
           : (
             <ComposerTextRow prefix={COMPOSER_PROMPT} text={props.placeholder} paintWidth={paintWidth} dim />
           ))
-        : collapsed
-          ? (
-            <>
-              {(() => {
-                const first = displayValue.split('\n')[0] ?? ''
-                const lo = mark === null ? 0 : Math.min(mark.anchor, mark.head)
-                const hi = mark === null ? 0 : Math.max(mark.anchor, mark.head)
-                const hasMark = mark !== null && mark.anchor !== mark.head && hi > 0 && lo < first.length
-                const startCol = hasMark ? stringWidth(first.slice(0, Math.max(0, lo))) : 0
-                const endCol = hasMark ? stringWidth(first.slice(0, Math.min(first.length, hi))) : 0
-                return (
-                  <ComposerTextRow
-                    prefix={COMPOSER_PROMPT}
-                    text={first}
-                    paintWidth={paintWidth}
-                    {...(hasMark ? { highlight: { startCol, endCol } } : {})}
-                  />
-                )
-              })()}
-              <ComposerTextRow
-                prefix={COMPOSER_INDENT}
-                text={props.moreLines(hardLineCount)}
-                paintWidth={paintWidth}
-                dim
-              />
-            </>
-          )
-          : layout.visibleLines.map((line, index) => {
-            const range = composerRanges[layout.windowStart + index]
-            const lo = mark === null ? 0 : Math.min(mark.anchor, mark.head)
-            const hi = mark === null ? 0 : Math.max(mark.anchor, mark.head)
-            const hasMark = mark !== null && mark.anchor !== mark.head && range !== undefined
+        : layout.visibleLines.map((line, index) => {
+          const range = composerRanges[layout.windowStart + index]
+          const lo = mark === null ? 0 : Math.min(mark.anchor, mark.head)
+          const hi = mark === null ? 0 : Math.max(mark.anchor, mark.head)
+          const hasMark = mark !== null && mark.anchor !== mark.head && range !== undefined
             && hi > range.start && lo < range.end
-            const startCol = !hasMark || range === undefined
-              ? 0
-              : stringWidth(line.slice(0, Math.max(0, lo - range.start)))
-            const endCol = !hasMark || range === undefined
-              ? 0
-              : stringWidth(line.slice(0, Math.min(line.length, hi - range.start)))
-            return (
-              <ComposerTextRow
-                key={index}
-                prefix={layout.windowStart + index === 0 ? COMPOSER_PROMPT : COMPOSER_INDENT}
-                text={line}
-                paintWidth={paintWidth}
-                {...(hasMark && range !== undefined ? { highlight: { startCol, endCol } } : {})}
-              />
-            )
-          })}
+          const startCol = !hasMark || range === undefined
+            ? 0
+            : stringWidth(line.slice(0, Math.max(0, lo - range.start)))
+          const endCol = !hasMark || range === undefined
+            ? 0
+            : stringWidth(line.slice(0, Math.min(line.length, hi - range.start)))
+          return (
+            <ComposerTextRow
+              key={index}
+              prefix={layout.windowStart + index === 0 ? COMPOSER_PROMPT : COMPOSER_INDENT}
+              text={line}
+              paintWidth={paintWidth}
+              {...(hasMark && range !== undefined ? { highlight: { startCol, endCol } } : {})}
+            />
+          )
+        })}
     </Box>
   )
 }
@@ -1837,12 +1849,11 @@ const Composer = React.memo(function Composer(props: {
   markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
   clearSeq?: number
   locale: Locale
-  onClipboardImage?: () => void
-  onPasteText?: (text: string) => boolean
+  onClipboardImage?: (fallbackToText: boolean) => Promise<boolean>
+  onPasteText?: (text: string) => string | null
 }): React.ReactElement {
   const safeValue = sanitizeTerminalText(props.draft)
   const boxWidth = Math.max(1, props.width - 2)
-  const moreLines = COPY[props.locale].composerMoreLines
   return (
     <Box flexDirection="column">
       <Text dimColor>{'─'.repeat(Math.max(1, props.width))}</Text>
@@ -1862,7 +1873,6 @@ const Composer = React.memo(function Composer(props: {
               {...(props.mask !== undefined ? { mask: props.mask } : {})}
               {...(props.markOutRef !== undefined ? { markOutRef: props.markOutRef } : {})}
               {...(props.clearSeq !== undefined ? { clearSeq: props.clearSeq } : {})}
-              moreLines={moreLines}
               {...(props.onClipboardImage !== undefined ? { onClipboardImage: props.onClipboardImage } : {})}
               {...(props.onPasteText !== undefined ? { onPasteText: props.onPasteText } : {})}
             />
@@ -2171,6 +2181,16 @@ export function App(props: {
   const transcriptContentWidth = Math.max(1, width - 3)
 
   const [draft, setDraft] = useState('')
+  const pastedTextBlocksRef = useRef<readonly PastedTextBlock[]>([])
+  const nextPastedTextOrdinalRef = useRef(1)
+  const replacePastedTextBlocks = useCallback((blocks: readonly PastedTextBlock[]): void => {
+    pastedTextBlocksRef.current = blocks
+  }, [])
+  useEffect(() => {
+    const retained = retainPastedTextBlocks(draft, pastedTextBlocksRef.current)
+    if (retained.length !== pastedTextBlocksRef.current.length) replacePastedTextBlocks(retained)
+    if (draft === '' && retained.length === 0) nextPastedTextOrdinalRef.current = 1
+  }, [draft, replacePastedTextBlocks])
   const [paletteDismissedInput, setPaletteDismissedInput] = useState<string | null>(null)
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0)
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
@@ -2845,9 +2865,32 @@ export function App(props: {
         setNotice(copy.attachUsage)
         return
       }
-      void props.host.attachFile(path).then((error) => {
-        setNotice(error === null ? copy.attachDone(path) : error)
+      void props.host.attachFile(path).then((result) => {
+        if (result.error !== null) {
+          setNotice(result.error)
+          return
+        }
+        setNotice(copy.attachDone(path))
       })
+      return
+    }
+    if (text === '/image' || text.startsWith('/image ')) {
+      const argument = text === '/image' ? '' : text.slice('/image '.length).trim()
+      const requested = argument === '' ? snapshot.pendingImages.length : Number(argument)
+      const image = Number.isSafeInteger(requested) && requested > 0
+        ? snapshot.pendingImages[requested - 1]
+        : undefined
+      if (image === undefined) {
+        setNotice(copy.imageUsage)
+        return
+      }
+      setNotice(copy.imagePreview(
+        image.chip,
+        image.name,
+        image.width,
+        image.height,
+        formatByteSize(image.bytes),
+      ))
       return
     }
     if (text === '/fork' || text.startsWith('/fork ')) {
@@ -2873,7 +2916,7 @@ export function App(props: {
   }, [exitApp, viewMode, snapshot, props.host, openPanel, locale, copy, stdout])
 
   const submit = useCallback((value: string, steer = false): void => {
-    const trimmed = value.trim()
+    const trimmed = expandPastedTextBlocks(value, pastedTextBlocksRef.current).trim()
     if (trimmed.startsWith('/')) {
       setDraft('')
       executeCommand(trimmed)
@@ -2883,7 +2926,7 @@ export function App(props: {
     const prose = stripImageChips(trimmed)
     const hasImages = sending.length > 0
     if (prose === '' && !hasImages) return
-    if (hasImages && !snapshot.models.some(entry => entry.model === snapshot.model && entry.acceptsImage === true)) {
+    if (hasImages && !modelRouteAcceptsImages(snapshot.models, snapshot.provider, snapshot.model)) {
       setNotice(copy.imageModelRefused)
       return
     }
@@ -2910,6 +2953,7 @@ export function App(props: {
     snapshot.settings?.general.busyEnter,
     snapshot.pendingImages,
     snapshot.models,
+    snapshot.provider,
     snapshot.model,
     props.host,
     copy,
@@ -3746,8 +3790,7 @@ export function App(props: {
               // edits a recalled history line (leaving history browsing).
               setPaletteDismissedInput(null)
               if (historyIndex !== -1 && value !== '') setHistoryIndex(-1)
-              setDraft(value)
-              props.host.syncImageChips(value)
+              setDraft(current => props.host.syncImageChips(current, value))
             }}
         onSubmit={submitComposer}
         disabled={pluginEdit !== null || settingsEdit !== null
@@ -3763,28 +3806,39 @@ export function App(props: {
         markOutRef={composerMarkRef}
         clearSeq={composerClearSeq}
         {...(pluginEdit?.kind === 'secret' ? { mask: '•' } : {})}
-        onClipboardImage={() => {
-          void props.host.attachClipboardImage().then((error) => {
-            if (error !== null) {
-              setNotice(error)
-              return
-            }
-            setDraft(current => insertImageChip(current, current.length).draft)
-            setNotice(copy.attachDone('clipboard'))
-          })
+        onClipboardImage={async (fallbackToText) => {
+          const result = await props.host.attachClipboardImage()
+          if (result.error !== null) {
+            if (!(fallbackToText && result.empty === true)) setNotice(result.error)
+            return false
+          }
+          if (result.chip !== undefined) {
+            setDraft(current => insertImageChip(current, current.length, result.chip).draft)
+          }
+          setNotice(copy.attachDone('clipboard'))
+          return true
         }}
         onPasteText={(text) => {
           const classified = classifyPastedPath(text)
-          if (classified === null || classified.kind === 'file') return false
-          void props.host.attachFile(classified.path).then((error) => {
-            if (error !== null) {
-              setNotice(error)
+          if (classified === null) {
+            if (!shouldCollapsePastedText(text)) return null
+            const block = createPastedTextBlock(text, nextPastedTextOrdinalRef.current)
+            nextPastedTextOrdinalRef.current += 1
+            replacePastedTextBlocks([...pastedTextBlocksRef.current, block])
+            return block.token
+          }
+          if (classified.kind === 'file') return resolve(snapshot.cwd, classified.path)
+          void props.host.attachFile(classified.path).then((result) => {
+            if (result.error !== null) {
+              setNotice(result.error)
               return
             }
-            setDraft(current => insertImageChip(current, current.length).draft)
+            if (result.chip !== undefined) {
+              setDraft(current => insertImageChip(current, current.length, result.chip).draft)
+            }
             setNotice(copy.attachDone(classified.path))
           })
-          return true
+          return ''
         }}
       />
       <StatusBar

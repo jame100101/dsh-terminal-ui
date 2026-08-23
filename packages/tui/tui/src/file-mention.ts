@@ -46,6 +46,7 @@ export function replaceAtToken(value: string, insert: string): string {
  * True when `target` is `root` or a descendant.
  * @param root - workspace cwd.
  * @param target - resolved path.
+ * @returns whether the target stays inside the workspace.
  */
 export function pathIsInside(root: string, target: string): boolean {
   const rel = relative(root, target)

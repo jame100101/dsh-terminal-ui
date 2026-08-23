@@ -426,7 +426,11 @@ export function renderAssistantResultPlain(nodes: readonly TuiNode[]): string {
     .trimEnd()
 }
 
-/** The v0.0.13 linear-mode welcome line for one UI locale. */
+/**
+ * Return the linear-mode welcome line.
+ * @param locale - selected UI locale.
+ * @returns localized welcome text.
+ */
 export function welcomeText(locale: 'zh' | 'en' = 'zh'): string {
   return locale === 'en'
     ? 'dsh-tui v0.0.13 — type a task to begin; / lists commands, /help shows help, /quit exits.'
@@ -519,7 +523,11 @@ function formatCount(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`
 }
 
-/** Format a millisecond duration like the Web strip. */
+/**
+ * Format a duration like the Web statistics strip.
+ * @param milliseconds - duration in milliseconds.
+ * @returns a compact `ms` or `s` label.
+ */
 export function formatMs(milliseconds: number): string {
   if (milliseconds < 1000) return `${Math.max(0, Math.round(milliseconds))}ms`
   return `${(milliseconds / 1000).toFixed(1)}s`
@@ -587,7 +595,11 @@ export function fitStatsStrip(strip: string, width: number): string {
   return groups.join(' · ')
 }
 
-/** The help text for one chrome locale. */
+/**
+ * Return linear-mode help text.
+ * @param locale - selected UI locale.
+ * @returns localized command help.
+ */
 export function helpText(locale: 'zh' | 'en' = 'zh'): string {
   return locale === 'en'
     ? [

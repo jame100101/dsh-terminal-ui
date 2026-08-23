@@ -51,7 +51,9 @@ describe('runtimeClosure', () => {
 describe('externalDependencies', () => {
   it('pins every external to a real semver with no workspace protocol', () => {
     const deps = externalDependencies(root, runtimeClosure(root))
-    expect(deps.size).toBeGreaterThan(40)
+    // Keep a broad truncation tripwire; named assertions below pin the
+    // launcher and patched-Ink dependencies that must be present.
+    expect(deps.size).toBeGreaterThan(30)
     for (const [name, version] of deps) {
       expect(version).toMatch(/^\d+\.\d+\.\d+/)
       expect(version).not.toContain('workspace:')

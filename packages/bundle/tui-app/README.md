@@ -1,24 +1,28 @@
 # `@deepseek-ai/dsh-tui-app`
 
-The dsh terminal-surface bundle. Its patch layer rides over [`dsh-base`](../base/README.md) and mounts exactly one row: the in-process [`@deepseek-ai/dsh-tui`](../tui/tui/README.md) surface. Run with `dsh --profile tui` (the shipped template stacks `dsh-base` + this bundle).
+English | [中文](README.zh.md)
+
+The dsh terminal-surface bundle. Its patch layer rides over [`dsh-base`](../base/README.md) and mounts exactly one row: the in-process [`@deepseek-ai/dsh-tui`](../../tui/tui/README.md) surface. Run with `dsh --profile tui` (the shipped template stacks `dsh-base` + this bundle).
 
 Unlike `dsh-web-app`, this bundle disables none of the base's agent-plane rows: the TUI is single-session and composes its agent process-wide.
 
 ## Model Experience
 
-### What the model sees
+### Shared coding persona
+
+#### What the model sees
 
 The same coding persona paragraph the `headless` and `web` bundles set on the shared `system-prompt` row. This bundle adds no prompt section, no tool, and no dynamic context.
 
-### Token effect
+#### Token effect
 
 None beyond the persona line, which is byte-identical to the other shipped surfaces.
 
-### KV Cache effect
+#### KV Cache effect
 
 None. The persona is a process-level constant near the system-prompt head, so it does not invalidate the prompt cache across turns (same posture as `dsh-web-app`).
 
 ## Known Limitations and Deferred Work
 
-- **v0.0.1 surface scope**: see the `@deepseek-ai/dsh-tui` README — the P0 skeleton covers the transcript fold, streaming, composer, and `/quit`; approvals, command passthrough, and virtualization land in P1–P3.
-- **No startup provider yet**: `dsh --profile tui --help` mounts the surface instead of printing help (deferred to the P1 `tui-startup` row).
+- **Terminal rendering depends on emulator behavior**: the package pins the tested Ink and PTY fixes; native smoke testing remains part of Linux, macOS, and Windows release validation.
+- **Image preview is metadata-first**: the surface reports the pending image name, dimensions, and byte count without writing a terminal graphics protocol outside Ink's repaint lifecycle.

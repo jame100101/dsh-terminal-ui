@@ -27,6 +27,7 @@ const store = createTuiStore({
   },
   live: null,
   busy: false,
+  provider: 'fixture',
   model: 'pty-fixture',
   sessionId: 'pty-fixture',
   cwd: '.',
@@ -81,9 +82,9 @@ const host: TuiHost = {
   updatePluginConfig: () => Promise.resolve(null),
   renameSession: () => Promise.resolve(null),
   changeWorkspace: () => Promise.resolve(null),
-  attachFile: () => Promise.resolve(null),
-  attachClipboardImage: () => Promise.resolve(null),
-  syncImageChips: () => {},
+  attachFile: () => Promise.resolve({ error: null, chip: '[Image #1]' }),
+  attachClipboardImage: () => Promise.resolve({ error: null, chip: '[Image #1]' }),
+  syncImageChips: (_previous, next) => next,
   forkSession: () => Promise.resolve(null),
 }
 

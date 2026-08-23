@@ -157,7 +157,11 @@ export function sliceDisplayParts(
   return { before, mid, after }
 }
 
-/** Ordered start/end of one selection. */
+/**
+ * Order the endpoints of one selection.
+ * @param selection - selection endpoints in drag order.
+ * @returns endpoints in document order.
+ */
 export function orderedSelection(selection: TextSelection): {
   start: { lineIndex: number; column: number }
   end: { lineIndex: number; column: number }
@@ -170,7 +174,11 @@ export function orderedSelection(selection: TextSelection): {
   return { start: head, end: anchor }
 }
 
-/** True when the range covers at least one display cell. */
+/**
+ * Test whether a range covers at least one display cell.
+ * @param selection - selection to inspect.
+ * @returns whether its endpoints differ.
+ */
 export function selectionMoved(selection: TextSelection): boolean {
   const { start, end } = orderedSelection(selection)
   return start.lineIndex !== end.lineIndex || start.column !== end.column
@@ -180,6 +188,7 @@ export function selectionMoved(selection: TextSelection): boolean {
  * True when the range is a drag, not a click. A one-row, one-column move is
  * click jitter at a row boundary and must not highlight a block.
  * @param selection - the current range.
+ * @returns whether the range represents a drag.
  */
 export function selectionIsDrag(selection: TextSelection): boolean {
   const { start, end } = orderedSelection(selection)
@@ -195,6 +204,7 @@ export function selectionIsDrag(selection: TextSelection): boolean {
  * @param selection - the current range.
  * @param lineIndex - absolute transcript line index.
  * @param lineWidth - display width of that line.
+ * @returns the selected cell span, or null when the line is outside the range.
  */
 export function selectionSpanOnLine(
   selection: TextSelection,

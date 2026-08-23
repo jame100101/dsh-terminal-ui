@@ -111,9 +111,19 @@ function caretIsOnComposer(terminal: InstanceType<typeof xtermHeadless.Terminal>
   return composerRow >= 0 && terminal.buffer.active.cursorY === composerRow
 }
 
+function composerTopRow(lines: readonly string[]): number {
+  const promptRow = lines.findIndex(line => line.trimStart().startsWith('›'))
+  if (promptRow >= 0) return promptRow
+  const separators = lines
+    .map((line, index) => ({ line: line.trim(), index }))
+    .filter(({ line }) => line.length > 0 && /^─+$/u.test(line))
+  return separators.length >= 2 ? (separators.at(-2)?.index ?? -2) + 1 : -1
+}
+
 function expectCaretOnComposer(terminal: InstanceType<typeof xtermHeadless.Terminal>, caretLine = 0): void {
-  const composerRow = screenLines(terminal).findIndex(line => line.trimStart().startsWith('›'))
-  expect(composerRow).toBeGreaterThanOrEqual(0)
+  const lines = screenLines(terminal)
+  const composerRow = composerTopRow(lines)
+  expect(composerRow, `composer missing from screen:\n${lines.join('\n')}`).toBeGreaterThanOrEqual(0)
   expect(terminal.buffer.active.cursorY).toBe(composerRow + caretLine)
 }
 

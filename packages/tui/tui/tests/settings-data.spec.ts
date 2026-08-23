@@ -6,7 +6,12 @@ import {
 import type { SettingsData } from '../src/store'
 
 /** A minimal /settings models fixture with one provider and two models. */
-function modelsSettings(): { settings: SettingsData; model: string; reasoning: { effort: string | undefined; levels: readonly string[] } } {
+function modelsSettings(): {
+  settings: SettingsData
+  provider: string
+  model: string
+  reasoning: { effort: string | undefined; levels: readonly string[] }
+} {
   return {
     settings: {
       general: { busyEnter: 'queue', thinking: 'collapsed', theme: 'dark', locale: 'zh' },
@@ -20,6 +25,7 @@ function modelsSettings(): { settings: SettingsData; model: string; reasoning: {
       presets: [],
       currentPreset: undefined,
     },
+    provider: 'deepseek-official',
     model: 'deepseek-v4-pro',
     reasoning: { effort: undefined, levels: [] },
   }
@@ -102,6 +108,19 @@ describe('buildSettingsRows reasoning effort', () => {
     const rows = buildSettingsRows(fixture, 'models', 'zh')
     expect(rows.some(row => row.text.includes('vision') && row.text.includes('· 图'))).toBe(true)
     expect(rows.some(row => row.text.includes('deepseek-v4-pro') && row.text.includes('· 图'))).toBe(false)
+  })
+
+  it('marks the exact provider/model pair when providers reuse a model id', () => {
+    const fixture = modelsSettings()
+    fixture.provider = 'text-provider'
+    fixture.model = 'shared'
+    fixture.settings.models.providers = [
+      { provider: 'text-provider', models: [{ id: 'shared' }] },
+      { provider: 'vision-provider', models: [{ id: 'shared', acceptsImage: true }] },
+    ]
+    const rows = buildSettingsRows(fixture, 'models', 'en')
+    expect(rows.find(row => row.key === 'm-text-provider-shared')?.text).toContain('●')
+    expect(rows.find(row => row.key === 'm-vision-provider-shared')?.text).toContain('○')
   })
 })
 

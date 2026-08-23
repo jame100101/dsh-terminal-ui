@@ -15,7 +15,10 @@ let wheelMsTotal = 0
 let wheelMsMax = 0
 let lagMs = 0
 
-/** True when the process asked for TUI performance counters. */
+/**
+ * Test whether the process requested TUI performance counters.
+ * @returns whether `TUI_PERF=1` is active.
+ */
 export function tuiPerfEnabled(): boolean {
   return process.env.TUI_PERF === '1'
 }

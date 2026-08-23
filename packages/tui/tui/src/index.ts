@@ -28,7 +28,6 @@ import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 // Empty type imports carry the loader/cmdline/approval/questions/commands/llm/
@@ -66,7 +65,7 @@ import type {} from '@deepseek-ai/dsh-session-projection'
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-token-meter'
 import { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
-import type { EncodedImageAttachment, ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
+import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
 import { anchorRetry, applyEvent, createScratch, foldFromLog, initialState } from './fold'
 import type { FoldScratch } from './fold'
@@ -76,10 +75,11 @@ import { collectCredentialRefs, collectPluginFields, groupProviders, sessionTitl
 import { createTuiStore } from './store'
 import type { PendingImageChip } from './store'
 import {
-  attachmentsForSubmit, formatByteSize, imageChip, keepAttachmentsByChips, mediaTypeFromPath, rejectImageBatch,
-  sniffMediaType, stripImageChips,
+  attachmentsForSubmit, formatByteSize, imageChip, mediaTypeFromPath, modelRouteAcceptsImages,
+  reconcileImageChips, rejectImageBatch, sniffMediaType, stripImageChips,
 } from './image-intake'
 import { readClipboardImage } from './image-clipboard'
+import { createTuiUserMessage, encodeTuiCommandImages } from './image-submit'
 import { compactCallCard, compactResultCard } from './card-project'
 import { createUiPublishScheduler, shouldCoalesceSessionEvent } from './ui-publish'
 import { selectPanelSnapshot } from './publish-snapshot'
@@ -112,35 +112,6 @@ export const inject = ['agents', 'agentDefaultModel', 'tools', 'settings', 'cred
 export interface Config {}
 
 export const Config: z<Config> = z.object({})
-
-/** Build the identified user message every submission sends. */
-function userMessage(text: string, attachments: readonly ImageAttachmentRef[] = []): ReturnType<typeof createUserMessage> {
-  return createUserMessage({
-    content: [
-      { type: 'text', text },
-      ...attachments.map(attachment => ({ type: 'image' as const, attachment })),
-    ],
-    source: { kind: 'user' },
-  })
-}
-
-/** Encode pending image refs for `commands.execute`. */
-async function encodePendingImages(
-  ctx: Context,
-  refs: readonly ImageAttachmentRef[],
-): Promise<EncodedImageAttachment[]> {
-  if (refs.length === 0) return []
-  const out: EncodedImageAttachment[] = []
-  for (const ref of refs) {
-    const stored = await ctx.attachments.readImage(ref)
-    out.push({
-      mediaType: ref.mediaType,
-      data: Buffer.from(stored.data).toString('base64'),
-      ...(ref.name === undefined ? {} : { name: ref.name }),
-    })
-  }
-  return out
-}
 
 /** Localized copy for a rejected feedback mutation. */
 function feedbackErrorText(error: { code: string }, locale: 'zh' | 'en'): string {
@@ -551,6 +522,7 @@ function subscribe(
       stats: surface.fold.stats,
       live: surface.fold.live,
       busy: surface.busy || surface.agent.status === 'running',
+      provider: (surface.selection.current ?? ctx.agentDefaultModel.currentSelection()).provider,
       model: surface.currentModel,
       sessionId: surface.agent.id,
       cwd: surface.cwd,
@@ -604,7 +576,8 @@ function subscribe(
       publish()
     })
   const offSettings = ctx.on('settings/updated', refreshSettings)
-  const offCredentials = ctx.on('credentials/updated', refreshSettings)
+  const offCredentialReference = ctx.on('credentials/reference-updated', refreshSettings)
+  const offCredentialRecord = ctx.on('credentials/record-updated', refreshSettings)
   // Workflow runs are event-driven: each event folds its facts onto one row.
   const offWorkflowStart = ctx.on('workflow/start', (info) => {
     surface.workflows.set(info.id, { id: info.id, name: info.meta.name, status: 'running', agentsStarted: 0 })
@@ -645,7 +618,8 @@ function subscribe(
     uiPublish.dispose()
     off()
     offSettings()
-    offCredentials()
+    offCredentialReference()
+    offCredentialRecord()
     offOccupancy()
     offWorkflowStart()
     offWorkflowPhase()
@@ -893,6 +867,7 @@ async function boot(
     stats: initialState().stats,
     live: null,
     busy: false,
+    provider: created.selection.provider,
     model: created.selection.model,
     sessionId: created.agent.id,
     cwd: process.cwd(),
@@ -1026,12 +1001,22 @@ async function boot(
       version: surface.version,
     })
   }
-  const currentModelAcceptsImage = (): boolean =>
-    surface.models.some(entry => entry.model === surface.currentModel && entry.acceptsImage === true)
-  const ingestImageBytes = async (input: { data: Uint8Array; mediaType: ImageMediaType; name: string }): Promise<string | null> => {
+  const currentModelAcceptsImage = (): boolean => modelRouteAcceptsImages(
+    surface.models,
+    (surface.selection.current ?? ctx.agentDefaultModel.currentSelection()).provider,
+    surface.currentModel,
+  )
+  const ingestImageBytes = async (
+    input: { data: Uint8Array; mediaType: ImageMediaType; name: string },
+  ): Promise<{ error: string | null; chip?: string }> => {
     const attachments = ctx.get('attachments')
     if (attachments === undefined) {
-      return uiText('附件服务未加载（bundle 缺 dsh-attachment-local）', 'Attachment service is not loaded (bundle lacks dsh-attachment-local)')
+      return {
+        error: uiText(
+          '附件服务未加载（bundle 缺 dsh-attachment-local）',
+          'Attachment service is not loaded (bundle lacks dsh-attachment-local)',
+        ),
+      }
     }
     const refused = rejectImageBatch(
       surface.pendingAttachments.length,
@@ -1042,31 +1027,36 @@ async function boot(
     if (refused !== null) {
       switch (refused.code) {
         case 'unsupported-type':
-          return uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported')
+          return { error: uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported') }
         case 'too-many':
-          return uiText(`一条消息最多添加 ${refused.max} 张图片`, `A message can include up to ${refused.max} images`)
+          return { error: uiText(`一条消息最多添加 ${refused.max} 张图片`, `A message can include up to ${refused.max} images`) }
         case 'file-too-large':
-          return uiText(`单张图片不能超过 ${formatByteSize(refused.max)}`, `Each image must be smaller than ${formatByteSize(refused.max)}`)
+          return { error: uiText(`单张图片不能超过 ${formatByteSize(refused.max)}`, `Each image must be smaller than ${formatByteSize(refused.max)}`) }
         case 'total-too-large':
-          return uiText(`图片总大小超过 ${formatByteSize(refused.max)}，请移除部分图片`, `Images exceed ${formatByteSize(refused.max)} in total; remove some and try again`)
+          return {
+            error: uiText(
+              `图片总大小超过 ${formatByteSize(refused.max)}，请移除部分图片`,
+              `Images exceed ${formatByteSize(refused.max)} in total; remove some and try again`,
+            ),
+          }
       }
     }
     try {
       const ref = await attachments.saveImage({ data: input.data, mediaType: input.mediaType, name: input.name })
       surface.pendingAttachments = [...surface.pendingAttachments, ref]
       publishPendingImages()
-      return null
+      return { error: null, chip: imageChip(surface.pendingAttachments.length - 1) }
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String((error as { code: unknown }).code)
         : ''
       if (code === 'IMAGE_TOO_MANY_PIXELS') {
-        return uiText('图片分辨率过大，请压缩后重试', 'Image resolution is too high; compress it and try again')
+        return { error: uiText('图片分辨率过大，请压缩后重试', 'Image resolution is too high; compress it and try again') }
       }
       if (code === 'IMAGE_DIMENSION_TOO_LARGE') {
-        return uiText('图片边长过大，请压缩后重试', 'Image dimension is too large; compress it and try again')
+        return { error: uiText('图片边长过大，请压缩后重试', 'Image dimension is too large; compress it and try again') }
       }
-      return `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}`
+      return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
     }
   }
   const dispatchOrFollowup = (text: string, steer: boolean): void => {
@@ -1082,7 +1072,7 @@ async function boot(
         )}\n`)
         return
       }
-      const message = userMessage(prose, sending)
+      const message = createTuiUserMessage(prose, sending)
       surface.pendingAttachments = []
       publishPendingImages()
       if (steer) surface.agent.steer(message)
@@ -1097,11 +1087,12 @@ async function boot(
       submit()
       return
     }
-    void encodePendingImages(ctx, surface.pendingAttachments).then(images =>
+    void encodeTuiCommandImages(ctx.attachments, surface.pendingAttachments).then(images =>
       commands.execute(surface.agent, text, images, new AbortController().signal),
     ).then((execution) => {
       if (execution !== undefined) {
         surface.pendingAttachments = []
+        publishPendingImages()
         return
       }
       submit()
@@ -1432,28 +1423,32 @@ async function boot(
               ?? mediaTypeFromPath(absolute)
               ?? IMAGE_MEDIA_BY_EXT[extname(absolute).slice(1).toLowerCase()]
             if (mediaType === undefined) {
-              return uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported')
+              return { error: uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported') }
             }
             return ingestImageBytes({ data: bytes, mediaType, name: basename(absolute) })
           } catch (error) {
-            return `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}`
+            return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
           }
         },
         attachClipboardImage: async () => {
           const image = await readClipboardImage()
           if (image === null) {
-            return uiText('剪贴板里没有图片（Windows 请用 Alt+V）', 'No image on the clipboard (on Windows use Alt+V)')
+            return {
+              error: uiText('剪贴板里没有图片（Windows 请用 Alt+V）', 'No image on the clipboard (on Windows use Alt+V)'),
+              empty: true,
+            }
           }
           return ingestImageBytes(image)
         },
-        syncImageChips: (draft) => {
-          const next = keepAttachmentsByChips(draft, surface.pendingAttachments)
+        syncImageChips: (previousDraft, nextDraft) => {
+          const next = reconcileImageChips(previousDraft, nextDraft, surface.pendingAttachments)
           if (next.attachments.length === surface.pendingAttachments.length
             && next.attachments.every((ref, index) => ref === surface.pendingAttachments[index])) {
-            return
+            return next.draft
           }
           surface.pendingAttachments = next.attachments
           publishPendingImages()
+          return next.draft
         },
         forkSession: async (atSeq) => {
           try {
@@ -1477,7 +1472,13 @@ async function boot(
             levels: surface.reasoning.levels,
           }
           surface.version += 1
-          store.set({ ...store.getSnapshot(), model, reasoning: surface.reasoning, version: surface.version })
+          store.set({
+            ...store.getSnapshot(),
+            provider,
+            model,
+            reasoning: surface.reasoning,
+            version: surface.version,
+          })
           void resolveReasoning(ctx, provider, model).then((reasoning) => {
             surface.reasoning = {
               effort: effort === undefined ? reasoning.effort : String(effort),

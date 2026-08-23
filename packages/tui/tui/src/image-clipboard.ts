@@ -52,13 +52,18 @@ export function clipboardImageCommands(platform: NodeJS.Platform = process.platf
         ],
       }]
     case 'darwin':
-      return [{
-        command: 'osascript',
-        args: [
-          '-e',
-          'write (the clipboard as «class PNGf») to stdout',
-        ],
-      }]
+      return [
+        { command: 'pngpaste', args: ['-'] },
+        {
+          command: 'osascript',
+          args: [
+            '-e', 'set pngData to the clipboard as «class PNGf»',
+            '-e', 'set outputFile to open for access POSIX file "/dev/stdout" with write permission',
+            '-e', 'write pngData to outputFile',
+            '-e', 'close access outputFile',
+          ],
+        },
+      ]
     case 'linux': {
       const wayland = process.env.WAYLAND_DISPLAY !== undefined && process.env.WAYLAND_DISPLAY !== ''
       const wl: ClipboardImageCommand = { command: 'wl-paste', args: ['--type', 'image/png', '-n'] }

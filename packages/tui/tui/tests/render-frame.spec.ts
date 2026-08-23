@@ -273,6 +273,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     stats: foldStats,
     live: null,
     busy: false,
+    provider: 'deepseek-official',
     model: 'deepseek-v4-pro',
     sessionId: 'session-abc12345',
     cwd: 'D:\\work',
@@ -326,9 +327,9 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     updatePluginConfig: () => Promise.resolve(null),
     renameSession: () => Promise.resolve(null),
     changeWorkspace: () => Promise.resolve(null),
-    attachFile: () => Promise.resolve(null),
-    attachClipboardImage: () => Promise.resolve(null),
-    syncImageChips: () => {},
+    attachFile: () => Promise.resolve({ error: null, chip: '[Image #1]' }),
+    attachClipboardImage: () => Promise.resolve({ error: null, chip: '[Image #1]' }),
+    syncImageChips: (_previous, next) => next,
     forkSession: () => Promise.resolve(null),
     ...hostOverrides,
   }
@@ -938,7 +939,10 @@ describe('Ink 7 full-screen render', () => {
     const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
       renameSession: async (title) => { calls.push(`rename:${title}`); return null },
       changeWorkspace: async (path) => { calls.push(`workspace:${path}`); return null },
-      attachFile: async (path) => { calls.push(`attach:${path}`); return null },
+      attachFile: async (path) => {
+        calls.push(`attach:${path}`)
+        return { error: null, chip: '[Image #1]' }
+      },
       forkSession: async () => { calls.push('fork'); return null },
     })
     try {
@@ -1061,6 +1065,24 @@ describe('Ink 7 full-screen render', () => {
       unmount()
     }
   })
+
+  it('shows one compact token for a large paste and submits the exact retained text', async () => {
+    const submissions: string[] = []
+    const pasted = Array.from({ length: 628 }, (_, index) => `line-${index}`).join('\n')
+    const { capture, unmount, type } = await mount([], {
+      submit: (text) => { submissions.push(text) },
+    })
+    try {
+      await type(`\x1b[200~${pasted}\x1b[201~`)
+      const lines = capture.screenLines()
+      expect(lines.some(line => line.includes('[Pasted text #1 +628 lines]'))).toBe(true)
+      expect(lines.some(line => line.includes('line-627'))).toBe(false)
+      await type('\r')
+      expect(submissions).toEqual([pasted])
+    } finally {
+      unmount()
+    }
+  }, 30_000)
 
   it('shows the reasoning effort in the status bar and the colored permission above the composer', async () => {
     const { store, capture, unmount } = await mount()

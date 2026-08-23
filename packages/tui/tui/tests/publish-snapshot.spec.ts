@@ -13,6 +13,7 @@ function snapshot(overrides: Partial<TuiSnapshot> = {}): TuiSnapshot {
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }, contextWindow: 0 },
     live: null,
     busy: false,
+    provider: 'p',
     model: 'm',
     sessionId: 's',
     cwd: '.',

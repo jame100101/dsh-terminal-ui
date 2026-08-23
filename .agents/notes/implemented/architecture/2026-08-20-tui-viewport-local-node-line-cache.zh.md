@@ -24,7 +24,7 @@ Status: implemented
 
 ## Consequences
 
-滚到被淘汰的节点会重新投影。follow 模式的流式输出把尾部留在缓存里。约束 `snapshot.nodes` 的 fold 工作集见[后续工作集说明](2026-08-21-tui-fold-working-set-and-deferred-boot.md)。
+滚到被淘汰的节点会重新投影。follow 模式的流式输出把尾部留在缓存里。约束 `snapshot.nodes` 的 fold 工作集见[后续工作集说明](2026-08-21-tui-fold-working-set-and-deferred-boot.zh.md)。
 
 ## Testing
 

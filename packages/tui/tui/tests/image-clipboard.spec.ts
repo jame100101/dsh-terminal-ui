@@ -25,7 +25,7 @@ describe('clipboardImageCommands', () => {
   it('uses STA powershell on Windows and png tools elsewhere', () => {
     expect(clipboardImageCommands('win32')[0]?.command).toBe('powershell')
     expect(clipboardImageCommands('win32')[0]?.args).toContain('-STA')
-    expect(clipboardImageCommands('darwin')[0]?.command).toBe('osascript')
+    expect(clipboardImageCommands('darwin').map(entry => entry.command)).toEqual(['pngpaste', 'osascript'])
     expect(clipboardImageCommands('linux').some(entry => entry.command === 'xclip')).toBe(true)
     expect(clipboardImageCommands('freebsd' as NodeJS.Platform)).toEqual([])
     const previous = process.env.WAYLAND_DISPLAY

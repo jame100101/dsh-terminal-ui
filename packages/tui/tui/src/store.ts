@@ -213,6 +213,8 @@ export interface TuiSnapshot {
   stats: SessionStats
   live: LiveBuffer | null
   busy: boolean
+  /** Provider route paired with `model`. */
+  provider: string
   model: string
   sessionId: string
   cwd: string

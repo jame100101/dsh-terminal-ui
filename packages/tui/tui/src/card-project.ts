@@ -67,7 +67,12 @@ function diffLine(text: string): CardLine {
   return { text, color: 'gray' }
 }
 
-/** Project one pending-call view into card lines. */
+/**
+ * Project one pending-call view into card lines.
+ * @param view - normalized tool call presentation, or null.
+ * @param fallbackDetail - text used when the presentation omits detail.
+ * @returns terminal card lines.
+ */
 export function projectCallCard(view: ToolCallView | null, fallbackDetail: string): CardLine[] {
   if (view === null) return []
   switch (view.card) {

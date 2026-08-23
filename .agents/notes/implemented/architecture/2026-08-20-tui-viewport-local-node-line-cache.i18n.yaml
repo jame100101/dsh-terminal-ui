@@ -3,4 +3,4 @@
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-20-tui-viewport-local-node-line-cache.md
 2026-08-20-tui-viewport-local-node-line-cache.md: 802e1f2689756c2fc5cb13591fe9f5fcb032d974
-2026-08-20-tui-viewport-local-node-line-cache.zh.md: 66d3e4b53fd3012739ab3c243c915ddd6f24a28f
+2026-08-20-tui-viewport-local-node-line-cache.zh.md: 992d3d650f56d65fdd186f3f659b5a1a6c6a164f

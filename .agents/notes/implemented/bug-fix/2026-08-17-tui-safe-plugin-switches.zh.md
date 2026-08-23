@@ -2,7 +2,7 @@
 
 Status: implemented
 
-[英文](2026-08-17-tui-safe-plugin-switches.md) | 中文
+[English](2026-08-17-tui-safe-plugin-switches.md) | 中文
 
 ## 问题
 

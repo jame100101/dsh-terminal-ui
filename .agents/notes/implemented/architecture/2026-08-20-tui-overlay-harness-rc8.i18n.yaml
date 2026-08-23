@@ -1,6 +1,0 @@
-# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
-# side as of the last confirmed-consistent state. Both languages carry equal authority;
-# after editing either side, bring the other along and re-record with:
-#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-20-tui-overlay-harness-rc8.md
-2026-08-20-tui-overlay-harness-rc8.md: 3caf0c23074d9d10aa672865633b25981a3d1ea7
-2026-08-20-tui-overlay-harness-rc8.zh.md: 7a3156ee0d630fff0f8eb0365a5f36c5af896dc3

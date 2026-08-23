@@ -94,7 +94,11 @@ export function mapTurnEndToExitCode(reason: TurnEndReason): number {
   }
 }
 
-/** The turn counter of the last closed turn, or -1 for a log with none. */
+/**
+ * Read the turn counter of the last closed turn.
+ * @param events - session events in log order.
+ * @returns the last closed turn, or -1 when none exists.
+ */
 export function lastTurnNumber(events: readonly SessionEvent[]): number {
   const last = events.findLast(event => event.type === 'turn/end')
   return last === undefined ? -1 : last.data.turn

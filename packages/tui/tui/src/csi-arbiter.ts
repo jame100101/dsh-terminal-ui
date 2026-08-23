@@ -28,7 +28,11 @@ const CSI_TAILS: Record<string, TailKey> = {
   a: 'up', b: 'down', c: 'right', d: 'left',
 }
 
-/** Map a bare CSI tail (`[B`, `[5~`, …) to its key name, or null. */
+/**
+ * Map a bare CSI tail (`[B`, `[5~`, …) to its key name.
+ * @param input - terminal input beginning with `[`.
+ * @returns the recognized key name, or null.
+ */
 export function csiTailKey(input: string): TailKey | null {
   if (!input.startsWith('[')) return null
   return CSI_TAILS[input.slice(1)] ?? null
@@ -84,7 +88,11 @@ export interface SyntheticKey {
   meta: boolean
 }
 
-/** Build the `Key` object for a re-synthesized CSI tail. */
+/**
+ * Build the `Key` object for a re-synthesized CSI tail.
+ * @param name - recognized CSI key name.
+ * @returns an Ink-compatible key value.
+ */
 export function syntheticKey(name: TailKey): SyntheticKey {
   return {
     upArrow: name === 'up',

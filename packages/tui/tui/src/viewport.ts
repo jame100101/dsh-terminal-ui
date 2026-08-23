@@ -531,22 +531,9 @@ export function composerOffsetForVerticalMove(
   return composerOffsetAt(value, width, nextLine, layout.caretColumn)
 }
 
-/** Hard-newline count at which the composer collapses to a preview plus a line-count row. */
-export const COMPOSER_COLLAPSE_HARD_LINES = 4
-
 /**
- * Number of hard-newline lines in a composer value. An empty value is one line.
- * @param value - the composer draft.
- * @returns the line count.
- */
-export function countComposerHardLines(value: string): number {
-  return value === '' ? 1 : value.split('\n').length
-}
-
-/**
- * Rows the composer paints: 2 when the draft has at least
- * {@link COMPOSER_COLLAPSE_HARD_LINES} hard lines, otherwise the wrapped
- * caret window capped at `maxLines`.
+ * Rows the composer paints from its wrapped caret window. Large paste bodies
+ * are represented by compact draft tokens before layout reaches this helper.
  * @param value - the composer draft.
  * @param cursorOffset - caret offset in code units.
  * @param width - wrap budget in terminal cells.
@@ -559,7 +546,6 @@ export function composerVisibleRowCount(
   width: number,
   maxLines: number,
 ): number {
-  if (countComposerHardLines(value) >= COMPOSER_COLLAPSE_HARD_LINES) return 2
   return selectComposerLayout(value, cursorOffset, width, maxLines).visibleLines.length
 }
 
@@ -660,7 +646,12 @@ export function scrollOffsetForScrollbarRow(
   return Math.round((1 - fraction) * Math.max(0, Math.floor(maximumOffset)))
 }
 
-/** The previous code-point boundary at or before an offset. */
+/**
+ * Find the previous code-point boundary.
+ * @param value - UTF-16 string.
+ * @param offset - current UTF-16 offset.
+ * @returns the previous boundary, clamped to zero.
+ */
 export function previousCodePointBoundary(value: string, offset: number): number {
   if (offset <= 0) return 0
   const previous = value.charCodeAt(offset - 1)
@@ -671,7 +662,12 @@ export function previousCodePointBoundary(value: string, offset: number): number
   return offset - 1
 }
 
-/** The next code-point boundary at or after an offset. */
+/**
+ * Find the next code-point boundary.
+ * @param value - UTF-16 string.
+ * @param offset - current UTF-16 offset.
+ * @returns the next boundary, clamped to the string length.
+ */
 export function nextCodePointBoundary(value: string, offset: number): number {
   if (offset >= value.length) return value.length
   const lead = value.charCodeAt(offset)

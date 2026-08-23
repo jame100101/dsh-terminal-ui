@@ -71,10 +71,15 @@ export function nextImageChip(draft: string): string {
  * Insert the next image chip at `caret`.
  * @param draft - composer text.
  * @param caret - insertion offset in UTF-16 units.
+ * @param assignedChip - optional host-assigned label for mixed `/attach` and paste intake.
  * @returns the new draft, caret, and chip text.
  */
-export function insertImageChip(draft: string, caret: number): { draft: string; caret: number; chip: string } {
-  const chip = nextImageChip(draft)
+export function insertImageChip(
+  draft: string,
+  caret: number,
+  assignedChip: string = nextImageChip(draft),
+): { draft: string; caret: number; chip: string } {
+  const chip = assignedChip
   const at = Math.max(0, Math.min(draft.length, caret))
   const prefix = draft.slice(0, at)
   const suffix = draft.slice(at)
@@ -130,6 +135,74 @@ export function keepAttachmentsByChips<T>(
     return chip
   })
   return { draft: compacted, attachments: kept }
+}
+
+/**
+ * Reconcile a composer edit with pending refs while preserving `/attach`
+ * attachments that have never been represented by chips.
+ * @param previousDraft - draft before the edit.
+ * @param nextDraft - draft after the edit.
+ * @param attachments - pending refs in chip-number order.
+ * @returns renumbered draft plus the retained refs.
+ */
+export function reconcileImageChips<T>(
+  previousDraft: string,
+  nextDraft: string,
+  attachments: readonly T[],
+): { draft: string; attachments: T[] } {
+  const previousIndices = new Set(chipIndices(previousDraft).filter(index => index < attachments.length))
+  if (previousIndices.size === 0) {
+    return { draft: nextDraft, attachments: [...attachments] }
+  }
+  const nextIndices = new Set(chipIndices(nextDraft).filter(index => index < attachments.length))
+  const keptOriginalIndices: number[] = []
+  for (let index = 0; index < attachments.length; index += 1) {
+    if (!previousIndices.has(index) || nextIndices.has(index)) keptOriginalIndices.push(index)
+  }
+  const compactedIndex = new Map(keptOriginalIndices.map((index, position) => [index, position]))
+  const seen = new Set<number>()
+  const draft = nextDraft.replace(IMAGE_CHIP_RE, (_full, raw: string) => {
+    const originalIndex = Number(raw) - 1
+    const position = compactedIndex.get(originalIndex)
+    if (position === undefined || seen.has(originalIndex)) return ''
+    seen.add(originalIndex)
+    return imageChip(position)
+  })
+  const kept: T[] = []
+  for (const index of keptOriginalIndices) {
+    const item = attachments[index]
+    if (item !== undefined) kept.push(item)
+  }
+  return { draft, attachments: kept }
+}
+
+/** One full chip range selected for an atomic Backspace/Delete edit. */
+export interface ImageChipDeletionRange {
+  start: number
+  end: number
+}
+
+/**
+ * Expand Backspace/Delete inside or beside a chip to the full token.
+ * @param draft - composer text.
+ * @param caret - UTF-16 caret offset.
+ * @param direction - edit direction.
+ * @returns the chip range, or null for an ordinary code-point edit.
+ */
+export function imageChipDeletionRange(
+  draft: string,
+  caret: number,
+  direction: 'backspace' | 'delete',
+): ImageChipDeletionRange | null {
+  for (const match of draft.matchAll(IMAGE_CHIP_RE)) {
+    const start = match.index
+    const end = start + match[0].length
+    const hit = direction === 'backspace'
+      ? caret > start && caret <= end
+      : caret >= start && caret < end
+    if (hit) return { start, end }
+  }
+  return null
 }
 
 /**
@@ -261,4 +334,23 @@ export function formatByteSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+/**
+ * Test image capability on one exact provider/model route.
+ * @param models - discovered route rows.
+ * @param provider - current provider id.
+ * @param model - current model id.
+ * @returns true only for the matching image-capable route.
+ */
+export function modelRouteAcceptsImages(
+  models: readonly { provider: string; model: string; acceptsImage?: boolean }[],
+  provider: string,
+  model: string,
+): boolean {
+  return models.some(entry =>
+    entry.provider === provider
+    && entry.model === model
+    && entry.acceptsImage === true,
+  )
 }

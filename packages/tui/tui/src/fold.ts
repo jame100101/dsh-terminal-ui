@@ -74,7 +74,10 @@ export function foldResidentChars(state: FoldState): number {
   return total
 }
 
-/** Empty fold state. */
+/**
+ * Create an empty fold state.
+ * @returns a state with no projected session events.
+ */
 export function initialState(): FoldState {
   return {
     nodes: [],
@@ -249,7 +252,10 @@ export interface FoldScratch {
   turnTtftSteps: number
 }
 
-/** Fresh scratch for one fold stream (one session's event sequence). */
+/**
+ * Create scratch state for one session event sequence.
+ * @returns fresh mutable fold scratch.
+ */
 export function createScratch(): FoldScratch {
   return {
     step: null,

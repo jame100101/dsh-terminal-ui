@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   Archived pairs are frozen and their hashes are updated only during archival.
+2026-08-20-tui-overlay-harness-rc8.md: 05748151b7de871ee7e952794b72b18b66728807
+2026-08-20-tui-overlay-harness-rc8.zh.md: f8cdb869b9058111ee163e4eb3be973b3e86a2fb

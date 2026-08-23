@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attachmentsForSubmit, chipIndices, classifyPastedPath, countImageChips, formatByteSize, imageChip, insertImageChip,
-  keepAttachmentsByChips, mediaTypeFromPath, nextImageChip, normalizePastedPath, rejectImageBatch, sniffMediaType,
+  attachmentsForSubmit, chipIndices, classifyPastedPath, countImageChips, formatByteSize, imageChip,
+  imageChipDeletionRange, insertImageChip, keepAttachmentsByChips, mediaTypeFromPath, nextImageChip,
+  normalizePastedPath, modelRouteAcceptsImages, reconcileImageChips, rejectImageBatch, sniffMediaType,
   stripImageChips,
 } from '../src/image-intake'
 
@@ -31,6 +32,46 @@ describe('image chips', () => {
     expect(kept.draft).toBe('a [Image #1] b  ')
     expect(attachmentsForSubmit('hello', ['a', 'b'])).toEqual(['a', 'b'])
     expect(attachmentsForSubmit('see [Image #2]', ['a', 'b'])).toEqual(['b'])
+  })
+
+  it('renumbers after deleting a chip without dropping path-only attachments during ordinary edits', () => {
+    expect(reconcileImageChips(
+      '[Image #1] [Image #2]',
+      '[Image #2]',
+      ['first', 'second'],
+    )).toEqual({ draft: '[Image #1]', attachments: ['second'] })
+    expect(reconcileImageChips('[Image #1]', '', ['first'])).toEqual({ draft: '', attachments: [] })
+    expect(reconcileImageChips('hello', 'hello!', ['path-only'])).toEqual({
+      draft: 'hello!',
+      attachments: ['path-only'],
+    })
+    expect(reconcileImageChips('[Image #2]', '[Image #2]!', ['path-only', 'chip'])).toEqual({
+      draft: '[Image #2]!',
+      attachments: ['path-only', 'chip'],
+    })
+    expect(reconcileImageChips('[Image #2]', '', ['path-only', 'chip'])).toEqual({
+      draft: '',
+      attachments: ['path-only'],
+    })
+    expect(insertImageChip('', 0, '[Image #3]').draft).toBe('[Image #3]')
+  })
+
+  it('treats Backspace and Delete inside a chip as one atomic edit', () => {
+    const draft = 'a [Image #1] b'
+    expect(imageChipDeletionRange(draft, 12, 'backspace')).toEqual({ start: 2, end: 12 })
+    expect(imageChipDeletionRange(draft, 2, 'delete')).toEqual({ start: 2, end: 12 })
+    expect(imageChipDeletionRange(draft, 1, 'backspace')).toBeNull()
+    expect(imageChipDeletionRange(draft, draft.length, 'delete')).toBeNull()
+  })
+
+  it('checks image capability on the exact provider/model route', () => {
+    const models = [
+      { provider: 'text-provider', model: 'shared', acceptsImage: false },
+      { provider: 'vision-provider', model: 'shared', acceptsImage: true },
+    ]
+    expect(modelRouteAcceptsImages(models, 'text-provider', 'shared')).toBe(false)
+    expect(modelRouteAcceptsImages(models, 'vision-provider', 'shared')).toBe(true)
+    expect(modelRouteAcceptsImages(models, 'missing', 'shared')).toBe(false)
   })
 })
 

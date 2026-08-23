@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-The dsh terminal surface: an in-process TUI plugin restructured after the **DamnatioX TypeScript TUI** (Ink 7 + React 19). v0.0.13 builds on the v0.0.12 surface ([TUI frontend plan](../../../dsh-TUI-前端完整方案.md)):
+The dsh terminal surface: an in-process TUI plugin restructured after the **DamnatioX TypeScript TUI** (Ink 7 + React 19).:
 
 - **DamnatioX geometry**: a fixed-height root Box (`(terminal width - 1) × height` + `overflow="hidden"`) leaves the physical right-margin cell blank so DECAWM pending-wrap state cannot shift repaints. Layout: 4-row header (`🐋 DSH-TUI` / cwd / model · busyEnter + a separator) · transcript viewport · slash picker · composer · status bar (activity row + Web-stats strip).
 - **Toolkit-native caret**: the composer caret anchors through Ink's own `useCursor()`/`measureElement()` (no manual ANSI CUP writes anywhere). The single-line input renders a horizontal viewport around the caret with `…` ellipses and reserves one cell for the native cursor — Windows Terminal IME composition anchors at the draft.
@@ -26,21 +26,7 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **Slash picker** (`/`) over host commands plus TUI-local ones, listed **alphabetically (a–z)** in the DamnatioX palette style; host commands get Chinese descriptions in the zh locale and dispatch through `ctx.commands` without a model turn.
 - **Approval and ask_user takeovers** (allow-once / deny / options / custom answers); **`/trajectory`** structured view; **todo and queue docks** at the transcript tail.
 - **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits. `Ctrl+C` copies the composer selection when one exists (and does not cancel).
-- **Copy** (Grok-style, always on): drag across a prompt or reply to highlight and auto-copy; mouse-up copies and clears the highlight. A click without a drag does not select a message. Blank spacer rows between messages can start or continue a drag but are omitted from the clipboard. Dragging to the top or bottom edge scrolls so the selection can continue through off-screen history. The composer is a TUI-owned editor: drag or `Ctrl+A` selects with a blue highlight, `Ctrl+C` copies, `Ctrl+V` (or terminal paste) inserts, and typing or paste replaces the selection. Every wrap row paints a 2-cell `› `/indent prefix so line 0 uses the same wrap budget as later rows, and wrap stops one cell before the painted box so a full row cannot clip its last glyph. A draft with 4 or more hard-newline lines collapses to a one-line preview plus `… N lines` (Claude Code paste). `/copy` copies the latest assistant reply; `/copy n` is the Nth-latest. Wheel, scrollbar, and disclosure clicks stay TUI-owned. Linear/print mode does not implement clipboard shortcuts.
-
-## Model Experience
-
-### What the model sees
-
-Nothing from this package. It registers no tools, no prompt sections, no dynamic context, and no title providers; the answerers and question provider only answer interactive prompts and never alter the request envelope.
-
-### Token effect
-
-None.
-
-### KV Cache effect
-
-None. The request envelope is byte-identical to a surface-less composition, so provider prompt-cache hit rates are unchanged by construction (the cache-safety contract in the TUI plan, §3.6).
+- **Copy** (Grok-style, always on): drag across a prompt or reply to highlight and auto-copy; mouse-up copies and clears the highlight. A click without a drag does not select a message. Blank spacer rows between messages can start or continue a drag but are omitted from the clipboard. Dragging to the top or bottom edge scrolls so the selection can continue through off-screen history. The composer is a TUI-owned editor: drag or `Ctrl+A` selects with a blue highlight, `Ctrl+C` copies, `Ctrl+V` (or terminal paste) inserts, and typing or paste replaces the selection. Every wrap row paints a 2-cell `› `/indent prefix so line 0 uses the same wrap budget as later rows, and wrap stops one cell before the painted box so a full row cannot clip its last glyph. A paste of at least 1,000 Unicode characters becomes one atomic `[Pasted text #N +M lines]` token while the exact text is retained for submission; ordinary typed multi-line drafts keep the five-row caret window. `/copy` copies the latest assistant reply; `/copy n` is the Nth-latest. Wheel, scrollbar, and disclosure clicks stay TUI-owned. Linear/print mode does not implement clipboard shortcuts.
 
 ## Web 功能差距核对（v0.0.12 · packages/client/* 对照）
 
@@ -65,7 +51,7 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 | `/attach` 附件、`/workspace`/`/rename`、fork | ✅ `/rename <标题>`（sessionTitle.rename）、`/workspace <目录>`（chdir，新会话继承）、`/attach <图片>`（attachments.saveImage，随下一条消息发送 + dock）、`/fork [eventSeq]`（seed 分叉到新会话，可经 /sessions 恢复） |
 | 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行；composer `@` 补全工作区相对路径（Tab 插入，目录保留 `/`） |
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
-| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：拖入/粘贴图片路径升级为 chip；Windows **Alt+V** 读位图剪贴板；`/attach` 仍可用；提交走 `attachments.saveImage`；纯文本模型提交前拒绝 |
+| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：拖入/粘贴图片路径升级为 chip；Windows **Alt+V**、macOS/Linux Ctrl/Meta+V 读位图剪贴板；`/attach` 仍可用；`/image [N]` 显示 fallback 预览信息；提交走 `attachments.saveImage`；纯文本模型提交前拒绝 |
 | MessageList 虚拟化 | ⚠ fold 工作集最近 3000 节点（assistant ≤32 KiB，think/tool/context ≤4 KiB，user ≤8 KiB）+ 视口切片 + 节点行缓存；session log 仍是全文；尚未采用 Web 的 50-message 向前分页 |
 | 对话复制（拖选 / 输入框 / `/copy`） | ✅ 默认拖选复制提示词和回复；输入框 TUI 选区（Ctrl+A/C/V）；`/copy`；剩余项见 [bug.md](./bug.md) |
 
@@ -75,18 +61,37 @@ None. The request envelope is byte-identical to a surface-less composition, so p
 |---|---|
 | Drag-copy of prompts and replies; composer Ctrl+A/C/V; `/copy` | Done |
 | Composer first wrap line swallowing a cell | Open — [bug.md](./bug.md) |
-| Paste of terminal text not collapsing the composer | Open — [bug.md](./bug.md) |
+| Large terminal paste capsule with exact-text submission | Done |
 | Streaming coalesce, incremental wrap, isolated shimmer, windowed hit-test, viewport-local node cache, stream publish skips panel recompute ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | Done |
 | Fold working set (3000 rows, capped bodies) + deferred catalog/settings/feedback after first paint; `pnpm dsh:tui` built launch | Done |
 | Keyless perf acceptance: 40 ms coalesce, incremental wrap, wheel p99, 100/500-turn fold heap, built `--version`/`--help` ([#14](https://github.com/jame100101/deepseek-harness-tui/issues/14)) | Done |
-| Grok `[Image #N]` chips, Alt+V / path paste, Web batch limits, vision-model refuse | Done |
+| Grok `[Image #N]` chips, cross-platform image paste, atomic deletion, Web batch limits, exact-route vision check | Done |
+
+## Model Experience
+
+### User image blocks
+
+#### What the model sees
+
+The package registers no tools, prompt sections, dynamic context, or title providers. A user-selected image is persisted through `ctx.attachments` and enters the user message as an image block; `[Image #N]` is composer chrome and is removed from the text block before submission.
+
+Large-paste tokens are also composer chrome. The model and registered slash commands receive the retained pasted text after the token is expanded on submit.
+
+#### Token effect
+
+The TUI adds no text tokens of its own. Image token accounting is model- and provider-specific.
+
+#### KV Cache effect
+
+Text-only requests remain byte-identical to a surface-less composition. Image requests intentionally differ because the selected durable image blocks are model-visible; the current Harness adapter owns request-image projection and provider upload reuse.
 
 ## Known Limitations and Deferred Work
 
 - **Non-TTY fallback is fail-closed**: the linear REPL mounts no answerer, so approval asks deny and `ask_user` fails — headless-strict semantics, matching `phi run`. TUI-local slash commands print a "linear mode" notice instead of leaking into a model turn.
-- **Composer wrap** is multi-line (cap 5 rows) with hard-newline collapse at 4+ lines. Remaining wrap/paste defects: [bug.md](./bug.md).
+- **Composer wrap** is multi-line with a five-row caret window. The remaining first-wrap-cell defect is tracked in [bug.md](./bug.md).
 - **Pending steering has no transcript bubble yet** (the queue dock shows the queued steer previews).
 - **Mouse clicks are wired for transcript controls**: trailing disclosure arrows, the right-edge scrollbar (click/drag jump), the back-to-bottom button, and default drag-copy of prompt/reply text.
+- **Image preview uses terminal-safe metadata**: `/image [N]` shows the pending file name, intrinsic dimensions, and byte size. Kitty/iTerm graphics are not written outside Ink's alternate-screen repaint lifecycle.
 - **Markdown styling covers headings, paragraphs, and GFM tables**: list items and blockquote interiors stay plain text (remaining GFM pass).
 - **Resume still reads the complete authoritative session log** because the resumed Agent requires complete replay; the TUI fold is a 3000-row working set with capped bodies, and the display projection is windowed, but history transport is not yet Web-style backward paging.
 - **Daily launch uses built artifacts.** After `pnpm run build`, `pnpm dsh:tui` runs `apps/cli/lib/bin.js --profile tui` in one Node process. `pnpm dsh-tui` is the wrapper over the same built bin. `pnpm dsh --profile tui` is the tsx source path.

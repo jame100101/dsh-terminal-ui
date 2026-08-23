@@ -1,8 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  COMPOSER_COLLAPSE_HARD_LINES, COMPOSER_PROMPT_WIDTH, COMPOSER_WRAP_GUTTER, composerGlyphAt, composerOffsetAt,
+  COMPOSER_PROMPT_WIDTH, COMPOSER_WRAP_GUTTER, composerGlyphAt, composerOffsetAt,
   composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth, composerVisibleRowCount,
-  countComposerHardLines,
   lineSelectableWidth, nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow,
   selectComposerLayout, selectInputViewport, selectPanelViewport, selectScrollbar, selectTerminalFrameWidth,
   rememberTranscriptWindow, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt,
@@ -439,13 +438,9 @@ describe('selectComposerLayout', () => {
     expect(composerOffsetForVerticalMove('', 4, 0, -1)).toBe(0)
   })
 
-  it('collapses the composer to two rows once hard-newline lines reach the cap', () => {
-    expect(COMPOSER_COLLAPSE_HARD_LINES).toBe(4)
-    expect(countComposerHardLines('a')).toBe(1)
-    expect(countComposerHardLines('a\nb\nc')).toBe(3)
-    expect(countComposerHardLines('a\nb\nc\nd')).toBe(4)
+  it('caps ordinary multi-line drafts at the composer viewport height', () => {
     expect(composerVisibleRowCount('a\nb\nc', 0, 20, 5)).toBe(3)
-    expect(composerVisibleRowCount('a\nb\nc\nd', 0, 20, 5)).toBe(2)
-    expect(composerVisibleRowCount('a\nb\nc\nd\ne\nf', 0, 20, 5)).toBe(2)
+    expect(composerVisibleRowCount('a\nb\nc\nd', 0, 20, 5)).toBe(4)
+    expect(composerVisibleRowCount('a\nb\nc\nd\ne\nf', 0, 20, 5)).toBe(5)
   })
 })

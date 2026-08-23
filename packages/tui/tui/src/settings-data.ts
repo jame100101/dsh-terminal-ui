@@ -12,6 +12,7 @@ import type { JobRow, PluginConfigField, SessionEntry, SettingsData, SettingsPro
 /** One /settings page id. */
 export type SettingsPageId = 'general' | 'models' | 'plugins' | 'inventory' | 'presets'
 
+/** Settings pages in keyboard-cycle order. */
 export const SETTINGS_PAGES: readonly SettingsPageId[] = ['general', 'models', 'plugins', 'inventory', 'presets']
 
 /** One displayed panel row, built by the pure projections in this module. */
@@ -50,7 +51,7 @@ function credentialState(configured: boolean, source: string | undefined, writab
  * @returns the panel rows for the requested page.
  */
 export function buildSettingsRows(
-  snapshot: { settings: SettingsData | null; model: string; reasoning: ReasoningView },
+  snapshot: { settings: SettingsData | null; provider: string; model: string; reasoning: ReasoningView },
   page: SettingsPageId,
   locale: 'zh' | 'en',
 ): PanelRow[] {
@@ -84,11 +85,11 @@ export function buildSettingsRows(
       ]
     case 'models': {
       const rows: PanelRow[] = []
-      const defaultProvider = data.models.providers.find(provider => provider.models.some(model => model.id === snapshot.model))?.provider
+      const defaultProvider = snapshot.provider
       for (const provider of data.models.providers) {
         rows.push({ key: `p-${provider.provider}`, text: provider.provider, color: 'cyan' })
         for (const model of provider.models) {
-          const isDefault = model.id === snapshot.model
+          const isDefault = provider.provider === snapshot.provider && model.id === snapshot.model
           rows.push({
             key: `m-${provider.provider}-${model.id}`,
             text: `${isDefault ? '●' : '○'} ${model.id}${model.acceptsImage === true ? (locale === 'en' ? ' · image' : ' · 图') : ''}${isDefault ? (locale === 'en' ? ' · default' : ' · 默认') : ''}`,
