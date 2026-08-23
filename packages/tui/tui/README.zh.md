@@ -15,7 +15,7 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **Retry rows**: one muted, collapsible row per retry chain — `⟳ retry n/max · 12s 后` with a client-anchored countdown (ceil, 1s floor), shimmer while waiting, `∞` in always mode; the expand body shows provider/policy/failure code/HTTP status/latest delay and never the failure message (credential safety, Web parity).
 - **Markdown inline styling**: assistant prose renders bold, inline code (cyan), links (underline), and emphasis as per-run colored segments, wrapped cell-accurately so styles survive line breaks; code fences, lists, and blockquotes stay structural, and GFM tables render as CJK-width-aligned `│` grids that shrink to the terminal width.
 - **Busy-stream input safety**: Ink flushes a lone `\x1b` as Escape after 20ms, so a split arrow sequence under a busy stream used to wipe the draft and dismiss the picker; the renderer now confirms every Escape (60ms) and re-synthesizes the split key tail, keeping the picker open and arrow-navigable while a turn streams. Streaming `assistant/chunk` UI publishes coalesce at 40ms and live assistant wrap is incremental. Thinking/compaction animation and the status-bar star live in isolated subtrees so a 100ms tick does not re-project settled history (the fold keeps settled arrays referentially stable, and tool-card bodies cap at 400 rows / 300 cells per line). Every fresh `/` keystroke re-arms the picker and each keystroke clears stale dismissals, so `/` can never stay silently suppressed.
-- **Busy chrome**: the live Thinking row leads with a braille spinner in a stable magenta; compaction uses a yellow spinner row; neither row sweeps hues. `/trajectory` colors model turns blue, tool activity red, and user input cyan. The status-bar busy marker is a cycling star (`✶✸✹✺`) in stable yellow — the glyph changes, the color does not. User prompts use a gray block background (Grok `bg = light`) plus one blank row above and below. Assistant markdown keeps one blank row between blocks; think/tool/assistant nodes stay flush.
+- **忙碌状态界面**：实时 Thinking 行使用稳定的洋红色 braille spinner，compaction 使用黄色 spinner，二者都不做色相扫动。`/trajectory` 中模型轮次为蓝色、工具活动为红色、用户输入为青色。状态栏在 Thinking、回复、调用工具或等待工作时使用柔和青蓝色，idle 时使用低饱和蓝色；忙碌状态仅让星形字形（`✶✸✹✺`）轮换。用户提示使用灰色块背景（Grok `bg = light`），上下各保留一行空白。助手 Markdown 的块之间保留一行空白，think/tool/assistant 节点保持相邻。
 - **Fullscreen caret contract**: the composer passes `measureElement()` coordinates unchanged to Ink's `useCursor`; the pinned Ink patch derives every suffix origin, including cursor-only updates, from the output's actual final row, so first paint, whitespace input, navigation, and repeated fullscreen repaint share one zero-based row model.
 - **Tool render-intent cards**: every tool row projects its `presentCall`/`presentResult` view (generic / terminal / diff / search / read / web) into terminal blocks, collapsed by default.
 - **`/settings` five pages**: a Claude Code-style chrome (search field, clickable tab strip, Tab / ←→ to cycle, Esc to close) over general (busyEnter Queue/Steer, thinking default display — persisted to the `tui` namespace of `$DSH_HOME/settings.yaml`, live), models (provider names as cyan section titles, default selection, value-free credential rows that write through `ctx.credentials` with masked input and a confirm gate), plugins (complete read-only Loader status list; enable/disable changes belong in `$DSH_HOME/profiles/<profile>/cordis.patch.yml`, which the user can edit directly or ask the Agent to update), inventory (settings namespaces + credential refs + inspect providers), presets (agent presets: `Enter` recomposes the BLANK session in place — the Web mechanism; once the conversation starts its preset is fixed; the current preset is `●`-marked, broken presets are dimmed).
@@ -23,12 +23,12 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 - **`/model`** opens the models settings page (select the default with Enter). **`/sessions`** loads the live agent plus the newest 50 persisted sessions (titles/filter) on first open rather than scanning persisted logs during startup; `Enter` resumes one with full history replay — exactly ONE live session exists at a time (switches dispose the previous agent; `/fork` yields a persisted, resumable artifact). **`/new`** starts a fresh session.
 - **Bounded transcript work**: complete-log resume uses a private linear replay builder, while settled display rows are cached per immutable node, terminal width, expansion, feedback, and locale. Composer and slash-picker updates reuse those projections and slice the visible viewport without copying the complete wrapped-line list.
 - **Collapsible rows** (context `◆`/Thinking/tool/retry): click the trailing `▶`/`▼` directly. Context/tool/retry retain per-node expansion; clicking any Thinking arrow changes the persisted global Thinking display, updates every Thinking row together, and keeps the header's `thinking on/off` label synchronized. Idle Tab 没有 transcript 选中模式；输入框有文字时方向键移动光标（含折行），空草稿时 ↑/↓ 回忆提交历史；Space 仍是普通输入。
-- **Slash picker** (`/`) over host commands plus TUI-local ones, listed **alphabetically (a–z)** in the DamnatioX palette style; host commands get Chinese descriptions in the zh locale and dispatch through `ctx.commands` without a model turn.
-- **Approval and ask_user takeovers** (allow-once / deny / options / custom answers); **`/trajectory`** structured view; **todo and queue docks** at the transcript tail.
+- **斜杠选择器**（`/`）按字母顺序列出 Host 命令和 TUI 本地命令。`/skills` 会打开第二级选择器，列出当前 agent scope 中允许用户调用的 skill；同名时命令优先，选择 skill 会插入字面量 `/name `，继续由现有 skill pre-step 插件处理。`@` 选择器先列工作区文件，再列其他会话；会话项插入规范 `dsh-session:` mention，由官方 session-reference 插件准备有界上下文。
+- **审批与 ask_user 接管区**支持 allow-once / deny、批量问题、单选、多选、自定义文本和 Shift+Enter 换行。**`/trajectory`** 提供结构化视图；**todo 与 queue dock** 保持在 transcript 尾部。
 - **`Ctrl+Enter` steers** a running turn (`busyEnter` assigns plain Enter while busy); `Esc` cancels; `Ctrl+D` quits when idle; `Ctrl+L` clears; double `Ctrl+C` within 2s exits. 输入框里有选区时 `Ctrl+C` 复制该选区，不取消任务。
-- **复制**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；松开鼠标即复制并清掉高亮。单击且没有拖动不会选中整条消息。消息之间的空行可以起选或继续拖选，但不会进入剪贴板。拖到会话顶部或底部会滚动，以便继续选中当前看不见的历史。输入框是 TUI 自己的编辑器：拖选或 `Ctrl+A` 用蓝色背景选中，`Ctrl+C` 复制，`Ctrl+V`（或终端粘贴）插入，输入或粘贴会替换当前选区。每一折行都画 2 格的 `› `/缩进，第一行和后面的行共用同一折行宽度；折行比绘制盒子少 1 格，满行不会把末字裁掉。一次粘贴达到 1,000 个 Unicode 字符时会收成一个可原子删除的 `[Pasted text #N +M lines]` token，提交时仍使用保留的完整原文；普通手动输入的多行草稿继续使用五行光标窗口。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
+- **复制与反馈**（和 Grok 一样，默认就能用）：在提示词或回复上拖选即可高亮并自动复制；松开鼠标即复制并清掉高亮。单击且没有拖动不会选中整条消息。消息之间的空行可以起选或继续拖选，但不会进入剪贴板。拖到会话顶部或底部会滚动，以便继续选中当前看不见的历史。输入框是 TUI 自己的编辑器：拖选或 `Ctrl+A` 用蓝色背景选中，`Ctrl+C` 复制，`Ctrl+V`（或终端粘贴）插入，输入或粘贴会替换当前选区。每一折行都画 2 格的 `› `/缩进，第一行和后面的行共用同一折行宽度；折行比绘制盒子少 1 格，满行不会把末字裁掉。一次粘贴达到 1,000 个 Unicode 字符或 20 个逻辑行时，会收成一个可原子删除的 `[Pasted text #N +M lines]` token；LF、CRLF 与单独 CR 的剪贴板行会按相同规则计数，提交时使用保留并规范为 LF 的完整文本。普通手动输入的多行草稿继续使用五行光标窗口。`/copy` 复制最近一条回复；`/copy n` 是第 n 条最近回复。`/rate up|down [n]` 可切换倒数第 n 条助手回复的耐久评价，不占用 Tab、方向键或 Space。滚轮、滚动条、disclosure 仍由 TUI 处理。线性/print 模式不实现剪贴板快捷键。
 
-## Web 功能差距核对（v0.0.12 · packages/client/* 对照）
+## Web 功能差距核对（当前 `packages/client/*` 对照）
 
 | Web 功能 | TUI 状态 |
 |---|---|
@@ -47,11 +47,11 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 | 插件清单 | ✅ 插件页恢复完整 Loader 插件状态清单并保持只读；启停插件由用户编辑 profile 的 `cordis.patch.yml`，也可以直接要求 Agent 修改该配置文件 |
 | 主题 / locale | ✅ 终端固定深色调色板（无主题切换）；`locale`（中文/English）在 /settings general 页 Enter 切换 |
 | plan 模式条 / goal 面板 | ✅ 状态栏 `◈ plan`（含 pending 状态）+ transcript 尾 goal dock + `/goal` 详情 |
-| 消息反馈（feedback） | ⚠️ `message-feedback` sidecar 与已有评分展示保留；TUI 不再占用 Tab/↑↓/Space/g/b 组合键进入消息选择模式 |
-| `/attach` 附件、`/workspace`/`/rename`、fork | ✅ `/rename <标题>`（sessionTitle.rename）、`/workspace <目录>`（chdir，新会话继承）、`/attach <图片>`（attachments.saveImage，随下一条消息发送 + dock）、`/fork [eventSeq]`（seed 分叉到新会话，可经 /sessions 恢复） |
-| 交付文件 chips、@文件提及 | ✅ 工具卡 locations/files 行；输入框 `@` 补全工作区相对路径（Tab 插入，目录保留 `/`） |
+| 消息反馈（feedback） | ✅ `message-feedback` sidecar + 评分展示；`/rate up\|down [n]` 评价倒数第 n 条助手回复，不占用 Tab/↑↓/Space |
+| `/attach` 附件、`/workspace`/`/rename`、fork | ✅ `/rename <标题>`（sessionTitle.rename）、`/workspace <目录>`（chdir，新会话继承）、`/attach <图片>`（走 attachments.saveImages 整批入口，随下一条消息发送 + dock）、`/fork [eventSeq]`（seed 分叉到新会话，可经 /sessions 恢复） |
+| 交付文件 chips、@引用 | ✅ 每轮成功 mutation 的 locations 汇总为产出行；输入框 `@` 补全工作区相对路径和其他会话的规范 mention |
 | Ctrl+K 命令面板 | ⚠ 由 `/` 选择器覆盖（等价语义） |
-| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：拖入/粘贴图片路径升级为 chip；Windows **Alt+V**、macOS/Linux Ctrl/Meta+V 读位图剪贴板；`/attach` 仍可用；`/image [N]` 显示 fallback 预览信息；提交走 `attachments.saveImage`；纯文本模型提交前拒绝 |
+| 图片粘贴 | ✅ Web 整批拒图 + Grok `[Image #N]`：多路径粘贴经 `attachments.saveImages` 整批校验后一次加入，拖入单图、跨平台位图剪贴板、`/attach` 与 `/image [N]` 保留；纯文本模型提交前拒绝 |
 | MessageList 虚拟化 | ⚠ fold 工作集最近 3000 节点（assistant ≤32 KiB，think/tool/context ≤4 KiB，user ≤8 KiB）+ 视口切片 + 节点行缓存；session log 仍是全文；尚未采用 Web 的 50-message 向前分页 |
 | 对话复制（拖选 / 输入框 / `/copy`） | ✅ 默认拖选复制提示词和回复；输入框 TUI 选区（Ctrl+A/C/V）；`/copy`；剩余项见 [bug.md](./bug.md) |
 
@@ -73,9 +73,7 @@ The dsh terminal surface: an in-process TUI plugin restructured after the **Damn
 
 #### What the model sees
 
-本包不注册工具、prompt section、动态 context 或 title provider。用户选择的图片经 `ctx.attachments` 持久化，并以图片 block 进入 user message；`[Image #N]` 只属于 composer chrome，提交前会从文本 block 中移除。
-
-大段粘贴 token 同样只属于 composer chrome。提交时会先展开成保留的完整粘贴文本，再交给模型或已注册的斜杠命令。
+本包不注册工具、prompt section、动态 context 或 title provider。用户选择的图片经 `ctx.attachments` 持久化，并以图片 block 进入 user message；`[Image #N]` 只属于 composer chrome，提交前会从文本 block 中移除。大段粘贴 token 同样只属于 composer chrome；提交时会先展开成保留的完整粘贴文本，再交给模型或已注册的斜杠命令。
 
 #### Token effect
 

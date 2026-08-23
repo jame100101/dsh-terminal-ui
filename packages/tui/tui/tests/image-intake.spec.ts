@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  attachmentsForSubmit, chipIndices, classifyPastedPath, countImageChips, formatByteSize, imageChip,
+  attachmentsForSubmit, chipIndices, classifyPastedImagePaths, classifyPastedPath, countImageChips, formatByteSize, imageChip,
   imageChipDeletionRange, insertImageChip, keepAttachmentsByChips, mediaTypeFromPath, nextImageChip,
   normalizePastedPath, modelRouteAcceptsImages, reconcileImageChips, rejectImageBatch, sniffMediaType,
   stripImageChips,
@@ -102,6 +102,16 @@ describe('paste path classification', () => {
     expect(normalizePastedPath('file://')).toBeNull()
     expect(classifyPastedPath('C:readme.txt')).toEqual({ kind: 'file', path: 'C:readme.txt' })
     expect(chipIndices('[Image #1] x [Image #foo] [Image #0]')).toEqual([0])
+  })
+
+  it('classifies newline-separated image selections as one ordered batch', () => {
+    expect(classifyPastedImagePaths('file:///tmp/a.png\n"/tmp/b.webp"\n')).toEqual([
+      { kind: 'image', path: '/tmp/a.png', mediaType: 'image/png' },
+      { kind: 'image', path: '/tmp/b.webp', mediaType: 'image/webp' },
+    ])
+    expect(classifyPastedImagePaths('/tmp/a.png\n/tmp/readme.md')).toBeNull()
+    expect(classifyPastedImagePaths('/tmp/a.png')).toBeNull()
+    expect(classifyPastedImagePaths('ordinary\nmultiline text')).toBeNull()
   })
 })
 

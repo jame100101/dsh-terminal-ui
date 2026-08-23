@@ -9,6 +9,7 @@ import type { TuiSnapshot } from './store'
 /** Chrome and panel fields that a stream-chunk publish must not recompute. */
 export type PanelSnapshot = Pick<TuiSnapshot,
   | 'commands'
+  | 'skills'
   | 'models'
   | 'sessions'
   | 'queued'
@@ -39,6 +40,7 @@ export function selectPanelSnapshot(
   if (!reusePanels) return compute()
   return {
     commands: previous.commands,
+    skills: previous.skills,
     models: previous.models,
     sessions: previous.sessions,
     queued: previous.queued,

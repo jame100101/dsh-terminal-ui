@@ -25,6 +25,14 @@ export interface CommandEntry {
   needsArgs: boolean
 }
 
+/** One human-invocable skill advertised beside commands in the slash picker. */
+export interface SkillEntry {
+  name: string
+  description: string
+  /** Whether the same skill is also available through the model-facing tool. */
+  modelInvocable: boolean
+}
+
 /** One selectable model route for the /model dialog. */
 export interface ModelEntry {
   provider: string
@@ -221,6 +229,8 @@ export interface TuiSnapshot {
   pendingApproval: PendingApproval | null
   pendingQuestion: PendingQuestion | null
   commands: readonly CommandEntry[]
+  /** User-invocable skills resolved in the current agent/preset scope. */
+  skills: readonly SkillEntry[]
   models: readonly ModelEntry[]
   sessions: readonly SessionEntry[]
   queued: readonly QueuedEntry[]

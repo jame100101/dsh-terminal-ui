@@ -94,6 +94,12 @@
       "path": "../../session/session-projection"
     },
     {
+      "path": "../../context/session-reference"
+    },
+    {
+      "path": "../../skill/skill"
+    },
+    {
       "path": "../../sandbox/sandbox-policy"
     },
     {

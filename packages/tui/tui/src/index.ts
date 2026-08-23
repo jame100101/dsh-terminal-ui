@@ -64,10 +64,13 @@ import type {} from '@deepseek-ai/dsh-sandbox-policy'
 import type {} from '@deepseek-ai/dsh-session-projection'
 import type { SessionProjectionRegistry } from '@deepseek-ai/dsh-session-projection'
 import type {} from '@deepseek-ai/dsh-token-meter'
+import { isUserInvocable } from '@deepseek-ai/dsh-skill'
+import type {} from '@deepseek-ai/dsh-session-reference'
+import { formatSessionReferenceMention } from '@deepseek-ai/dsh-session-reference'
 import { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
-import { anchorRetry, applyEvent, createScratch, foldFromLog, initialState } from './fold'
+import { anchorRetry, applyEvent, createScratch, foldFromLog, initialState, rememberToolCallCard } from './fold'
 import type { FoldScratch } from './fold'
 import type { FoldState } from './types'
 import { renderAssistantResultPlain, renderNodePlain } from './plain'
@@ -98,8 +101,8 @@ import {
 } from './startup'
 import type { ResumeCandidate, ResumeResolution } from './startup'
 import type {
-  CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry, SettingsData,
-  SubagentRow, TuiStore, WorkflowRow,
+  CommandEntry, CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry,
+  SettingsData, SkillEntry, SubagentRow, TuiStore, WorkflowRow,
 } from './store'
 
 /** Stable Cordis plugin name. */
@@ -163,6 +166,8 @@ interface Surface {
   agent: Agent
   selection: ModelSelectionRef
   currentModel: string
+  commands: CommandEntry[]
+  skills: SkillEntry[]
   models: ModelEntry[]
   pendingApproval: PendingApproval | null
   pendingQuestion: PendingQuestion | null
@@ -184,6 +189,18 @@ interface Surface {
   pendingAttachments: ImageAttachmentRef[]
   /** The surface's working directory (workspace). */
   cwd: string
+}
+
+/** Resolve the current agent scope's human-invocable skill catalog. */
+async function loadSkillEntries(ctx: Context, surface: Surface): Promise<SkillEntry[]> {
+  const skills = ctx.get('skills')
+  if (skills === undefined) return []
+  const entries = await skills.list({ cwd: surface.cwd, scope: surface.agent })
+  return entries.filter(isUserInvocable).map(skill => ({
+    name: skill.name,
+    description: skill.description,
+    modelInvocable: skill.invocation.modelInvocable,
+  }))
 }
 
 /** Read the adapter-exposed reasoning levels for one exact route. */
@@ -495,7 +512,8 @@ function subscribe(
     const previous = store.getSnapshot()
     surface.version += 1
     const panels = selectPanelSnapshot(previous, reusePanels, () => ({
-      commands: previous.commands,
+      commands: surface.commands,
+      skills: surface.skills,
       models: surface.models,
       sessions: ctx.agents.list().map((agent): SessionEntry => ({
         id: agent.id,
@@ -546,7 +564,11 @@ function subscribe(
       // presentResult needs the running row's args; applyEvent drops them.
       if (event.type === 'tool/result') enrichToolCards(ctx, event, surface.fold)
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
-      if (event.type === 'tool/call') enrichToolCards(ctx, event, surface.fold)
+      if (event.type === 'tool/call') {
+        enrichToolCards(ctx, event, surface.fold)
+        const node = surface.fold.nodes[surface.fold.nodes.length - 1]
+        if (node?.kind === 'tool') rememberToolCallCard(surface.scratch, String(event.data.callId), node.callCard)
+      }
       anchorRetry(surface.fold, event)
       if (shouldCoalesceSessionEvent(event)) uiPublish.request(false)
       else {
@@ -874,6 +896,7 @@ async function boot(
     pendingApproval: null,
     pendingQuestion: null,
     commands: commandEntries,
+    skills: [],
     models: bootModels,
     sessions: [],
     queued: [],
@@ -899,6 +922,8 @@ async function boot(
     agent: created.agent,
     selection: created.ref,
     currentModel: created.selection.model,
+    commands: commandEntries,
+    skills: [],
     models: bootModels,
     pendingApproval: null,
     pendingQuestion: null,
@@ -928,6 +953,27 @@ async function boot(
         surface.version += 1
         store.set({ ...store.getSnapshot(), settings: data, version: surface.version })
       }).catch(() => {})
+    })
+  }
+  let catalogGeneration = 0
+  /** Refresh agent-scoped commands immediately and skills without blocking input. */
+  const refreshCatalogs = (): void => {
+    const generation = ++catalogGeneration
+    surface.commands = (ctx.get('commands')?.list(surface.agent) ?? []).map(command => ({
+      name: command.name,
+      description: command.description,
+      needsArgs: command.input !== undefined,
+    }))
+    surface.version += 1
+    store.set({ ...store.getSnapshot(), commands: surface.commands, version: surface.version })
+    void loadSkillEntries(ctx, surface).then((skills) => {
+      if (generation !== catalogGeneration) return
+      surface.skills = skills
+      surface.version += 1
+      store.set({ ...store.getSnapshot(), skills, version: surface.version })
+    }).catch(() => {
+      // Catalog discovery racing a preset/session teardown keeps the last settled list;
+      // the generation check prevents an older successful read from replacing a newer one.
     })
   }
   /** Publish one replaced feedback map. */
@@ -965,6 +1011,7 @@ async function boot(
   if (intent.mode !== 'print') {
     setImmediate(() => {
       loadPanels()
+      refreshCatalogs()
       loadReasoning()
       void loadFeedback()
     })
@@ -987,6 +1034,7 @@ async function boot(
   /** Select copy without passing display language into Harness services. */
   const uiText = (zh: string, en: string): string => uiLocale() === 'en' ? en : zh
   let unsubscribe = subscribe(ctx, store, surface, refreshSettings)
+  const offSkillsChange = ctx.on('skills/change', () => { refreshCatalogs() }, { global: true })
   const isTty = process.stdin.isTTY === true && process.stdout.isTTY === true
   // Print mode never mounts the interactive answerers: asks fail closed,
   // matching the non-TTY fallback semantics.
@@ -1006,9 +1054,9 @@ async function boot(
     (surface.selection.current ?? ctx.agentDefaultModel.currentSelection()).provider,
     surface.currentModel,
   )
-  const ingestImageBytes = async (
-    input: { data: Uint8Array; mediaType: ImageMediaType; name: string },
-  ): Promise<{ error: string | null; chip?: string }> => {
+  const ingestImageBatch = async (
+    inputs: readonly { data: Uint8Array; mediaType: ImageMediaType; name: string }[],
+  ): Promise<{ error: string | null; chips?: readonly string[] }> => {
     const attachments = ctx.get('attachments')
     if (attachments === undefined) {
       return {
@@ -1021,7 +1069,7 @@ async function boot(
     const refused = rejectImageBatch(
       surface.pendingAttachments.length,
       surface.pendingAttachments.reduce((sum, ref) => sum + ref.bytes, 0),
-      [{ bytes: input.data.byteLength, mediaType: input.mediaType }],
+      inputs.map(input => ({ bytes: input.data.byteLength, mediaType: input.mediaType })),
       attachments.imageLimits,
     )
     if (refused !== null) {
@@ -1042,10 +1090,11 @@ async function boot(
       }
     }
     try {
-      const ref = await attachments.saveImage({ data: input.data, mediaType: input.mediaType, name: input.name })
-      surface.pendingAttachments = [...surface.pendingAttachments, ref]
+      const start = surface.pendingAttachments.length
+      const refs = await attachments.saveImages(inputs)
+      surface.pendingAttachments = [...surface.pendingAttachments, ...refs]
       publishPendingImages()
-      return { error: null, chip: imageChip(surface.pendingAttachments.length - 1) }
+      return { error: null, chips: refs.map((_ref, index) => imageChip(start + index)) }
     } catch (error) {
       const code = typeof error === 'object' && error !== null && 'code' in error
         ? String((error as { code: unknown }).code)
@@ -1058,6 +1107,26 @@ async function boot(
       }
       return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
     }
+  }
+  const ingestImageBytes = async (
+    input: { data: Uint8Array; mediaType: ImageMediaType; name: string },
+  ): Promise<{ error: string | null; chip?: string }> => {
+    const result = await ingestImageBatch([input])
+    return result.error === null
+      ? { error: null, ...(result.chips?.[0] === undefined ? {} : { chip: result.chips[0] }) }
+      : { error: result.error }
+  }
+  /** Read and classify one local image before the attachment service admits its batch. */
+  const readImageFileInput = (path: string): { data: Uint8Array; mediaType: ImageMediaType; name: string } => {
+    const absolute = resolve(path)
+    const bytes = new Uint8Array(readFileSync(absolute))
+    const mediaType = sniffMediaType(bytes)
+      ?? mediaTypeFromPath(absolute)
+      ?? IMAGE_MEDIA_BY_EXT[extname(absolute).slice(1).toLowerCase()]
+    if (mediaType === undefined) {
+      throw new TypeError(uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported'))
+    }
+    return { data: bytes, mediaType, name: basename(absolute) }
   }
   const dispatchOrFollowup = (text: string, steer: boolean): void => {
     const submit = (): void => {
@@ -1117,6 +1186,7 @@ async function boot(
       surface.feedback = new Map()
       surface.pendingAttachments = []
       unsubscribe = subscribe(ctx, store, surface, refreshSettings)
+      refreshCatalogs()
       void loadFeedback()
     } catch (error) {
       fail(ctx, error)
@@ -1187,7 +1257,17 @@ async function boot(
       // replay validation included) so the resumed transcript shows the
       // complete history; the agent's in-memory log is the fallback.
       const events: readonly SessionEvent[] = snapshot?.events ?? next.agent.session.events
-      const { fold, scratch } = foldFromLog(events)
+      const { fold, scratch } = foldFromLog(events, {
+        before: (event, state) => {
+          if (event.type === 'tool/result') enrichToolCards(ctx, event, state)
+        },
+        after: (event, state, replayScratch) => {
+          if (event.type !== 'tool/call') return
+          enrichToolCards(ctx, event, state)
+          const node = state.nodes[state.nodes.length - 1]
+          if (node?.kind === 'tool') rememberToolCallCard(replayScratch, String(event.data.callId), node.callCard)
+        },
+      })
       surface.fold = fold
       surface.scratch = scratch
       surface.agent = next.agent
@@ -1202,6 +1282,7 @@ async function boot(
       // The presets page marks the CURRENT preset: republish settings so the
       // marker follows the resumed session.
       refreshSettings()
+      refreshCatalogs()
       void loadFeedback()
       return null
     } catch (error) {
@@ -1241,6 +1322,7 @@ async function boot(
       // The presets page marks the CURRENT preset: republish settings so the
       // marker follows the switch.
       refreshSettings()
+      refreshCatalogs()
       return null
     } catch (error) {
       return `${uiText('切换预设失败', 'Preset switch failed')}: ${error instanceof Error ? error.message : String(error)}`
@@ -1410,22 +1492,39 @@ async function boot(
             surface.cwd = target
             surface.version += 1
             store.set({ ...store.getSnapshot(), cwd: target, version: surface.version })
+            refreshCatalogs()
             return null
           } catch (error) {
             return `${uiText('切换失败', 'Workspace switch failed')}: ${error instanceof Error ? error.message : String(error)}`
           }
         },
+        listSessionReferences: async (query) => {
+          const resolver = ctx.get('sessionReferenceResolver')
+          if (resolver === undefined) return []
+          try {
+            const candidates = await resolver.listCandidates(surface.agent, query)
+            return candidates.map(candidate => ({
+              label: candidate.label,
+              mention: formatSessionReferenceMention({ sessionId: candidate.sessionId, label: candidate.label }),
+              ...(candidate.cwd === undefined ? {} : { cwd: candidate.cwd }),
+            }))
+          } catch {
+            return []
+          }
+        },
+        attachFiles: async (paths) => {
+          try {
+            return ingestImageBatch(paths.map(readImageFileInput))
+          } catch (error) {
+            return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
+          }
+        },
         attachFile: async (path) => {
           try {
-            const absolute = resolve(path)
-            const bytes = new Uint8Array(readFileSync(absolute))
-            const mediaType = sniffMediaType(bytes)
-              ?? mediaTypeFromPath(absolute)
-              ?? IMAGE_MEDIA_BY_EXT[extname(absolute).slice(1).toLowerCase()]
-            if (mediaType === undefined) {
-              return { error: uiText('仅支持图片附件（png/jpg/gif/webp）', 'Only png/jpg/gif/webp image attachments are supported') }
-            }
-            return ingestImageBytes({ data: bytes, mediaType, name: basename(absolute) })
+            const result = await ingestImageBatch([readImageFileInput(path)])
+            if (result.error !== null) return { error: result.error }
+            const chip = result.chips?.[0]
+            return { error: null, ...(chip === undefined ? {} : { chip }) }
           } catch (error) {
             return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
           }
@@ -1678,6 +1777,7 @@ async function boot(
   } catch (error) {
     fail(ctx, error)
   } finally {
+    try { offSkillsChange() } catch {}
     try { unsubscribe() } catch {}
     try { await surface.agent.whenIdle() } catch {}
   }

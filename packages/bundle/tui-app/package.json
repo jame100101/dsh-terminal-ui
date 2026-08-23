@@ -42,6 +42,7 @@
     "@deepseek-ai/dsh-agent-presets": "workspace:^",
     "@deepseek-ai/dsh-code-runtime-worker-thread": "workspace:^",
     "@deepseek-ai/dsh-cordis-host-runner": "workspace:^",
+    "@deepseek-ai/dsh-session-reference": "workspace:^",
     "@deepseek-ai/dsh-tui": "workspace:^"
   },
   "peerDependencies": {

@@ -67,6 +67,7 @@ export function foldResidentChars(state: FoldState): number {
   for (const node of state.nodes) {
     if (node.kind === 'tool') total += node.detail.length + node.text.length
     else if (node.kind === 'retry') total += node.retryId.length + node.provider.length
+    else if (node.kind === 'deliverables') total += node.paths.reduce((sum, path) => sum + path.length, 0)
     else if ('text' in node) total += node.text.length
   }
   for (const entry of state.trace) total += entry.text.length
@@ -244,6 +245,10 @@ function commitStep(stats: SessionStats, step: StepState): SessionStats {
 export interface FoldScratch {
   step: StepState | null
   toolStarts: Map<string, number>
+  /** Compact call presentations retained until their matching result. */
+  toolCallCards: Map<string, unknown>
+  /** Successful mutation paths in first-seen order for the active turn. */
+  turnProduced: string[]
   /** Per-turn sums feeding the turn-tail row (`└ turn N · LLM … · 工具 … · TTFT …`). */
   turnNumber: number
   turnLlms: number
@@ -260,12 +265,37 @@ export function createScratch(): FoldScratch {
   return {
     step: null,
     toolStarts: new Map(),
+    toolCallCards: new Map(),
+    turnProduced: [],
     turnNumber: 0,
     turnLlms: 0,
     turnTools: 0,
     turnTtftMs: 0,
     turnTtftSteps: 0,
   }
+}
+
+/**
+ * Associate a tool call's compact presentation with its call id.
+ * @param scratch - the active fold stream.
+ * @param callId - opaque tool call id.
+ * @param card - compact `presentCall` view.
+ */
+export function rememberToolCallCard(scratch: FoldScratch, callId: string, card: unknown): void {
+  scratch.toolCallCards.set(callId, card)
+}
+
+/** Read mutation paths from the official tool render intent vocabulary. */
+function producedPaths(card: unknown): string[] {
+  if (typeof card !== 'object' || card === null) return []
+  const view = card as { card?: unknown; kind?: unknown; locations?: unknown }
+  if (view.card !== 'diff' && !(view.card === 'generic' && view.kind === 'edit')) return []
+  if (!Array.isArray(view.locations)) return []
+  return view.locations.flatMap((location) => {
+    if (typeof location !== 'object' || location === null) return []
+    const path = (location as { path?: unknown }).path
+    return typeof path === 'string' && path !== '' ? [path] : []
+  })
 }
 
 /** Scratch instances whose node and trace arrays are private to one replay. */
@@ -318,14 +348,25 @@ function trimRing<T>(items: T[], max: number, scratch: FoldScratch): T[] {
  * The same prefix contract as {@link applyEvent}: a persisted session's
  * full log folds into exactly the rows the live fold produced.
  * @param events - the session log in seq order.
+ * @param hooks - optional presentation enrichment immediately before or after each event folds.
  * @returns the folded transcript state and its scratch.
  */
-export function foldFromLog(events: readonly SessionEvent[]): { fold: FoldState; scratch: FoldScratch } {
+export function foldFromLog(
+  events: readonly SessionEvent[],
+  hooks?: {
+    before?(event: SessionEvent, fold: FoldState, scratch: FoldScratch): void
+    after?(event: SessionEvent, fold: FoldState, scratch: FoldScratch): void
+  },
+): { fold: FoldState; scratch: FoldScratch } {
   const scratch = createScratch()
   batchScratches.add(scratch)
   let fold = initialState()
   try {
-    for (const event of events) fold = applyEvent(fold, event, scratch)
+    for (const event of events) {
+      hooks?.before?.(event, fold, scratch)
+      fold = applyEvent(fold, event, scratch)
+      hooks?.after?.(event, fold, scratch)
+    }
   } finally {
     batchScratches.delete(scratch)
   }
@@ -358,6 +399,8 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
   switch (event.type) {
     case 'turn/start': {
       traces = appendTrace(traces, trace(event.seq, `turn ${event.data.turn} start`), scratch)
+      scratch.toolCallCards.clear()
+      scratch.turnProduced = []
       stats = { ...stats, turns: stats.turns + 1 }
       scratch.turnNumber = event.data.turn
       scratch.turnLlms = 0
@@ -471,6 +514,15 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
         nodes = appendNode(nodes, { kind: 'tool', id: event.seq, detail: 'tool', status, text, args: undefined, callCard: null, resultCard: null }, scratch)
       }
       const callId = toolResultCallId(event)
+      if (status === 'done') {
+        const seen = new Set(scratch.turnProduced)
+        for (const path of producedPaths(scratch.toolCallCards.get(callId))) {
+          if (seen.has(path)) continue
+          seen.add(path)
+          scratch.turnProduced.push(path)
+        }
+      }
+      scratch.toolCallCards.delete(callId)
       const start = scratch.toolStarts.get(callId)
       if (start !== undefined) {
         scratch.toolStarts.delete(callId)
@@ -503,6 +555,9 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
         `工具 ${formatMs(scratch.turnTools)}`,
         ...(scratch.turnTtftSteps > 0 ? [`TTFT ${formatMs(scratch.turnTtftMs / scratch.turnTtftSteps)}`] : []),
       ]
+      if (scratch.turnProduced.length > 0) {
+        nodes = appendNode(nodes, { kind: 'deliverables', id: event.seq, paths: [...scratch.turnProduced] }, scratch)
+      }
       nodes = appendNode(nodes, { kind: 'status', id: event.seq, error: false, text: `└ turn ${scratch.turnNumber} · ${tailParts.join(' · ')}` }, scratch)
       if (reason.kind === 'error') {
         nodes = appendNode(nodes, {

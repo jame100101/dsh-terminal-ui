@@ -3002,7 +3002,7 @@ Requires: `agents` · `agentDefaultModel` · `tools` · `settings` · `credentia
 export interface Config {}
 ```
 
-Source: [`packages/tui/tui/src/index.ts:112`](../packages/tui/tui/src/index.ts)
+Source: [`packages/tui/tui/src/index.ts:115`](../packages/tui/tui/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 

@@ -57,6 +57,12 @@
       config:
         maxNoteBytes: 8192
 
+    # Canonical `@session` mentions are resolved at the official pre-step
+    # extension point into durable, bounded, read-only session context. The
+    # TUI only supplies discovery and mention insertion.
+    - id: session-reference
+      name: '@deepseek-ai/dsh-session-reference'
+
     # The preset roster: the four shipped presets under `config/agent-presets/`
     # (code/cordis/minimal/standard) plus the writable `$DSH_HOME/.agent-presets`
     # user root (dsh-agent-presets' own default). The SHIPPED system root is an

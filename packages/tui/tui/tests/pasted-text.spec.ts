@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  createPastedTextBlock, expandPastedTextBlocks, PASTED_TEXT_COLLAPSE_CHARACTERS,
+  createPastedTextBlock, expandPastedTextBlocks, PASTED_TEXT_COLLAPSE_CHARACTERS, PASTED_TEXT_COLLAPSE_LINES,
   pastedTextCharacterCount, pastedTextDeletionRange, pastedTextLineCount,
   retainPastedTextBlocks, shouldCollapsePastedText,
 } from '../src/pasted-text'
@@ -10,10 +10,12 @@ describe('large pasted text capsules', () => {
     expect(pastedTextCharacterCount('a😀中')).toBe(3)
     expect(shouldCollapsePastedText('x'.repeat(PASTED_TEXT_COLLAPSE_CHARACTERS - 1))).toBe(false)
     expect(shouldCollapsePastedText('x'.repeat(PASTED_TEXT_COLLAPSE_CHARACTERS))).toBe(true)
+    expect(shouldCollapsePastedText(Array.from({ length: PASTED_TEXT_COLLAPSE_LINES - 1 }, () => 'x').join('\n'))).toBe(false)
+    expect(shouldCollapsePastedText(Array.from({ length: PASTED_TEXT_COLLAPSE_LINES }, () => 'x').join('\n'))).toBe(true)
   })
 
   it('formats one compact token with the logical line count', () => {
-    expect(pastedTextLineCount('a\r\nb\nc')).toBe(3)
+    expect(pastedTextLineCount('a\r\nb\nc\rd')).toBe(4)
     expect(createPastedTextBlock('one', 1).token).toBe('[Pasted text #1 +1 line]')
     expect(createPastedTextBlock('a\nb\nc', 2).token).toBe('[Pasted text #2 +3 lines]')
     expect(() => createPastedTextBlock('x', 0)).toThrow(RangeError)

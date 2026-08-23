@@ -390,6 +390,8 @@ export function renderNodePlain(node: TuiNode, locale: 'zh' | 'en' = 'zh'): stri
       if (node.text === '') return node.interrupted === true ? `●${mark}` : ''
       return `● ${node.text}${node.interrupted === true ? mark : ''}`
     }
+    case 'deliverables':
+      return `${locale === 'en' ? '◆ produced' : '◆ 产出'} · ${node.paths.join(' · ')}`
     case 'think':
       return node.text.split('\n').map(line => `  │ ${line}`).join('\n')
     case 'tool': {
@@ -606,6 +608,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       '/help        show this help',
       '/clear       clear the display (session context kept)',
       '/copy        copy the latest assistant reply (/copy n = Nth-latest)',
+      '/rate        rate an assistant reply: /rate up|down [Nth-latest]',
       '/trajectory  toggle the structured trajectory view',
       '/settings    five pages: general/models/plugins/inventory/presets (Tab to switch)',
       '/jobs        background jobs panel (Enter kills the selected job)',
@@ -621,11 +624,13 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       'Click disclosure arrows to expand/collapse; any Thinking arrow toggles all Thinking rows',
       'Click the ▼ button to jump back to the newest lines · Ctrl+L clear · Ctrl+D exit when idle',
       'Drag in the transcript to copy; /copy copies the latest reply',
+      '@ completes workspace files and durable references to other sessions; / also lists user-invocable skills',
     ].join('\n')
     : [
       '/help        显示本帮助',
       '/clear       清空显示（保留会话上下文）',
       '/copy        复制最近一条回复（/copy n 为第 n 条最近回复）',
+      '/rate        评价助手回复：/rate up|down [倒数第 n 条]',
       '/trajectory  切换结构化轨迹视图',
       '/settings    设置五页：general/models/plugins/inventory/presets（Tab 换页）',
       '/jobs        后台任务面板（Enter 杀掉选中任务）',
@@ -641,6 +646,7 @@ export function helpText(locale: 'zh' | 'en' = 'zh'): string {
       '点击展开箭头展开/折叠；任一 Thinking 箭头统一切换全部 Thinking',
       '点击 ▼ 按钮回到最新消息 · Ctrl+L 清屏 · Ctrl+D 空闲退出',
       '在对话里拖选即可复制；/copy 复制最近一条回复',
+      '@ 补全工作区文件和其他会话的耐久引用；/ 同时列出可由用户调用的技能',
     ].join('\n')
 }
 

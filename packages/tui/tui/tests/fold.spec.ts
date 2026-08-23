@@ -3,7 +3,7 @@ import stringWidth from 'string-width'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
-  anchorRetry, applyEvent, createScratch, foldFromLog, foldResidentChars, initialState,
+  anchorRetry, applyEvent, createScratch, foldFromLog, foldResidentChars, initialState, rememberToolCallCard,
   MAX_ASSISTANT_TEXT, MAX_FOLD_NODES, MAX_THINK_TEXT, MAX_TRACE, MAX_USER_TEXT,
 } from '../src/fold'
 import type { FoldState } from '../src/types'
@@ -124,6 +124,50 @@ describe('session fold', () => {
     ])
     const tool = state.nodes.find(node => node.kind === 'tool')
     expect(tool?.kind === 'tool' && tool.status).toBe('error')
+  })
+
+  it('adds one deduplicated produced-files row for successful mutation intents', () => {
+    const scratch = createScratch()
+    let state = applyEvent(initialState(), event('turn/start', { turn: 1 }, 0), scratch)
+    state = applyEvent(state, event('tool/call', {
+      turn: 1, step: 1, callId: 'write-1', name: 'write', arguments: '{}',
+    }, 1), scratch)
+    rememberToolCallCard(scratch, 'write-1', {
+      card: 'diff', locations: [{ path: 'src/a.ts' }, { path: 'src/a.ts' }], diffs: [], title: 'write',
+    })
+    state = applyEvent(state, event('tool/result', {
+      turn: 1, step: 1,
+      message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'write-1', content: [text('ok')] }] },
+    }, 2), scratch)
+    state = applyEvent(state, event('turn/end', { turn: 1, reason: { kind: 'completed' } }, 3), scratch)
+    expect(state.nodes.find(node => node.kind === 'deliverables')).toEqual({
+      kind: 'deliverables', id: 3, paths: ['src/a.ts'],
+    })
+    const produced = state.nodes.find(node => node.kind === 'deliverables')
+    expect(produced === undefined ? '' : renderNodePlain(produced, 'en')).toBe('◆ produced · src/a.ts')
+  })
+
+  it('omits produced paths from failed and non-mutation tool presentations', () => {
+    const scratch = createScratch()
+    let state = applyEvent(initialState(), event('turn/start', { turn: 1 }, 0), scratch)
+    state = applyEvent(state, event('tool/call', {
+      turn: 1, step: 1, callId: 'failed-write', name: 'write', arguments: '{}',
+    }, 1), scratch)
+    rememberToolCallCard(scratch, 'failed-write', { card: 'diff', locations: [{ path: 'failed.ts' }] })
+    state = applyEvent(state, event('tool/result', {
+      turn: 1, step: 1, error: { name: 'Error', code: 'FAILED' },
+      message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'failed-write', content: [text('failed')] }] },
+    }, 2), scratch)
+    state = applyEvent(state, event('tool/call', {
+      turn: 1, step: 1, callId: 'read-1', name: 'read', arguments: '{}',
+    }, 3), scratch)
+    rememberToolCallCard(scratch, 'read-1', { card: 'generic', kind: 'read', locations: [{ path: 'read.ts' }] })
+    state = applyEvent(state, event('tool/result', {
+      turn: 1, step: 1,
+      message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'read-1', content: [text('ok')] }] },
+    }, 4), scratch)
+    state = applyEvent(state, event('turn/end', { turn: 1, reason: { kind: 'completed' } }, 5), scratch)
+    expect(state.nodes.some(node => node.kind === 'deliverables')).toBe(false)
   })
 
   it('records turn failures as status rows after the turn tail', () => {

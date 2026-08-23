@@ -13,6 +13,7 @@ export type TuiNode =
   | { kind: 'user'; id: number; text: string }
   | { kind: 'context'; id: number; text: string; producer: string }
   | { kind: 'assistant'; id: number; text: string; messageId: string; interrupted?: true }
+  | { kind: 'deliverables'; id: number; paths: readonly string[] }
   | { kind: 'think'; id: number; text: string; durationMs: number }
   | {
     kind: 'tool'

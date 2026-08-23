@@ -15,7 +15,7 @@ import { render } from 'ink'
 import stringWidth from 'string-width'
 import { marked } from 'marked'
 import xtermHeadless from '@xterm/headless'
-import { App, brandGlyph, permissionColor, permissionLabel, traceLineColor } from '../src/render'
+import { App, brandGlyph, permissionColor, permissionLabel, statusActivityColor, traceLineColor } from '../src/render'
 import { settingsTabCell } from '../src/settings-chrome'
 import { composerTextWrapWidth, selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
 
@@ -280,6 +280,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     pendingApproval: null,
     pendingQuestion: null,
     commands: [],
+    skills: [],
     models: [{ provider: 'deepseek-official', model: 'deepseek-v4-pro', label: 'deepseek-v4-pro' }],
     sessions: [],
     queued: [],
@@ -328,6 +329,8 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     renameSession: () => Promise.resolve(null),
     changeWorkspace: () => Promise.resolve(null),
     attachFile: () => Promise.resolve({ error: null, chip: '[Image #1]' }),
+    attachFiles: () => Promise.resolve({ error: null, chips: ['[Image #1]'] }),
+    listSessionReferences: () => Promise.resolve([]),
     attachClipboardImage: () => Promise.resolve({ error: null, chip: '[Image #1]' }),
     syncImageChips: (_previous, next) => next,
     forkSession: () => Promise.resolve(null),
@@ -850,6 +853,215 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
+  it('keeps user-invocable skills inside /skills without shadowing host commands', async () => {
+    const submitted: string[] = []
+    const { store, capture, unmount, type } = await mount([], {
+      submit: (text) => { submitted.push(text) },
+    })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        commands: [{ name: 'compact', description: 'host compact', needsArgs: false }],
+        skills: [
+          {
+            name: 'review-code',
+            description: 'review the workspace\nwithout ever wrapping over the next palette row',
+            modelInvocable: true,
+          },
+          { name: 'compact', description: 'must stay hidden', modelInvocable: true },
+        ],
+      })
+      await type('/')
+      let lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('review-code'))).toBe(false)
+      await type('skills')
+      await type('\r')
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('Skills（↑↓ 选择'))).toBe(true)
+      expect(lines.filter(line => line.includes('review-code'))).toHaveLength(1)
+      expect(lines.some(line => line.includes('without ever wrapping'))).toBe(true)
+      expect(lines.some(line => line.includes('must stay hidden'))).toBe(false)
+      await type('\r')
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('› /review-code'))).toBe(true)
+      await type('check this')
+      await type('\r')
+      expect(submitted).toEqual(['/review-code check this'])
+      await type('/compact')
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('/compact') && line.includes('压缩'))).toBe(true)
+      expect(lines.some(line => line.includes('must stay hidden'))).toBe(false)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('keeps the composer on the same terminal row while settings and session panels replace the transcript', async () => {
+    const { store, capture, unmount, type } = await mount()
+    try {
+      const baseline = composerInputRow(capture.screenLines())
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        sessions: [{
+          id: 'session-other',
+          title: 'other session',
+          model: 'deepseek-v4-pro',
+          status: 'persisted',
+          persisted: true,
+          createdAt: Date.now(),
+        }],
+      })
+
+      await type('/settings')
+      await type('\r')
+      expect(composerInputRow(capture.screenLines())).toBe(baseline)
+      // A settings action adds a pinned notice row. The panel gives up one
+      // list row instead of moving the permission/composer/status chrome.
+      await type('\r')
+      expect(composerInputRow(capture.screenLines())).toBe(baseline)
+      await type('q')
+
+      await type('/sessions')
+      await type('\r')
+      expect(capture.screenLines().some(line => line.includes('other session'))).toBe(true)
+      expect(composerInputRow(capture.screenLines())).toBe(baseline)
+      expect(frameRows(lastFrameLines(capture.output))).toBe(ROWS)
+    } finally {
+      unmount()
+    }
+  })
+
+  it('completes official @session mentions after local file candidates', async () => {
+    const submitted: string[] = []
+    const mention = '@[Earlier work](dsh-session:InNlc3Npb24tb2xkIg)'
+    const { capture, unmount, type } = await mount([], {
+      submit: (text) => { submitted.push(text) },
+      listSessionReferences: async query => query.startsWith('Ear')
+        ? [{ label: 'Earlier work', mention, cwd: 'D:\\work' }]
+        : [],
+    })
+    try {
+      await type('@Ear')
+      await type('')
+      let lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('@Earlier work') && line.includes('会话'))).toBe(true)
+      await type('\t')
+      lines = lastFrameLines(capture.output)
+      expect(lines.some(line => line.includes('Earlier work') && line.includes('dsh-session:'))).toBe(true)
+      await type('\r')
+      expect(submitted).toEqual([mention])
+    } finally {
+      unmount()
+    }
+  })
+
+  it('rates the Nth-latest assistant message without transcript selection mode', async () => {
+    const calls: string[] = []
+    const nodes: TuiNode[] = [
+      { kind: 'assistant', id: 1, text: 'older', messageId: 'old' },
+      { kind: 'assistant', id: 2, text: 'newer', messageId: 'new' },
+    ]
+    const { unmount, type } = await mount(nodes, {
+      rateMessage: async (messageId, rating) => { calls.push(`${messageId}:${rating}`); return null },
+    })
+    try {
+      await type('/rate down 2')
+      await type('\r')
+      expect(calls).toEqual(['old:negative'])
+    } finally {
+      unmount()
+    }
+  })
+
+  it('submits ask_user batches with multi-select, custom text, and explicit newlines', async () => {
+    const answers: { id: string; selected: string[]; custom?: string }[][] = []
+    const { store, unmount, type } = await mount([], {
+      answerQuestion: (value) => { answers.push(value) },
+    })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        pendingQuestion: { questions: [
+          { id: 'first', question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] },
+          { id: 'second', question: 'Pick many', options: [{ label: 'X' }, { label: 'Y' }], multiSelect: true },
+          { id: 'third', question: 'Explain' },
+        ] },
+      })
+      await type('\x1b[B')
+      await type('\r')
+      expect(answers).toEqual([])
+      await type(' ')
+      await type('\x1b[B')
+      await type(' ')
+      await type('custom note')
+      await type('\r')
+      expect(answers).toEqual([])
+      await type('line one')
+      await type('\x1b[13;2u')
+      await type('line two')
+      await type('\r')
+      expect(answers).toEqual([[
+        { id: 'first', selected: ['B'] },
+        { id: 'second', selected: ['X', 'Y'], custom: 'custom note' },
+        { id: 'third', selected: [], custom: 'line one\nline two' },
+      ]])
+    } finally {
+      unmount()
+    }
+  })
+
+  it('skips one ask_user item with Escape and continues the batch', async () => {
+    const answers: { id: string; selected: string[]; custom?: string }[][] = []
+    const { store, unmount, type } = await mount([], {
+      answerQuestion: (value) => { answers.push(value) },
+    })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        pendingQuestion: { questions: [
+          { id: 'skip', question: 'Skip me' },
+          { id: 'answer', question: 'Answer me' },
+        ] },
+      })
+      await type('\x1b')
+      expect(answers).toEqual([])
+      await type('kept')
+      await type('\r')
+      expect(answers).toEqual([[
+        { id: 'skip', selected: [] },
+        { id: 'answer', selected: [], custom: 'kept' },
+      ]])
+    } finally {
+      unmount()
+    }
+  })
+
+  it('admits a pasted image-file batch through one host call', async () => {
+    const batches: string[][] = []
+    const { capture, unmount, type } = await mount([], {
+      attachFiles: async (paths) => {
+        batches.push([...paths])
+        return { error: null, chips: ['[Image #1]', '[Image #2]'] }
+      },
+    })
+    try {
+      await type('\x1b[200~/tmp/a.png\n/tmp/b.webp\x1b[201~')
+      const lines = lastFrameLines(capture.output)
+      expect(batches).toEqual([['/tmp/a.png', '/tmp/b.webp']])
+      expect(lines.some(line => line.includes('[Image #1]') && line.includes('[Image #2]'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
   it('opens the sessions panel with persisted rows and resumes on Enter', async () => {
     const resumed: string[] = []
     const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
@@ -1069,18 +1281,38 @@ describe('Ink 7 full-screen render', () => {
   it('shows one compact token for a large paste and submits the exact retained text', async () => {
     const submissions: string[] = []
     const pasted = Array.from({ length: 628 }, (_, index) => `line-${index}`).join('\n')
-    const { capture, unmount, type } = await mount([], {
+    const mounted = await mount([], {
       submit: (text) => { submissions.push(text) },
     })
     try {
-      await type(`\x1b[200~${pasted}\x1b[201~`)
-      const lines = capture.screenLines()
+      await mounted.type(`\x1b[200~${pasted}\x1b[201~`)
+      const lines = mounted.capture.screenLines()
       expect(lines.some(line => line.includes('[Pasted text #1 +628 lines]'))).toBe(true)
       expect(lines.some(line => line.includes('line-627'))).toBe(false)
-      await type('\r')
+      await mounted.type('\r')
       expect(submissions).toEqual([pasted])
     } finally {
-      unmount()
+      mounted.unmount()
+    }
+  }, 30_000)
+
+  it('collapses an unbracketed CR-only session paste and reports its real line count', async () => {
+    const submissions: string[] = []
+    const pasted = Array.from({ length: 187 }, (_, index) => `row-${index}`).join('\r')
+    const mounted = await mount([], {
+      submit: (text) => { submissions.push(text) },
+    })
+    try {
+      // Some terminal clipboard actions omit bracketed-paste markers and use
+      // bare CR separators. One large stdin chunk must still use the capsule.
+      await mounted.type(pasted)
+      const lines = mounted.capture.screenLines()
+      expect(lines.some(line => line.includes('[Pasted text #1 +187 lines]'))).toBe(true)
+      expect(lines.some(line => line.includes('row-186'))).toBe(false)
+      await mounted.type('\r')
+      expect(submissions).toEqual([pasted.replace(/\r/gu, '\n')])
+    } finally {
+      mounted.unmount()
     }
   }, 30_000)
 
@@ -1110,6 +1342,9 @@ describe('Ink 7 full-screen render', () => {
       expect(permissionColor('read-only')).toBe('whiteBright')
       expect(permissionColor('workspace-write')).toBe('yellowBright')
       expect(permissionColor('danger-full-access')).toBe('redBright')
+      expect(statusActivityColor(false)).toBe('#4A90C4')
+      expect(statusActivityColor(true)).toBe('#4FC3F7')
+      expect(statusActivityColor(true, 'light')).toBe('blue')
     } finally {
       unmount()
     }

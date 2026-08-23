@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-08-21-tui-image-chips.md
-2026-08-21-tui-image-chips.md: 326b4304cdddc990904f90abcc01da87fc070174
-2026-08-21-tui-image-chips.zh.md: 9cf6dd579ce375506f479b6fe4bc9882cc936a20
+2026-08-21-tui-image-chips.md: 2e687a3549943846b410aa04a3fb8f9fe80c4d9a
+2026-08-21-tui-image-chips.zh.md: 9082a620f3ca774b994d563b62076e95318ed6bd

@@ -51,7 +51,7 @@ import { MAX_FOLD_NODES, MAX_TRACE } from './fold'
 import { atTokenRange, listWorkspaceMentions, readWorkspaceDir, replaceAtToken } from './file-mention'
 import { extractCopyText, resolveCopyTarget } from './copy-text'
 import {
-  attachmentsForSubmit, classifyPastedPath, formatByteSize, imageChipDeletionRange, insertImageChip,
+  attachmentsForSubmit, classifyPastedImagePaths, classifyPastedPath, formatByteSize, imageChipDeletionRange, insertImageChip,
   modelRouteAcceptsImages, stripImageChips,
 } from './image-intake'
 import {
@@ -78,6 +78,8 @@ const MAX_TOOL_CARD_ROWS = 400
 const SELECT_SCROLL_LINES = 2
 /** Interval while the pointer stays against the transcript edge during a drag. */
 const SELECT_SCROLL_MS = 40
+/** Shared grapheme iterator for display-cell-safe one-line truncation. */
+const DISPLAY_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
 /** UI chrome language. */
 type Locale = 'zh' | 'en'
@@ -97,6 +99,8 @@ interface Copy {
   stringPlaceholder: string
   paletteTitle: string
   paletteHint: string
+  skillPaletteTitle: string
+  skillPaletteHint: string
   filePaletteTitle: string
   filePaletteHint: string
   fileDir: string
@@ -176,6 +180,9 @@ interface Copy {
   copyRange: (n: string, total: number) => string
   copyDone: string
   copyFailed: (reason: string) => string
+  rateUsage: string
+  rateRange: (n: number, total: number) => string
+  rateDone: (rating: string, n: number) => string
 }
 
 /** The chrome copy table. */
@@ -194,8 +201,10 @@ const COPY: Record<Locale, Copy> = {
     stringPlaceholder: '输入新值，Enter 提交',
     paletteTitle: '╭─ 命令（↑↓ 选择 · Enter 执行 · Tab 补全 · Esc 取消）',
     paletteHint: '╰─ ↑↓ 选择 · Enter 执行 · Tab 补全 · Esc 关闭',
-    filePaletteTitle: '╭─ 文件（↑↓ 选择 · Tab 补全 · Esc 取消）',
-    filePaletteHint: '╰─ @路径 · Tab 补全 · 目录带 /',
+    skillPaletteTitle: '╭─ Skills（↑↓ 选择 · Enter 插入 · Esc 返回）',
+    skillPaletteHint: '╰─ 选择后输入参数，Enter 调用',
+    filePaletteTitle: '╭─ 引用（文件 + 会话 · ↑↓ 选择 · Tab 补全 · Esc 取消）',
+    filePaletteHint: '╰─ @引用 · 文件目录带 / · 会话插入耐久引用',
     fileDir: '目录',
     fileFile: '文件',
     noMatch: '  没有匹配项',
@@ -203,8 +212,8 @@ const COPY: Record<Locale, Copy> = {
     allowOnce: '● Allow once (y)',
     deny: '○ Deny (n)',
     approvalHint: '↑↓ 选择 · Enter/y 允许 · n/Esc 拒绝',
-    questionHint: '↑↓ 选择 · Enter 提交 · Esc 跳过（直接打字输入自定义答案）',
-    questionInput: '输入回答，Enter 提交',
+    questionHint: '↑↓ 选择 · Space 多选 · Enter 提交 · Shift+Enter 换行 · Esc 跳过',
+    questionInput: '输入回答，Shift+Enter 换行，Enter 提交',
     goalDock: '◈ goal',
     todoDock: 'todo',
     queueDock: '⧗ 排队',
@@ -273,6 +282,9 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `没有第 ${n} 条最近回复（共 ${total} 条）`,
     copyDone: '已复制',
     copyFailed: reason => `复制失败：${reason}`,
+    rateUsage: '用法：/rate up|down [n]（n 为倒数第 n 条助手回复）',
+    rateRange: (n, total) => `没有倒数第 ${n} 条可评分回复（共 ${total} 条）`,
+    rateDone: (rating, n) => `已更新倒数第 ${n} 条回复的评价：${rating}`,
   },
   en: {
     idle: '▣ idle · Enter send · /help',
@@ -288,8 +300,10 @@ const COPY: Record<Locale, Copy> = {
     stringPlaceholder: 'New value, Enter to submit',
     paletteTitle: '╭─ commands (↑↓ select · Enter run · Tab complete · Esc close)',
     paletteHint: '╰─ ↑↓ select · Enter run · Tab complete · Esc close',
-    filePaletteTitle: '╭─ files (↑↓ select · Tab complete · Esc close)',
-    filePaletteHint: '╰─ @path · Tab completes · directories keep /',
+    skillPaletteTitle: '╭─ skills (↑↓ select · Enter insert · Esc back)',
+    skillPaletteHint: '╰─ select, type arguments, then press Enter',
+    filePaletteTitle: '╭─ references (files + sessions · ↑↓ select · Tab complete · Esc close)',
+    filePaletteHint: '╰─ @reference · directories keep / · sessions insert durable mentions',
     fileDir: 'directory',
     fileFile: 'file',
     noMatch: '  No matching options',
@@ -297,8 +311,8 @@ const COPY: Record<Locale, Copy> = {
     allowOnce: '● Allow once (y)',
     deny: '○ Deny (n)',
     approvalHint: '↑↓ select · Enter/y allow · n/Esc deny',
-    questionHint: '↑↓ select · Enter submit · Esc skip (type for a custom answer)',
-    questionInput: 'Type an answer, Enter to submit',
+    questionHint: '↑↓ select · Space toggle · Enter submit · Shift+Enter newline · Esc skip',
+    questionInput: 'Type an answer; Shift+Enter newline, Enter submit',
     goalDock: '◈ goal',
     todoDock: 'todo',
     queueDock: '⧗ queued',
@@ -367,6 +381,9 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `No ${n}-latest reply (${total} available)`,
     copyDone: 'Copied',
     copyFailed: reason => `Copy failed: ${reason}`,
+    rateUsage: 'Usage: /rate up|down [n] (n selects the Nth-latest assistant reply)',
+    rateRange: (n, total) => `There is no rateable assistant reply #${n} from the end (${total} total)`,
+    rateDone: (rating, n) => `Updated the Nth-latest assistant reply (${n}): ${rating}`,
   },
 }
 
@@ -566,6 +583,20 @@ export interface ImageAttachResult {
   empty?: boolean
 }
 
+/** Result of atomic admission for a pasted image-file batch. */
+export interface ImageAttachBatchResult {
+  error: string | null
+  /** Host-assigned chips in input order after the whole batch succeeds. */
+  chips?: readonly string[]
+}
+
+/** One cross-session completion row carrying the official canonical mention. */
+export interface SessionReferenceEntry {
+  label: string
+  mention: string
+  cwd?: string
+}
+
 /** Host callbacks the renderer drives; supplied by the plugin. */
 export interface TuiHost {
   submit(text: string, steer: boolean): void
@@ -603,8 +634,12 @@ export interface TuiHost {
   renameSession(title: string): Promise<string | null>
   /** Switch the workspace directory for this and future sessions. */
   changeWorkspace(path: string): Promise<string | null>
+  /** Discover other sessions for the trailing `@token`. */
+  listSessionReferences(query: string): Promise<readonly SessionReferenceEntry[]>
   /** Attach one image file to the next user message. */
   attachFile(path: string): Promise<ImageAttachResult>
+  /** Attach an ordered image-file batch without partially admitting it. */
+  attachFiles(paths: readonly string[]): Promise<ImageAttachBatchResult>
   /** Attach a bitmap from the desktop clipboard (Windows: Alt+V). */
   attachClipboardImage(): Promise<ImageAttachResult>
   /** Drop pending images whose chips disappeared and return renumbered chip text. */
@@ -638,6 +673,8 @@ interface PaletteItem {
   command?: string
   /** Replace the composer draft (file mentions) instead of running a command. */
   insert?: string
+  /** React identity when two candidate domains share a display name. */
+  key?: string
 }
 
 /** The `dsh` slash catalog: host commands plus TUI-local commands. */
@@ -647,9 +684,11 @@ function localCommands(locale: Locale): PaletteItem[] {
     { name: 'help', description: zh ? '显示帮助' : 'show this help', needsArgs: false },
     { name: 'clear', description: zh ? '清空显示（保留会话）' : 'clear the display (session kept)', needsArgs: false },
     { name: 'copy', description: zh ? '复制最近一条回复（/copy n 为第 n 条最近回复）' : 'copy the latest assistant reply (/copy n = Nth-latest)', needsArgs: true },
+    { name: 'rate', description: zh ? '评价最近一条助手回复（up/down，可指定倒数第 n 条）' : 'rate the latest assistant reply (up/down, optional Nth-latest)', needsArgs: true },
     { name: 'trajectory', description: zh ? '切换结构化轨迹视图' : 'toggle the structured trajectory view', needsArgs: false },
     { name: 'model', description: zh ? '选择模型' : 'pick a model', needsArgs: false },
     { name: 'settings', description: zh ? '设置（Tab / 点击切换分页）' : 'settings (Tab / click to switch pages)', needsArgs: false },
+    { name: 'skills', description: zh ? '选择当前 agent 可调用的 skill' : 'choose a skill available to the current agent', needsArgs: false },
     { name: 'jobs', description: zh ? '后台任务面板（Enter 杀掉选中任务）' : 'background jobs panel (Enter kills the selected job)', needsArgs: false },
     { name: 'subagents', description: zh ? '子代理树面板' : 'subagent tree panel', needsArgs: false },
     { name: 'workflows', description: zh ? 'workflow 运行进度面板' : 'workflow run progress panel', needsArgs: false },
@@ -664,7 +703,6 @@ function localCommands(locale: Locale): PaletteItem[] {
     { name: 'fork', description: zh ? '在最后完成回合处分叉会话' : 'fork the session at the last completed turn', needsArgs: false },
     { name: 'new', description: zh ? '开始新会话' : 'start a new session', needsArgs: false },
     { name: 'quit', description: zh ? '保存并退出' : 'save and exit', needsArgs: false },
-    { name: 'exit', description: zh ? '保存并退出' : 'save and exit', needsArgs: false },
   ]
 }
 
@@ -757,7 +795,7 @@ function nodeLines(
   }
   const withKey = (lines: NodeLineDraft[]): TranscriptLine[] =>
     lines.map((line, index) => ({
-      key: `${node.id}-${index}`,
+      key: `${node.kind}-${node.id}-${index}`,
       ...line,
       ...(line.runs !== undefined ? { runs: line.runs } : {}),
       dim: line.dim === true,
@@ -818,6 +856,11 @@ function nodeLines(
       }
       return withKey(lines)
     }
+    case 'deliverables':
+      return withKey(wrapText(
+        `${locale === 'zh' ? '◆ 产出' : '◆ produced'} · ${node.paths.map(path => sanitizeTerminalText(path)).join(' · ')}`,
+        width,
+      ).map(text => ({ text, color: 'cyan', dim: true })))
     case 'think': {
       const durationLabel = `${(node.durationMs / 1000).toFixed(1)}s`
       const head = wrapText(marker + (expanded ? `✓ Thinking ${durationLabel} ▼` : `✓ Thinking ${durationLabel} ▶`), width).map(text => ({
@@ -1398,14 +1441,23 @@ function CommandPaletteView(props: {
           const label = command.label ?? (command.insert !== undefined ? command.name : `/${command.name}`)
           const description = fitDisplayText(sanitizeTerminalText(command.description), Math.max(1, contentWidth - stringWidth(label) - 4))
           return (
-            <Text
-              key={command.command ?? command.name}
-              color={themed(absoluteIndex === props.selectedIndex ? 'cyan' : 'white', props.theme, 'white')}
-              bold={absoluteIndex === props.selectedIndex}
-              inverse={absoluteIndex === props.selectedIndex}
+            <Box
+              key={command.key ?? command.command ?? command.name}
+              width={contentWidth}
+              height={1}
+              flexGrow={0}
+              flexShrink={0}
+              overflow="hidden"
             >
-              {fitDisplayText(`${absoluteIndex === props.selectedIndex ? '▸' : ' '} ${label}  ${description}`, contentWidth)}
-            </Text>
+              <Text
+                wrap="truncate"
+                color={themed(absoluteIndex === props.selectedIndex ? 'cyan' : 'white', props.theme, 'white')}
+                bold={absoluteIndex === props.selectedIndex}
+                inverse={absoluteIndex === props.selectedIndex}
+              >
+                {fitDisplayText(`${absoluteIndex === props.selectedIndex ? '▸' : ' '} ${label}  ${description}`, contentWidth)}
+              </Text>
+            </Box>
           )
         })}
       <Text dimColor wrap="truncate">{shorten(props.hint ?? copy.paletteHint, contentWidth)}</Text>
@@ -1415,9 +1467,20 @@ function CommandPaletteView(props: {
 
 /** Keep the head of one line within a display width (trailing ellipsis). */
 function fitDisplayText(value: string, width: number): string {
-  const safe = sanitizeTerminalText(value)
-  if (width < 2 || stringWidth(safe) <= width) return safe
-  return `${safe.slice(0, width - 1)}…`
+  const budget = Math.max(0, Math.floor(width))
+  if (budget === 0) return ''
+  const safe = sanitizeTerminalText(value).replace(/[\r\n\t]+/gu, ' ')
+  if (stringWidth(safe) <= budget) return safe
+  const contentBudget = budget - 1
+  let used = 0
+  let head = ''
+  for (const { segment } of DISPLAY_SEGMENTER.segment(safe)) {
+    const segmentWidth = stringWidth(segment)
+    if (used + segmentWidth > contentBudget) break
+    head += segment
+    used += segmentWidth
+  }
+  return `${head}…`
 }
 
 /** Cap on composer lines: overflowing text wraps, never steals the frame. */
@@ -1577,7 +1640,9 @@ function ImeTextInput(props: {
   }, [commitEdit])
 
   const replacePaste = useCallback((pasted: string): void => {
-    const safePaste = sanitizeTerminalText(stripMouseReports(pasted))
+    // Clipboard providers use LF, CRLF, or bare CR. Normalize before the
+    // general terminal sanitizer removes carriage returns as control bytes.
+    const safePaste = sanitizeTerminalText(stripMouseReports(pasted).replace(/\r\n?/gu, '\n'))
     if (!safePaste) return
     const replacement = props.onPasteText?.(safePaste)
     if (replacement === '') return
@@ -1694,6 +1759,14 @@ function ImeTextInput(props: {
         } else {
           pasteText()
         }
+        return
+      }
+      // Bracketed paste is the primary path, but some terminal clipboard
+      // actions still deliver one ordinary stdin chunk. Route only a chunk
+      // that already meets the collapse threshold so IME and rapid typing
+      // retain ordinary input semantics.
+      if (shouldCollapsePastedText(input)) {
+        replacePaste(input)
         return
       }
       if (key.end || (key.ctrl && input.toLowerCase() === 'e')) {
@@ -1919,6 +1992,12 @@ export function permissionColor(mode: 'read-only' | 'workspace-write' | 'danger-
   return mode === 'read-only' ? 'whiteBright' : mode === 'workspace-write' ? 'yellowBright' : 'redBright'
 }
 
+/** Status text color: soft cyan-blue while active, muted blue while idle. */
+export function statusActivityColor(busy: boolean, theme: 'dark' | 'light' = 'dark'): '#4FC3F7' | '#4A90C4' | 'blue' {
+  if (theme === 'light') return 'blue'
+  return busy ? '#4FC3F7' : '#4A90C4'
+}
+
 /** The status bar: separator, activity row, and the Web-stats strip. */
 function StatusBar(props: {
   snapshot: ReturnType<TuiStore['getSnapshot']>
@@ -1963,13 +2042,12 @@ function StatusBar(props: {
   // onto the strip row below.
   const showRight = props.width >= 52
   const leftBudget = Math.max(4, props.width - 2 - (showRight ? stringWidth(effortText) + stringWidth(rightRest) + 1 : 0))
-  // Busy keeps the original yellow; only the star glyph animates.
-  const leftColor = snapshot.busy ? 'yellow' : 'cyan'
+  const leftColor = statusActivityColor(snapshot.busy, props.theme)
   return (
     <Box flexDirection="column">
       <Text dimColor>{'─'.repeat(Math.max(1, props.width))}</Text>
       <Box justifyContent="space-between" paddingX={1}>
-        <Text wrap="truncate" color={themed(leftColor, props.theme, 'cyan')}>{shorten(left, leftBudget)}</Text>
+        <Text wrap="truncate" color={leftColor}>{shorten(left, leftBudget)}</Text>
         {showRight ? (
           <Box>
             <Text bold color={themed('magenta', props.theme, 'magenta')}>{effortText}</Text>
@@ -2017,6 +2095,7 @@ function Takeover(props: {
   approvalSel: number
   questionIndex: number
   questionSel: number
+  questionSelected: ReadonlySet<number>
   questionText: string
   width: number
   height: number
@@ -2046,14 +2125,22 @@ function Takeover(props: {
         <>
           <Text wrap="truncate" color={themed('yellow', props.theme, 'yellow')} bold>? {sanitizeTerminalText(question.question)}</Text>
           {question.detail !== undefined && <Text wrap="truncate" dimColor>{sanitizeTerminalText(question.detail)}</Text>}
-          {(question.options ?? []).length > 0 && props.questionText === ''
+          {(question.options ?? []).length > 0 && (question.multiSelect === true || props.questionText === '')
             ? (question.options ?? []).map((option, index) => (
               <Text wrap="truncate" key={option.label} bold={index === props.questionSel} {...index === props.questionSel ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
-                {index === props.questionSel ? '▸' : ' '} ○ {sanitizeTerminalText(option.label)}
+                {index === props.questionSel ? '▸' : ' '} {question.multiSelect === true
+                  ? `[${props.questionSelected.has(index) ? 'x' : ' '}]`
+                  : '○'} {sanitizeTerminalText(option.label)}
                 {option.description !== undefined ? ` · ${sanitizeTerminalText(option.description)}` : ''}
               </Text>
             ))
-            : <Text wrap="truncate" color={themed('cyan', props.theme, 'cyan')}>› {props.questionText || copy.questionInput}</Text>}
+            : null}
+          {(question.options ?? []).length === 0 || props.questionText !== '' ? wrapText(
+            `› ${props.questionText || copy.questionInput}`,
+            Math.max(1, props.width - 2),
+          ).slice(-2).map((line, index) => (
+            <Text key={`question-custom-${index}`} wrap="truncate" color={themed('cyan', props.theme, 'cyan')}>{line}</Text>
+          )) : null}
           <Text wrap="truncate" dimColor>{copy.questionHint}</Text>
         </>
       ) : null}
@@ -2193,6 +2280,8 @@ export function App(props: {
   }, [draft, replacePastedTextBlocks])
   const [paletteDismissedInput, setPaletteDismissedInput] = useState<string | null>(null)
   const [paletteSelectedIndex, setPaletteSelectedIndex] = useState(0)
+  const [sessionReferenceMatches, setSessionReferenceMatches] = useState<readonly SessionReferenceEntry[]>([])
+  const sessionReferenceRequest = useRef(0)
   const [transcriptScrollOffset, setTranscriptScrollOffset] = useState(0)
   const transcriptScrollOffsetRef = useRef(0)
   const transcriptMaximumOffset = useRef(0)
@@ -2209,7 +2298,9 @@ export function App(props: {
   const [approvalSel, setApprovalSel] = useState(0)
   const [questionIndex, setQuestionIndex] = useState(0)
   const [questionSel, setQuestionSel] = useState(0)
+  const [questionSelected, setQuestionSelected] = useState<ReadonlySet<number>>(new Set())
   const [questionText, setQuestionText] = useState('')
+  const [questionAnswers, setQuestionAnswers] = useState<{ id: string; selected: string[]; custom?: string }[]>([])
   const [panel, setPanel] = useState<{ kind: PanelKind; settingsPage: SettingsPageId; filter?: string } | null>(null)
   const [settingsSel, setSettingsSel] = useState(0)
   const [settingsTop, setSettingsTop] = useState(0)
@@ -2241,6 +2332,14 @@ export function App(props: {
   const panelOpen = panel !== null
   const settingsPage = panel?.settingsPage ?? 'general'
 
+  useEffect(() => {
+    setQuestionIndex(0)
+    setQuestionSel(0)
+    setQuestionSelected(new Set())
+    setQuestionText('')
+    setQuestionAnswers([])
+  }, [pendingQuestion])
+
   const refreshTerminalSize = useCallback(() => {
     setTerminalSize({ width: stdout.columns ?? 100, height: stdout.rows ?? 30 })
   }, [stdout])
@@ -2254,6 +2353,27 @@ export function App(props: {
     stdout.write(ENABLE_WHEEL_MOUSE)
     return () => { stdout.write(DISABLE_WHEEL_MOUSE) }
   }, [stdout])
+
+  // Session discovery reads persisted metadata, so debounce it and discard
+  // superseded results. Local filesystem candidates remain synchronous.
+  useEffect(() => {
+    const range = atTokenRange(draft)
+    const request = sessionReferenceRequest.current + 1
+    sessionReferenceRequest.current = request
+    if (range === null || range.query.startsWith('"')) {
+      setSessionReferenceMatches([])
+      return
+    }
+    setSessionReferenceMatches([])
+    const timer = setTimeout(() => {
+      void props.host.listSessionReferences(range.query).then((matches) => {
+        if (sessionReferenceRequest.current === request) setSessionReferenceMatches(matches)
+      }).catch(() => {
+        if (sessionReferenceRequest.current === request) setSessionReferenceMatches([])
+      })
+    }, 60)
+    return () => { clearTimeout(timer) }
+  }, [draft, props.host])
   const exitApp = useCallback((): void => {
     // Reset app-owned mouse modes while Ink still has a writable terminal;
     // alternate-screen teardown intentionally discards effect-cleanup output.
@@ -2309,8 +2429,24 @@ export function App(props: {
       })
     return [...local, ...host]
   }, [locale, snapshot.commands])
-  const slashMatchesFor = (value: string): PaletteItem[] => {
-    if (!value.startsWith('/')) return []
+  const slashMatchesFor = (value: string): PaletteItem[] | null => {
+    if (!value.startsWith('/')) return null
+    const skillMatch = /^\/skills\s+(.*)$/u.exec(value)
+    if (skillMatch !== null) {
+      const query = (skillMatch[1] ?? '').trim()
+      const commandNames = new Set(commands.map(command => command.name))
+      return snapshot.skills
+        .filter(skill => !commandNames.has(skill.name) && skill.name.startsWith(query))
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(skill => ({
+          name: skill.name,
+          label: skill.name,
+          description: `${skill.modelInvocable ? '' : locale === 'zh' ? '仅用户调用 · ' : 'user only · '}${skill.description}`,
+          needsArgs: false,
+          insert: `/${skill.name} `,
+          key: `skill:${skill.name}`,
+        }))
+    }
     const effortMatch = /^\/effort(?:\s+(.*))?$/.exec(value)
     if (effortMatch !== null) {
       const query = (effortMatch[1] ?? '').trim().toLowerCase()
@@ -2333,15 +2469,16 @@ export function App(props: {
     }
     const query = value.slice(1)
     // Alphabetical a→z by command name, top to bottom.
-    return commands
+    const matches = commands
       .filter(command => command.name.startsWith(query.trim()))
       .sort((a, b) => a.name.localeCompare(b.name))
+    return matches.length === 0 ? null : matches
   }
-  const fileMatchesFor = (value: string): PaletteItem[] => {
+  const referenceMatchesFor = (value: string): PaletteItem[] => {
     const range = atTokenRange(value)
     if (range === null) return []
     const copy = COPY[locale]
-    return listWorkspaceMentions(snapshot.cwd, range.query, readWorkspaceDir).map((entry) => {
+    const files = listWorkspaceMentions(snapshot.cwd, range.query, readWorkspaceDir).map((entry) => {
       const suffix = entry.directory ? `${entry.relative}/` : `${entry.relative} `
       return {
         name: entry.relative,
@@ -2349,21 +2486,35 @@ export function App(props: {
         description: entry.directory ? copy.fileDir : copy.fileFile,
         needsArgs: false,
         insert: replaceAtToken(value, suffix),
+        key: `file:${entry.relative}`,
       }
     })
+    const sessions = sessionReferenceMatches.map(entry => ({
+      name: entry.label,
+      label: `@${entry.label}`,
+      description: `${locale === 'zh' ? '会话' : 'session'}${entry.cwd === undefined ? '' : ` · ${entry.cwd}`}`,
+      needsArgs: false,
+      insert: `${value.slice(0, range.start)}${entry.mention} `,
+      key: `session:${entry.mention}`,
+    }))
+    return [...files, ...sessions]
   }
   const palette = useMemo(() => {
     if (paletteDismissedInput === draft || panelOpen || pendingApproval !== null || pendingQuestion !== null) return null
     const slash = slashMatchesFor(draft)
-    if (slash.length > 0) return slash
-    const files = fileMatchesFor(draft)
-    if (files.length === 0) return null
-    return files
-  }, [draft, paletteDismissedInput, panelOpen, pendingApproval, pendingQuestion, commands, locale, snapshot.reasoning.effort, snapshot.cwd])
+    if (slash !== null) return slash
+    const references = referenceMatchesFor(draft)
+    if (references.length === 0) return null
+    return references
+  }, [
+    draft, paletteDismissedInput, panelOpen, pendingApproval, pendingQuestion, commands, locale,
+    snapshot.reasoning.effort, snapshot.cwd, snapshot.skills, sessionReferenceMatches,
+  ])
+  const skillPaletteActive = palette !== null && draft.startsWith('/skills ')
 
   useEffect(() => {
     setPaletteSelectedIndex(current =>
-      palette === null ? 0 : Math.min(current, palette.length - 1))
+      palette === null ? 0 : Math.min(current, Math.max(0, palette.length - 1)))
   }, [palette])
 
   // ── transcript lines ──────────────────────────────────────────────────
@@ -2402,13 +2553,22 @@ export function App(props: {
   // would move the composer without changing its measured layout position.
   // Budget the palette and takeover down until the complete frame fits.
   const reserved = 4 + 1 + composerLines + 1 + 3 + (panelNoticeVisible ? 1 : 0)
-  let takeoverH = pendingApproval !== null || pendingQuestion !== null ? 6 : 0
-  const fullPaletteH = palette !== null ? Math.min(MAX_POPUP_ITEMS + 2, Math.min(MAX_POPUP_ITEMS, palette.length) + 2) : 0
+  const activeQuestion = pendingQuestion?.questions[Math.min(questionIndex, (pendingQuestion?.questions.length ?? 1) - 1)]
+  const questionRows = activeQuestion === undefined ? 0 : Math.min(
+    10,
+    3 + (activeQuestion.options?.length ?? 0) + (questionText === '' ? 0 : 2),
+  )
+  let takeoverH = pendingApproval !== null ? 6 : pendingQuestion !== null ? Math.max(6, questionRows) : 0
+  const fullPaletteH = palette !== null
+    ? palette.length === 0 ? 3 : Math.min(MAX_POPUP_ITEMS + 2, Math.min(MAX_POPUP_ITEMS, palette.length) + 2)
+    : 0
   const paletteH = Math.min(fullPaletteH, Math.max(0, rowCount - reserved - takeoverH - 1))
   takeoverH = Math.min(takeoverH, Math.max(0, rowCount - reserved - paletteH - 1))
   const fixedRows = reserved + takeoverH + paletteH
   const transcriptHeight = Math.max(1, rowCount - fixedRows)
-  const panelHeight = Math.max(1, transcriptHeight - 1 - (panelNoticeVisible ? 1 : 0))
+  // A panel replaces the transcript row-for-row. Notices are already part of
+  // `reserved`, so subtracting them again shifts every bottom chrome row up.
+  const panelHeight = transcriptHeight
   const snapshotTranscriptWindow = useEffectEvent((offset: number) => selectTranscriptBlocksWindow(
     transcriptBlocksRef.current,
     transcriptHeight,
@@ -2777,9 +2937,37 @@ export function App(props: {
       })
       return
     }
+    if (text === '/rate' || text.startsWith('/rate ')) {
+      const parts = text.split(/\s+/u)
+      const direction = parts[1]
+      const ordinal = parts[2] === undefined ? 1 : Number(parts[2])
+      if ((direction !== 'up' && direction !== 'down')
+        || !Number.isSafeInteger(ordinal) || ordinal < 1 || parts.length > 3) {
+        setNotice(copy.rateUsage)
+        return
+      }
+      const targets = snapshot.nodes.filter(node => node.kind === 'assistant' && node.text !== '').reverse()
+      const target = targets[ordinal - 1]
+      if (target?.kind !== 'assistant') {
+        setNotice(copy.rateRange(ordinal, targets.length))
+        return
+      }
+      const rating = direction === 'up' ? 'positive' : 'negative'
+      void props.host.rateMessage(target.messageId, rating).then((error) => {
+        setNotice(error ?? copy.rateDone(direction, ordinal))
+      })
+      return
+    }
     if (text === '/trajectory') {
       setViewMode(viewMode === 'chat' ? 'trajectory' : 'chat')
       applyTranscriptScroll(0)
+      return
+    }
+    if (text === '/skills' || text.startsWith('/skills ')) {
+      // `/skills` is the discovery surface. The selected item still inserts
+      // the canonical `/name ` text owned by the Harness skill pre-step.
+      setDraft(`${text === '/skills' ? '/skills' : text} `)
+      setPaletteDismissedInput(null)
       return
     }
     if (text === '/settings' || text.startsWith('/settings ')) {
@@ -3250,6 +3438,23 @@ export function App(props: {
     settingsFilter,
   ])
 
+  /** Retain each answer in a batch and resolve the provider after the last question. */
+  const completeQuestion = useCallback((answer: { id: string; selected: string[]; custom?: string }): void => {
+    if (pendingQuestion === null) return
+    const answers = [...questionAnswers, answer]
+    if (questionIndex >= pendingQuestion.questions.length - 1) {
+      props.host.answerQuestion(answers)
+      setQuestionAnswers([])
+      setQuestionIndex(0)
+    } else {
+      setQuestionAnswers(answers)
+      setQuestionIndex(index => index + 1)
+    }
+    setQuestionSel(0)
+    setQuestionSelected(new Set())
+    setQuestionText('')
+  }, [pendingQuestion, props.host, questionAnswers, questionIndex])
+
   // ── input routing ─────────────────────────────────────────────────────
   // Every Escape action funnels through here so the 60ms phantom-Escape
   // confirmation window can drop split-CSI artifacts without side effects.
@@ -3307,9 +3512,7 @@ export function App(props: {
     if (pendingQuestion !== null) {
       const question = pendingQuestion.questions[questionIndex]
       if (question !== undefined) {
-        props.host.answerQuestion([{ id: question.id, selected: [], custom: '' }])
-        setQuestionIndex(questionIndex + 1)
-        setQuestionText('')
+        completeQuestion({ id: question.id, selected: [] })
       }
       return
     }
@@ -3609,27 +3812,37 @@ export function App(props: {
     if (pendingQuestion !== null) {
       const question = pendingQuestion.questions[questionIndex]
       if (question !== undefined) {
-        if ((question.options?.length ?? 0) > 0 && questionText === '') {
-          if (key.upArrow) setQuestionSel(Math.max(0, questionSel - 1))
-          if (key.downArrow) setQuestionSel(Math.min((question.options?.length ?? 1) - 1, questionSel + 1))
-          if (key.return) {
-            const selected = (question.options ?? [])[Math.min(questionSel, (question.options?.length ?? 1) - 1)]?.label ?? ''
-            props.host.answerQuestion([{ id: question.id, selected: selected === '' ? [] : [selected] }])
-            setQuestionIndex(questionIndex + 1)
-            setQuestionSel(0)
+        const options = question.options ?? []
+        const multi = question.multiSelect === true
+        if (key.upArrow && options.length > 0) {
+          setQuestionSel(Math.max(0, questionSel - 1))
+        } else if (key.downArrow && options.length > 0) {
+          setQuestionSel(Math.min(options.length - 1, questionSel + 1))
+        } else if (key.return && key.shift) {
+          setQuestionText(value => `${value}\n`)
+        } else if (key.return) {
+          if (multi) {
+            const selected = options.flatMap((option, index) => questionSelected.has(index) ? [option.label] : [])
+            completeQuestion({ id: question.id, selected, ...(questionText === '' ? {} : { custom: questionText }) })
+          } else if (options.length > 0 && questionText === '') {
+            const selected = options[Math.min(questionSel, options.length - 1)]?.label
+            completeQuestion({ id: question.id, selected: selected === undefined ? [] : [selected] })
+          } else {
+            completeQuestion({ id: question.id, selected: [], ...(questionText === '' ? {} : { custom: questionText }) })
           }
-        } else {
-          // Custom answers type straight into questionText (the composer is
-          // disabled during the takeover).
-          if (key.backspace) setQuestionText(value => value.slice(0, -1))
-          else if (key.return) {
-            props.host.answerQuestion([{ id: question.id, selected: [], ...(questionText === '' ? {} : { custom: questionText }) }])
-            setQuestionIndex(questionIndex + 1)
-            setQuestionSel(0)
-            setQuestionText('')
-          } else if (input !== '' && !key.upArrow && !key.downArrow && !key.tab) {
-            setQuestionText(questionText + sanitizeTerminalText(input))
-          }
+        } else if (input === ' ' && multi && questionText === '' && options.length > 0) {
+          setQuestionSelected((current) => {
+            const next = new Set(current)
+            if (next.has(questionSel)) next.delete(questionSel)
+            else next.add(questionSel)
+            return next
+          })
+        } else if (key.backspace) {
+          setQuestionText(value => value.slice(0, -1))
+        } else if (input !== '' && !key.tab) {
+          // Typing enters a custom answer. Multi-select keeps already toggled
+          // labels and submits the custom text alongside them.
+          setQuestionText(value => value + sanitizeTerminalText(input))
         }
       }
       return
@@ -3750,18 +3963,20 @@ export function App(props: {
           height={Math.max(1, paletteH)}
           locale={locale}
           theme={theme}
-          {...palette.some(item => item.command?.startsWith('/effort ') ?? false)
-            ? {
-              title: locale === 'zh'
-                ? '╭─ 推理力度（↑↓ 选择 · Enter 应用 · Tab 补全 · Esc 取消）'
-                : '╭─ reasoning effort (↑↓ select · Enter apply · Tab complete · Esc close)',
-              hint: locale === 'zh'
-                ? '╰─ off / low / high / max · Enter 应用'
-                : '╰─ off / low / high / max · Enter applies',
-            }
-            : palette.some(item => item.insert !== undefined)
-              ? { title: copy.filePaletteTitle, hint: copy.filePaletteHint }
-              : {}}
+          {...skillPaletteActive
+            ? { title: copy.skillPaletteTitle, hint: copy.skillPaletteHint }
+            : palette.some(item => item.command?.startsWith('/effort ') ?? false)
+              ? {
+                title: locale === 'zh'
+                  ? '╭─ 推理力度（↑↓ 选择 · Enter 应用 · Tab 补全 · Esc 取消）'
+                  : '╭─ reasoning effort (↑↓ select · Enter apply · Tab complete · Esc close)',
+                hint: locale === 'zh'
+                  ? '╰─ off / low / high / max · Enter 应用'
+                  : '╰─ off / low / high / max · Enter applies',
+              }
+              : palette.some(item => item.insert !== undefined)
+                ? { title: copy.filePaletteTitle, hint: copy.filePaletteHint }
+                : {}}
         />
       ) : null}
       {takeoverH > 0 ? (
@@ -3770,6 +3985,7 @@ export function App(props: {
           approvalSel={approvalSel}
           questionIndex={questionIndex}
           questionSel={questionSel}
+          questionSelected={questionSelected}
           questionText={questionText}
           width={width}
           height={takeoverH}
@@ -3819,6 +4035,23 @@ export function App(props: {
           return true
         }}
         onPasteText={(text) => {
+          const imageBatch = classifyPastedImagePaths(text)
+          if (imageBatch !== null) {
+            void props.host.attachFiles(imageBatch.map(image => image.path)).then((result) => {
+              if (result.error !== null) {
+                setNotice(result.error)
+                return
+              }
+              if (result.chips !== undefined) {
+                setDraft(current => result.chips?.reduce(
+                  (next, chip) => insertImageChip(next, next.length, chip).draft,
+                  current,
+                ) ?? current)
+              }
+              setNotice(copy.attachDone(`${imageBatch.length} ${locale === 'zh' ? '张图片' : 'images'}`))
+            })
+            return ''
+          }
           const classified = classifyPastedPath(text)
           if (classified === null) {
             if (!shouldCollapsePastedText(text)) return null

@@ -40,6 +40,7 @@ export function extractCopyText(node: TuiNode): string | null {
       return node.text === '' ? null : stripAnsi(node.text)
     case 'status':
     case 'retry':
+    case 'deliverables':
       return null
   }
 }

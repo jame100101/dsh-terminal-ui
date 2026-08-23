@@ -296,6 +296,24 @@ export function classifyPastedPath(text: string): PastedPath | null {
 }
 
 /**
+ * Classify a newline-separated desktop file paste as an image-only batch.
+ * Ordinary multiline prose and mixed image/non-image selections stay text.
+ * @param text - bracketed paste contents.
+ * @returns image paths in clipboard order, or null when this is not an image batch.
+ */
+export function classifyPastedImagePaths(text: string): Extract<PastedPath, { kind: 'image' }>[] | null {
+  const lines = text.split(/\r?\n/u).map(line => line.trim()).filter(line => line !== '')
+  if (lines.length < 2) return null
+  const images: Extract<PastedPath, { kind: 'image' }>[] = []
+  for (const line of lines) {
+    const classified = classifyPastedPath(line)
+    if (classified?.kind !== 'image') return null
+    images.push(classified)
+  }
+  return images
+}
+
+/**
  * Web DeepSeek Chat admission order: format, count, per-file size, total size.
  * @param existingCount - chips already in the rail.
  * @param existingBytes - sum of their encoded sizes.

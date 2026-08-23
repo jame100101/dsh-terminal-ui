@@ -20,6 +20,7 @@ function snapshot(overrides: Partial<TuiSnapshot> = {}): TuiSnapshot {
     pendingApproval: null,
     pendingQuestion: null,
     commands: [],
+    skills: [],
     models: [],
     sessions: [],
     queued: [],
@@ -63,6 +64,7 @@ describe('selectPanelSnapshot', () => {
     const previous = snapshot()
     const computed = {
       commands: previous.commands,
+      skills: previous.skills,
       models: previous.models,
       sessions: [{ id: 'b', model: 'n', status: 'idle' }] as const,
       queued: previous.queued,

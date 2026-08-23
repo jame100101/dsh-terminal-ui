@@ -7,6 +7,9 @@
 /** Minimum Unicode character count that collapses one paste into a token. */
 export const PASTED_TEXT_COLLAPSE_CHARACTERS = 1_000
 
+/** Minimum logical line count that collapses a multiline paste into a token. */
+export const PASTED_TEXT_COLLAPSE_LINES = 20
+
 /** One large paste retained outside the visible composer draft. */
 export interface PastedTextBlock {
   /** Draft token shown in place of the retained text. */
@@ -27,12 +30,12 @@ export function pastedTextCharacterCount(text: string): number {
 }
 
 /**
- * Count logical lines in pasted text, accepting LF and CRLF input.
+ * Count logical lines in pasted text, accepting LF, CRLF, and bare CR input.
  * @param text - sanitized pasted text.
  * @returns at least one line.
  */
 export function pastedTextLineCount(text: string): number {
-  return text === '' ? 1 : text.split(/\r?\n/u).length
+  return text === '' ? 1 : text.split(/\r\n|\r|\n/u).length
 }
 
 /**
@@ -42,6 +45,7 @@ export function pastedTextLineCount(text: string): number {
  */
 export function shouldCollapsePastedText(text: string): boolean {
   return pastedTextCharacterCount(text) >= PASTED_TEXT_COLLAPSE_CHARACTERS
+    || pastedTextLineCount(text) >= PASTED_TEXT_COLLAPSE_LINES
 }
 
 /**

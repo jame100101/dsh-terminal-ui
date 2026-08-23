@@ -3004,7 +3004,7 @@ export type ToolPresentationMode = 'native' | 'code' | 'both'
 export interface Config {}
 ```
 
-来源：[`packages/tui/tui/src/index.ts:112`](../packages/tui/tui/src/index.ts)
+来源：[`packages/tui/tui/src/index.ts:115`](../packages/tui/tui/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 
