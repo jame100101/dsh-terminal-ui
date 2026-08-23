@@ -33,7 +33,7 @@
     "@opentelemetry/exporter-logs-otlp-http": "0.220.0",
     "@opentelemetry/otlp-exporter-base": "0.220.0",
     "@opentelemetry/resources": "2.10.0",
-    "@opentelemetry/sdk-logs": "0.220.0",
+    "@opentelemetry/sdk-logs": "0.221.0",
     "@standard-schema/spec": "1.1.0",
     "@tanstack/react-virtual": "3.14.9",
     "@vscode/ripgrep": "1.18.0",
