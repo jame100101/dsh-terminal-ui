@@ -1,6 +1,8 @@
-# DeepSeek Harness TUI（`dsh-tui`）
+# DSH Terminal UI（`dsh-tui`）
 
 [English](README.md) | 中文
+
+非官方社区维护的 DeepSeek Harness 终端 UI。
 
 <p align="center">
   <a href="#快速开始"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
@@ -284,8 +286,8 @@ npm uninstall -g @jame100101/dsh-tui
 克隆仓库并安装 workspace 依赖：
 
 ```sh
-git clone https://github.com/jame100101/deepseek-harness-tui.git
-cd deepseek-harness-tui
+git clone https://github.com/jame100101/dsh-terminal-ui.git
+cd dsh-terminal-ui
 pnpm install
 pnpm run build
 pnpm run test
