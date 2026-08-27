@@ -8,6 +8,7 @@ import {
   normalizeCwd, resolveContinueSession, resolveResumeTarget, turnEndReasonAfter,
 } from '../src/startup'
 import type { ResumeQueryPort, SessionRecordLike } from '../src/startup'
+import type { SessionRecencyRecord } from '../src/session-recency'
 
 /** A minimal session header fixture. */
 function header(id: string, createdAt: number, cwd?: string): SessionHeader {
@@ -15,8 +16,22 @@ function header(id: string, createdAt: number, cwd?: string): SessionHeader {
 }
 
 /** A minimal corpus record fixture. */
-function record(id: string, createdAt: number, cwd?: string, flags: { live?: boolean; persisted?: boolean } = {}): SessionRecordLike {
-  return { header: header(id, createdAt, cwd), live: flags.live ?? false, persisted: flags.persisted ?? true }
+function record(
+  id: string,
+  createdAt: number,
+  cwd?: string,
+  flags: { live?: boolean; persisted?: boolean; origin?: 'subagent' } = {},
+): SessionRecordLike {
+  return {
+    header: { ...header(id, createdAt, cwd), ...(flags.origin === undefined ? {} : { origin: flags.origin }) },
+    live: flags.live ?? false,
+    persisted: flags.persisted ?? true,
+  }
+}
+
+/** One TUI foreground-use fixture. */
+function used(id: string, createdAt: number, cwd: string, lastUsedAt: number): SessionRecencyRecord {
+  return { sessionId: id, createdAt, cwd: normalizeCwd(cwd), lastUsedAt }
 }
 
 /**
@@ -188,13 +203,58 @@ describe('resolveResumeTarget', () => {
 })
 
 describe('resolveContinueSession', () => {
-  it('picks the newest cwd-matching session and never falls back to another directory', async () => {
+  it('migrates an untracked directory by newest top-level creation time', async () => {
     const query = fakeQuery([
       record('a-old', 100, '/work'),
       record('a-new', 200, '/work'),
       record('b-newest', 300, '/other'),
     ])
     expect(await resolveContinueSession(query, '/work')).toBe(SessionId('a-new'))
+  })
+
+  it('prefers last foreground use over creation time', async () => {
+    const query = fakeQuery([
+      record('older-used-last', 100, '/work'),
+      record('newer-used-first', 200, '/work'),
+      record('untracked-newest', 300, '/work'),
+    ])
+    const recency = [
+      used('newer-used-first', 200, '/work', 400),
+      used('older-used-last', 100, '/work', 500),
+    ]
+    expect(await resolveContinueSession(query, '/work', recency)).toBe(SessionId('older-used-last'))
+  })
+
+  it('ignores stale lifecycle and other-directory observations', async () => {
+    const query = fakeQuery([
+      record('same-id', 200, '/work'),
+      record('fallback', 100, '/work'),
+    ])
+    const recency = [
+      used('same-id', 199, '/work', 900),
+      used('same-id', 200, '/other', 800),
+    ]
+    expect(await resolveContinueSession(query, '/work', recency)).toBe(SessionId('same-id'))
+  })
+
+  it('excludes untouched subagents from migration fallback', async () => {
+    const query = fakeQuery([
+      record('child-newest', 300, '/work', { origin: 'subagent' }),
+      record('foreground', 100, '/work'),
+    ])
+    expect(await resolveContinueSession(query, '/work')).toBe(SessionId('foreground'))
+    expect(await resolveContinueSession(fakeQuery([
+      record('child-only', 300, '/work', { origin: 'subagent' }),
+    ]), '/work')).toBeNull()
+  })
+
+  it('includes a subagent after the user explicitly foregrounded it', async () => {
+    const query = fakeQuery([
+      record('child', 100, '/work', { origin: 'subagent' }),
+      record('ordinary', 200, '/work'),
+    ])
+    expect(await resolveContinueSession(query, '/work', [used('child', 100, '/work', 500)]))
+      .toBe(SessionId('child'))
   })
 
   it('returns null when no session matches the cwd', async () => {

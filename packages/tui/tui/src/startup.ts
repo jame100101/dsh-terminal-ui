@@ -16,6 +16,7 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { sessionTitlesById } from './settings-data'
 import type { TitleObservationResult } from './settings-data'
+import type { SessionRecencyRecord } from './session-recency'
 
 /** Exit code for a completed run. */
 export const EXIT_OK = 0
@@ -44,6 +45,11 @@ export interface SessionRecordLike {
   live: boolean
   /** Whether the persistence backend currently materializes the id. */
   persisted: boolean
+}
+
+/** Exact identity shared with the TUI recency sidecar. */
+function recencyKey(record: Pick<SessionRecencyRecord, 'sessionId' | 'createdAt' | 'cwd'>): string {
+  return JSON.stringify([record.sessionId, record.createdAt, record.cwd])
 }
 
 /** One resume candidate shown when a query matches more than one session. */
@@ -181,18 +187,49 @@ export function forkCutPoint(events: readonly SessionEvent[], atSeq?: number): n
 }
 
 /**
- * Find the newest resumable persisted session created in `cwd`. Falling
- * back to a session from another directory would silently resume the wrong
- * project, so no match yields `null` and the caller fails loud.
+ * Find the most recently foregrounded resumable session created in `cwd`.
+ * A recency record matches the complete session lifecycle (id, creation time,
+ * normalized cwd), so a stale record cannot attach to a reused id. When this
+ * TUI has no recency evidence for the directory yet, ordinary top-level
+ * sessions migrate deterministically by creation time; an untouched subagent
+ * is excluded from that fallback but becomes eligible after explicit resume.
+ * A session from another directory is never selected.
  * @param query - the session corpus port.
  * @param cwd - the current working directory to match.
- * @returns the newest matching session id, or null when none matches.
+ * @param recency - TUI-owned foreground-use observations, newest order not required.
+ * @returns the most recently used matching session id, or null when none matches.
  */
-export async function resolveContinueSession(query: ResumeQueryPort, cwd: string): Promise<SessionId | null> {
+export async function resolveContinueSession(
+  query: ResumeQueryPort,
+  cwd: string,
+  recency: readonly SessionRecencyRecord[] = [],
+): Promise<SessionId | null> {
   const records = await query.listSessions()
   const target = normalizeCwd(cwd)
   const matches = records
     .filter(record => record.persisted && !record.live && record.header.cwd !== undefined && normalizeCwd(record.header.cwd) === target)
-    .toSorted((left, right) => right.header.createdAt - left.header.createdAt)
-  return matches[0]?.header.id ?? null
+  const lastUsedByLifecycle = new Map(recency.map(record => [recencyKey(record), record.lastUsedAt]))
+  const observed = matches.flatMap((record) => {
+    const recordCwd = record.header.cwd
+    if (recordCwd === undefined) return []
+    const lastUsedAt = lastUsedByLifecycle.get(recencyKey({
+      sessionId: String(record.header.id),
+      createdAt: record.header.createdAt,
+      cwd: normalizeCwd(recordCwd),
+    }))
+    return lastUsedAt === undefined ? [] : [{ record, lastUsedAt }]
+  }).toSorted((left, right) => (
+    right.lastUsedAt - left.lastUsedAt
+    || right.record.header.createdAt - left.record.header.createdAt
+    || String(left.record.header.id).localeCompare(String(right.record.header.id))
+  ))
+  const foregrounded = observed[0]
+  if (foregrounded !== undefined) return foregrounded.record.header.id
+  const migrated = matches
+    .filter(record => record.header.origin !== 'subagent')
+    .toSorted((left, right) => (
+      right.header.createdAt - left.header.createdAt
+      || String(left.header.id).localeCompare(String(right.header.id))
+    ))
+  return migrated[0]?.header.id ?? null
 }

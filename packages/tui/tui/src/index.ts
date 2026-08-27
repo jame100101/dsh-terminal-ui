@@ -57,6 +57,7 @@ import type {} from '@deepseek-ai/dsh-attachment'
 // Empty import carries the agent-presets Context merge and the
 // `agent-preset/selected` session-event vocabulary the preset rows below read.
 import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-app-boot'
 // Empty type imports carry the sandbox-policy Context merge, the
 // session-projection registry merge, and the token-meter `contextPressure`
 // SessionProjectionMap key the publish path reads.
@@ -100,6 +101,7 @@ import {
   turnEndReasonAfter,
 } from './startup'
 import type { ResumeCandidate, ResumeResolution } from './startup'
+import { SessionRecencyStore } from './session-recency'
 import type {
   CommandEntry, CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry,
   SettingsData, SkillEntry, SubagentRow, TuiStore, WorkflowRow,
@@ -111,10 +113,19 @@ export const name = 'tui'
 /** Core services required before the surface can mount. */
 export const inject = ['agents', 'agentDefaultModel', 'tools', 'settings', 'credentials', 'messageFeedback', 'sessionQuery', 'sessionTitle', 'attachments', 'sandboxPolicy']
 
-/** Plugin config. Keeps the cache-safety contract: no surface tunables yet. */
-export interface Config {}
+/** Default maximum number of foreground-session observations retained by the TUI. */
+export const DEFAULT_SESSION_RECENCY_MAX_ENTRIES = 1_000
 
-export const Config: z<Config> = z.object({})
+/** TUI plugin configuration. */
+export interface Config {
+  /** Maximum lifecycle observations in the TUI-owned session recency sidecar. */
+  sessionRecencyMaxEntries?: number
+}
+
+/** Validated TUI plugin configuration schema. */
+export const Config: z<Config> = z.object({
+  sessionRecencyMaxEntries: z.number().step(1).min(1).default(DEFAULT_SESSION_RECENCY_MAX_ENTRIES),
+})
 
 /** Localized copy for a rejected feedback mutation. */
 function feedbackErrorText(error: { code: string }, locale: 'zh' | 'en'): string {
@@ -849,10 +860,12 @@ function readStartupIntent(ctx: Context): StartupIntent | null {
  * surface until it exits.
  * @param ctx - plugin context carrying the agent registry, default model, tool registry, settings, and credentials.
  * @param tuiScope - the registered `tui` settings namespace scope.
+ * @param config - validated TUI-local persistence limits.
  */
 async function boot(
   ctx: Context,
   tuiScope: SettingsScope<{ busyEnter: 'queue' | 'steer'; thinking: 'collapsed' | 'expanded' }>,
+  config: Config,
 ): Promise<void> {
   // Parse the startup argv first: help, version, and usage rejections must
   // exit before any agent is created, and the intent routes the whole boot.
@@ -861,6 +874,13 @@ async function boot(
   // Loader siblings mount concurrently. Await the complete application before
   // creating an Agent so its scoped tools and adapters are not half-composed.
   await ctx.get('loader')?.await()
+  const homePath = ctx.dshHomePath
+  if (homePath === undefined) throw new Error('TUI session recency requires the app boot home-path provider')
+  const recency = new SessionRecencyStore(
+    homePath('tui', 'session-recency.json'),
+    config.sessionRecencyMaxEntries ?? DEFAULT_SESSION_RECENCY_MAX_ENTRIES,
+    (error) => { ctx.logger.warn(`tui: session recency sidecar fault: ${error instanceof Error ? error.message : String(error)}`) },
+  )
   const created = await createAgent(ctx, process.cwd())
   // Handle of the surface's CURRENT agent. Switches dispose THIS handle before
   // replacing it — disposing the boot-time `created.handle` on every switch
@@ -1146,6 +1166,7 @@ async function boot(
       publishPendingImages()
       if (steer) surface.agent.steer(message)
       else surface.agent.followup(message)
+      recency.touch(surface.agent.session.header)
     }
     if (!text.startsWith('/')) {
       submit()
@@ -1156,12 +1177,14 @@ async function boot(
       submit()
       return
     }
+    const commandAgent = surface.agent
     void encodeTuiCommandImages(ctx.attachments, surface.pendingAttachments).then(images =>
-      commands.execute(surface.agent, text, images, new AbortController().signal),
+      commands.execute(commandAgent, text, images, new AbortController().signal),
     ).then((execution) => {
       if (execution !== undefined) {
         surface.pendingAttachments = []
         publishPendingImages()
+        recency.touch(commandAgent.session.header)
         return
       }
       submit()
@@ -1284,6 +1307,7 @@ async function boot(
       refreshSettings()
       refreshCatalogs()
       void loadFeedback()
+      recency.touch(next.agent.session.header)
       return null
     } catch (error) {
       fail(ctx, error)
@@ -1354,7 +1378,7 @@ async function boot(
         if (query === undefined) { fail(ctx, new Error('会话查询服务未加载，无法恢复会话')); return 'exit' }
         let id: SessionId | null
         try {
-          id = await resolveContinueSession(query, process.cwd())
+          id = await resolveContinueSession(query, process.cwd(), await recency.read())
         } catch (error) {
           fail(ctx, error)
           return 'exit'
@@ -1780,6 +1804,7 @@ async function boot(
     try { offSkillsChange() } catch {}
     try { unsubscribe() } catch {}
     try { await surface.agent.whenIdle() } catch {}
+    await recency.drain()
   }
 }
 
@@ -1789,14 +1814,14 @@ async function boot(
  * Registering a namespace does not touch the request envelope, so the
  * cache-safety contract stands.
  * @param ctx - plugin context carrying the agent registry, default model, tool registry, settings, and credentials.
- * @param _config - validated (currently empty) plugin config.
+ * @param config - validated TUI plugin config.
  */
-export function apply(ctx: Context, _config: Config): void {
+export function apply(ctx: Context, config: Config): void {
   const tuiScope = ctx.settings.register(settingsNamespace('tui'), z.object({
     busyEnter: z.union(['queue', 'steer']).default('queue'),
     thinking: z.union(['collapsed', 'expanded']).default('collapsed'),
     theme: z.union(['dark', 'light']).default('dark'),
     locale: z.union(['zh', 'en']).default('zh'),
   }))
-  void boot(ctx, tuiScope).catch((error: unknown) => { fail(ctx, error) })
+  void boot(ctx, tuiScope, config).catch((error: unknown) => { fail(ctx, error) })
 }

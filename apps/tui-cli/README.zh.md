@@ -27,7 +27,7 @@ install from the npm registry automatically. First boot initializes the
 ```text
 dsh-tui                          interactive TUI, new session
 dsh-tui "fix the failing test"   interactive TUI, submits the task on boot
-dsh-tui -c                       resume the newest session from this directory
+dsh-tui -c                       resume the most recently used session from this directory
 dsh-tui -r                       interactive session picker
 dsh-tui -r <session>             resume by id, id prefix, or title
 dsh-tui -c --fork-session        fork the resumed session, then switch to it
@@ -38,6 +38,8 @@ dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 Exit codes: `0` success, `1` execution failure, `2` usage error, `130`
 SIGINT. `--print` output goes to stdout (assistant result only); diagnostics
 go to stderr.
+
+`-c` 按 TUI 前台使用时间选择，而不是按会话创建顺序选择。有界索引位于 `$DSH_HOME/tui/session-recency.json`；某个目录首次使用索引时，会回退到最新的顶层会话，尚未在 TUI 前台打开过的 subagent 会话不参与这次迁移回退。
 
 The wrapper resolves the bundled launcher bin, spawns it with inherited
 stdio, and passes the child's exit code through — it never captures output,

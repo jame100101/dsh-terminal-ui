@@ -2998,11 +2998,14 @@ Source: [`packages/core/tools/src/index.ts:654`](../packages/core/tools/src/inde
 Requires: `agents` · `agentDefaultModel` · `tools` · `settings` · `credentials` · `messageFeedback` · `sessionQuery` · `sessionTitle` · `attachments` · `sandboxPolicy`
 
 ```ts config-catalog
-/** Plugin config. Keeps the cache-safety contract: no surface tunables yet. */
-export interface Config {}
+/** TUI plugin configuration. */
+export interface Config {
+  /** Maximum lifecycle observations in the TUI-owned session recency sidecar. */
+  sessionRecencyMaxEntries?: number
+}
 ```
 
-Source: [`packages/tui/tui/src/index.ts:115`](../packages/tui/tui/src/index.ts)
+Source: [`packages/tui/tui/src/index.ts:120`](../packages/tui/tui/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 

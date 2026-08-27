@@ -114,7 +114,7 @@ export function buildTuiStartupProgram(onIntent: (intent: StartupIntent) => void
     .description('the dsh terminal surface: startup flags')
     .version(readTuiVersion(), '-V, --version', 'output the version number')
     .argument('[task]', 'submit this task once the TUI starts')
-    .option('-c, --continue', 'resume the newest persisted session whose cwd matches this one')
+    .option('-c, --continue', 'resume the most recently used persisted session whose cwd matches this one')
     .option('-r, --resume [session]', 'resume by id, id prefix, or title (bare: open the session picker)')
     .option('--fork-session', 'fork the resumed base at its last completed turn and switch to the fork (requires -c or -r <session>)')
     .option('-p, --print <task>', 'run one task non-interactively, print the assistant result, and exit')

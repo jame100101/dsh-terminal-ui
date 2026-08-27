@@ -48,7 +48,7 @@ function buildProgram() {
     .description('the DeepSeek Harness terminal assistant (a thin launcher over dsh --profile tui)')
     .version(readVersion(), '-V, --version', 'output the version number')
     .argument('[task]', 'submit this task once the TUI starts')
-    .option('-c, --continue', 'resume the newest session created in the current directory')
+    .option('-c, --continue', 'resume the most recently used session created in the current directory')
     .option('-r, --resume [session]', 'resume by id, id prefix, or title (bare: open the session picker)')
     .option('--fork-session', 'fork the resumed session at its last completed turn and switch to the fork (requires -c or -r <session>)')
     .option('-p, --print <task>', 'run one task non-interactively, print the assistant result, and exit')
