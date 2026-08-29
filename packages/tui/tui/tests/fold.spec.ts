@@ -3,8 +3,9 @@ import stringWidth from 'string-width'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
-  anchorRetry, applyEvent, createScratch, foldFromLog, foldResidentChars, initialState, rememberToolCallCard,
-  MAX_ASSISTANT_TEXT, MAX_FOLD_NODES, MAX_THINK_TEXT, MAX_TRACE, MAX_USER_TEXT,
+  anchorRetry, applyEvent, createScratch, decodeToolResult, foldFromLog, foldFromLogYielding, foldResidentChars,
+  initialState, rememberToolCallCard,
+  MAX_ASSISTANT_TEXT, MAX_FOLD_CHARS, MAX_FOLD_NODES, MAX_THINK_TEXT, MAX_TRACE, MAX_USER_TEXT,
 } from '../src/fold'
 import type { FoldState } from '../src/types'
 import { parseMouseWheel, scrollOffsetForWheel, stripMouseReports } from '../src/mouse'
@@ -116,14 +117,77 @@ describe('session fold', () => {
     expect(state.nodes).toHaveLength(0)
   })
 
-  it('marks a failed tool result as an error row', () => {
+  it('marks a failed tool result as an error row from the tool-result isError bit', () => {
     const state = foldAll([
       event('turn/start', { turn: 1 }, 0),
       event('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{"command":"nope"}' }, 1, 10),
-      event('tool/result', { turn: 1, step: 1, message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [text('boom')] }] }, error: { name: 'Error', code: 'FAILED' } }, 2, 20),
+      event('tool/result', { turn: 1, step: 1, message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [text('boom')], isError: true }] } }, 2, 20),
     ])
     const tool = state.nodes.find(node => node.kind === 'tool')
     expect(tool?.kind === 'tool' && tool.status).toBe('error')
+    expect(tool?.kind === 'tool' && tool.callId).toBe('c1')
+    expect(tool?.kind === 'tool' && tool.name).toBe('bash')
+  })
+
+  it('does not treat event.data.error without isError as a failed row', () => {
+    const state = foldAll([
+      event('tool/call', { turn: 1, step: 1, callId: 'c1', name: 'bash', arguments: '{}' }, 1, 10),
+      event('tool/result', {
+        turn: 1, step: 1,
+        error: { name: 'Error', code: 'FAILED' },
+        message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [text('ok')] }] },
+      }, 2, 20),
+    ])
+    const tool = state.nodes.find(node => node.kind === 'tool')
+    expect(tool?.kind === 'tool' && tool.status).toBe('done')
+    expect(decodeToolResult(event('tool/result', {
+      turn: 1, step: 1,
+      message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'c1', content: [text('ok')], isError: true }] },
+    }, 3))?.isError).toBe(true)
+  })
+
+  it('pairs parallel tool results by callId instead of the last running row', () => {
+    const state = foldAll([
+      event('tool/call', { turn: 1, step: 1, callId: 'a', name: 'read', arguments: '{"path":"a.ts"}' }, 1, 10),
+      event('tool/call', { turn: 1, step: 1, callId: 'b', name: 'bash', arguments: '{"command":"ls"}' }, 2, 20),
+      event('tool/result', {
+        turn: 1, step: 1,
+        message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'a', content: [text('file-a')] }] },
+      }, 3, 30),
+      event('tool/result', {
+        turn: 1, step: 1,
+        message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'b', content: [text('file-b')] }] },
+      }, 4, 40),
+    ])
+    const tools = state.nodes.filter(node => node.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(tools[0]).toMatchObject({ callId: 'a', name: 'read', status: 'done', text: 'file-a' })
+    expect(tools[1]).toMatchObject({ callId: 'b', name: 'bash', status: 'done', text: 'file-b' })
+  })
+
+  it('folds Code Mode sub-dispatches as indented child tool rows', () => {
+    const state = foldAll([
+      event('tool/call', { turn: 1, step: 1, callId: 'root', name: 'run_code', arguments: '{}' }, 1, 10),
+      event('tool/code-dispatch-start', {
+        rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:1', name: 'web_search', arguments: { query: 'x' },
+      }, 2, 20),
+      event('tool/code-dispatch', {
+        rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:1', name: 'web_search',
+        arguments: { query: 'x' }, isError: false, content: [text('hits')],
+      }, 3, 30),
+      event('tool/code-dispatch-start', {
+        rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:2', name: 'read', arguments: { path: 'a.ts' },
+      }, 4, 40),
+      event('tool/code-dispatch', {
+        rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:2', name: 'read',
+        arguments: { path: 'a.ts' }, isError: true, content: [text('missing')],
+      }, 5, 50),
+    ])
+    const tools = state.nodes.filter(node => node.kind === 'tool')
+    expect(tools).toHaveLength(3)
+    expect(tools[0]).toMatchObject({ callId: 'root', name: 'run_code', status: 'running' })
+    expect(tools[1]).toMatchObject({ callId: 'root:code:1', name: 'web_search', parentCallId: 'root', status: 'done', text: 'hits' })
+    expect(tools[2]).toMatchObject({ callId: 'root:code:2', name: 'read', parentCallId: 'root', status: 'error', text: 'missing' })
   })
 
   it('adds one deduplicated produced-files row for successful mutation intents', () => {
@@ -156,7 +220,7 @@ describe('session fold', () => {
     rememberToolCallCard(scratch, 'failed-write', { card: 'diff', locations: [{ path: 'failed.ts' }] })
     state = applyEvent(state, event('tool/result', {
       turn: 1, step: 1, error: { name: 'Error', code: 'FAILED' },
-      message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'failed-write', content: [text('failed')] }] },
+      message: { role: 'user', content: [{ type: 'tool-result', toolCallId: 'failed-write', content: [text('failed')], isError: true }] },
     }, 2), scratch)
     state = applyEvent(state, event('tool/call', {
       turn: 1, step: 1, callId: 'read-1', name: 'read', arguments: '{}',
@@ -579,6 +643,14 @@ describe('session fold', () => {
     ])
     expect(live.live?.think.length).toBe(MAX_THINK_TEXT)
     expect(live.live?.text.length).toBe(MAX_ASSISTANT_TEXT)
+    const saturated = applyEvent(live, event('assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'text-delta', index: 2, text: huge },
+    }, 3, 30))
+    expect(saturated.live).toBe(live.live)
+    const saturatedThink = applyEvent(live, event('assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'reasoning-delta', index: 3, text: huge },
+    }, 4, 40))
+    expect(saturatedThink.live).toBe(live.live)
     const settled = foldAll([
       event('user/message', { id: 'u1', role: 'user', content: [text(huge)], source: { kind: 'user' } }, 0, 0),
       event('assistant/message', {
@@ -616,10 +688,40 @@ describe('session fold', () => {
       seq += 1
     }
     const state = foldFromLog(events).fold
-    expect(state.nodes.length).toBe(MAX_FOLD_NODES)
+    expect(state.nodes.length).toBeLessThanOrEqual(MAX_FOLD_NODES)
     expect(state.trace.length).toBe(MAX_TRACE)
     expect(state.stats.turns).toBe(turns)
-    expect(foldResidentChars(state)).toBeLessThan(MAX_FOLD_NODES * MAX_ASSISTANT_TEXT + MAX_TRACE * 200)
+    expect(foldResidentChars(state)).toBeLessThanOrEqual(MAX_FOLD_CHARS + MAX_TRACE * 200)
     expect(foldResidentChars(state)).toBeLessThan(turns * body.length)
+  })
+
+  it('yields during long replay and matches a synchronous fold', async () => {
+    const events = canonicalSequence()
+    const sync = foldFromLog(events).fold
+    const progress: number[] = []
+    const asyncFold = await foldFromLogYielding(events, undefined, {
+      yieldEvery: 3,
+      onProgress: (done) => { progress.push(done) },
+    })
+    expect(asyncFold.fold.nodes).toEqual(sync.nodes)
+    expect(progress.at(-1)).toBe(events.length)
+    expect(progress.length).toBeGreaterThan(1)
+  })
+
+  it('applies a suffix onto a seed fold and stops when aborted', async () => {
+    const prefix = foldAll([
+      event('user/message', { id: 'u1', role: 'user', content: [text('one')], source: { kind: 'user' } }, 1, 1),
+    ])
+    const suffix = [
+      event('user/message', { id: 'u2', role: 'user', content: [text('two')], source: { kind: 'user' } }, 2, 2),
+    ]
+    const seeded = await foldFromLogYielding(suffix, undefined, {
+      seed: { fold: prefix, scratch: createScratch() },
+    })
+    expect(seeded.fold.nodes.map(node => node.kind === 'user' ? node.text : '')).toEqual(['one', 'two'])
+    const abort = new AbortController()
+    abort.abort()
+    const stopped = await foldFromLogYielding(canonicalSequence(), undefined, { signal: abort.signal, yieldEvery: 1 })
+    expect(stopped.fold.nodes).toEqual([])
   })
 })

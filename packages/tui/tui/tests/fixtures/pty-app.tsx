@@ -2,14 +2,34 @@ import { runInk } from '../../src/render'
 import { createTuiStore } from '../../src/store'
 import type { TuiHost } from '../../src/render'
 import type { TuiNode } from '../../src/types'
+import { appendFileSync, writeFileSync } from 'node:fs'
 
-const nodes: TuiNode[] = Array.from({ length: 80 }, (_, index) => ({
+const requestedNodeCount = Number(process.env.TUI_PTY_NODE_COUNT ?? 80)
+const nodeCount = Number.isFinite(requestedNodeCount)
+  ? Math.max(1, Math.min(3_000, Math.floor(requestedNodeCount)))
+  : 80
+const requestedUpdateMs = Number(process.env.TUI_PTY_UPDATE_MS ?? 40)
+const updateMs = Number.isFinite(requestedUpdateMs)
+  ? Math.max(10, Math.min(1_000, Math.floor(requestedUpdateMs)))
+  : 40
+const memoryLog = process.env.TUI_PTY_MEMORY_LOG
+const memoryTimer = memoryLog === undefined
+  ? undefined
+  : (() => {
+    writeFileSync(memoryLog, '')
+    const record = (): void => {
+      appendFileSync(memoryLog, `${JSON.stringify({ at: Date.now(), ...process.memoryUsage() })}\n`)
+    }
+    record()
+    return setInterval(record, 1_000)
+  })()
+const nodes: TuiNode[] = Array.from({ length: nodeCount }, (_, index) => ({
   kind: 'user',
   id: index,
   text: `第${index}行 😀 ⚙ ${'long '.repeat(20)}`,
 }))
 
-const store = createTuiStore({
+const initial = {
   version: 0,
   nodes,
   trace: [],
@@ -59,16 +79,36 @@ const store = createTuiStore({
   compaction: false,
   sandbox: 'read-only',
   occupancy: null,
-})
+  resumeProgress: null,
+} as const
+
+const store = createTuiStore(initial)
+
+let sandbox: 'read-only' | 'workspace-write' | 'danger-full-access' = 'read-only'
 
 const host: TuiHost = {
-  submit: () => {},
+  submit: (text) => {
+    const current = store.getSnapshot()
+    store.set({
+      ...current,
+      version: current.version + 1,
+      nodes: [...current.nodes, { kind: 'user', id: Date.now(), text: `accepted:${text}` }],
+    })
+  },
   cancel: () => {},
   exit: () => {},
   newSession: () => {},
   selectModel: () => {},
   setEffort: () => {},
-  cycleSandbox: () => 'read-only',
+  cycleSandbox: () => {
+    sandbox = sandbox === 'read-only'
+      ? 'workspace-write'
+      : sandbox === 'workspace-write' ? 'danger-full-access' : 'read-only'
+    const current = store.getSnapshot()
+    store.set({ ...current, version: current.version + 1, sandbox })
+    return sandbox
+  },
+  cancelResume: () => {},
   approve: () => {},
   answerQuestion: () => {},
   updateSetting: () => Promise.resolve(),
@@ -91,4 +131,34 @@ const host: TuiHost = {
   forkSession: () => Promise.resolve(null),
 }
 
+const busyStartedAt = Date.now()
+const busyTimer = process.env.TUI_PTY_BUSY === '1'
+  ? setInterval(() => {
+    const current = store.getSnapshot()
+    const tick = current.stats.turns + 1
+    store.set({
+      ...current,
+      version: current.version + 1,
+      busy: true,
+      live: { text: '', think: `fixture thinking ${tick}`, thinkSince: busyStartedAt },
+      stats: { ...current.stats, turns: tick },
+      todos: [
+        { content: 'build', status: tick % 2 === 0 ? 'in_progress' : 'pending' },
+        { content: 'test', status: tick % 3 === 0 ? 'completed' : 'pending' },
+      ],
+      goal: {
+        objective: 'busy PTY fixture',
+        phase: 'active',
+        revision: tick,
+        roundsStarted: tick,
+        maxGoalRounds: 10_000,
+        createdAt: busyStartedAt,
+        updatedAt: Date.now(),
+      },
+    })
+  }, updateMs)
+  : undefined
+
 await runInk(store, host)
+if (busyTimer !== undefined) clearInterval(busyTimer)
+if (memoryTimer !== undefined) clearInterval(memoryTimer)

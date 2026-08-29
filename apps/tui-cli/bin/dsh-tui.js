@@ -15,7 +15,7 @@
 import { spawn } from 'node:child_process'
 import { readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Command } from 'commander'
 
@@ -26,6 +26,34 @@ const EXIT_OK = 0
 const EXIT_FAILURE = 1
 const EXIT_USAGE = 2
 const EXIT_INTERRUPT = 130
+
+/** Idempotent reset for every terminal mode the interactive TUI may enable. */
+export const INTERACTIVE_TERMINAL_RESET = [
+  '\x1b[?1000l',
+  '\x1b[?1002l',
+  '\x1b[?1003l',
+  '\x1b[?1006l',
+  '\x1b[?2004l',
+  '\x1b[?25h',
+  '\x1b[0 q',
+  '\x1b[?1049l',
+  '\x1b[0m',
+].join('')
+
+/**
+ * Restore the parent terminal after an interactive child exits, including a
+ * native fatal exit that bypassed every cleanup hook in the child process.
+ * @param stream - parent stdout, or a terminal fixture under tests.
+ * @returns nothing.
+ */
+export function restoreInteractiveTerminal(stream = process.stdout) {
+  if (stream.isTTY !== true) return
+  try {
+    stream.write(INTERACTIVE_TERMINAL_RESET)
+  } catch {
+    // Parent stdout may already be closed after a native child fatal.
+  }
+}
 
 /** This package's version, read from its own manifest (bin/ sits one level under the package root). */
 function readVersion() {
@@ -133,27 +161,53 @@ export function parseDshTuiArgs(argv, streams = { stdout: process.stdout, stderr
 }
 
 /**
- * Resolve the launcher bin this wrapper spawns. The published package ships
- * the built dsh runtime inside `runtime/` (a self-contained closure of the
- * workspace packages, so installing it needs no registry package beyond the
- * external dependencies); the monorepo dev layout falls back to the
- * workspace-installed `@deepseek-ai/dsh` package.
+ * Whether `child` is the same path as `parent` or a file under it.
+ * @param parent - directory that would own a bundled runtime.
+ * @param child - a resolved package.json path.
+ * @returns true when `child` lives inside `parent`.
+ */
+function pathIsInside(parent, child) {
+  const rel = relative(resolve(parent), resolve(child))
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
+
+/**
+ * Resolve the launcher bin this wrapper spawns.
+ * In the monorepo, use workspace `@deepseek-ai/dsh` (`apps/cli`) so TUI source
+ * edits run. The published package has no workspace dsh; it uses `runtime/`.
+ * A leftover `runtime/` copy in the repo must not shadow local edits.
  * @returns the absolute bin path.
  */
 export function resolveDshBinPath() {
+  const runtimeDir = fileURLToPath(new URL('../runtime/', import.meta.url))
+  try {
+    const manifestPath = require.resolve('@deepseek-ai/dsh/package.json')
+    if (!pathIsInside(runtimeDir, manifestPath)) {
+      const manifest = require('@deepseek-ai/dsh/package.json')
+      const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
+      if (typeof bin === 'string' && bin !== '') return join(dirname(manifestPath), bin)
+    }
+  } catch {
+    // Published installs do not depend on workspace `@deepseek-ai/dsh`.
+  }
   const bundledManifestPath = fileURLToPath(new URL('../runtime/package.json', import.meta.url))
   try {
     const manifest = JSON.parse(readFileSync(bundledManifestPath, 'utf8'))
     const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
     if (typeof bin === 'string' && bin !== '') return join(dirname(bundledManifestPath), bin)
   } catch {
-    // The bundled runtime is a release artifact; fall through to dev resolution.
+    // The bundled runtime is a release artifact.
   }
-  const manifestPath = require.resolve('@deepseek-ai/dsh/package.json')
-  const manifest = require('@deepseek-ai/dsh/package.json')
-  const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
-  if (typeof bin !== 'string' || bin === '') throw new Error('@deepseek-ai/dsh declares no dsh bin')
-  return join(dirname(manifestPath), bin)
+  throw new Error('@deepseek-ai/dsh declares no dsh bin')
+}
+
+/**
+ * Default diagnostic sink used when `runDsh` does not inject one.
+ * @param chunk - text to write.
+ * @returns nothing.
+ */
+export function writeLauncherStderr(chunk) {
+  process.stderr.write(chunk)
 }
 
 /**
@@ -165,9 +219,15 @@ export function resolveDshBinPath() {
  * @param translated - the internal argv (`--profile tui` first).
  * @param spawnImpl - the spawn function (real `spawn` in production, a fake in tests).
  * @param writeErr - diagnostic sink (process.stderr in production).
+ * @param restoreTerminal - parent-process terminal reset hook.
  * @returns the exit code to report.
  */
-export async function runDsh(translated, spawnImpl = spawn, writeErr = process.stderr.write.bind(process.stderr)) {
+export async function runDsh(
+  translated,
+  spawnImpl = spawn,
+  writeErr = writeLauncherStderr,
+  restoreTerminal = restoreInteractiveTerminal,
+) {
   let dshBinPath
   try {
     dshBinPath = resolveDshBinPath()
@@ -175,7 +235,14 @@ export async function runDsh(translated, spawnImpl = spawn, writeErr = process.s
     writeErr(`dsh-tui: ${error instanceof Error ? error.message : String(error)}\n`)
     return EXIT_FAILURE
   }
-  const child = spawnImpl(process.execPath, [dshBinPath, ...translated], { stdio: 'inherit' })
+  // React's development reconciler emits one User Timing measure per changed
+  // prop. Node retains those measures, so an interactive source launch with no
+  // NODE_ENV would grow until V8 reached its heap limit. The product launcher
+  // always boots the TUI dependency graph through production entry points.
+  const child = spawnImpl(process.execPath, [dshBinPath, ...translated], {
+    stdio: 'inherit',
+    env: { ...process.env, NODE_ENV: 'production' },
+  })
   const forward = (signal) => { try { child.kill(signal) } catch {} }
   const onSigint = () => forward('SIGINT')
   const onSigterm = () => forward('SIGTERM')
@@ -194,6 +261,7 @@ export async function runDsh(translated, spawnImpl = spawn, writeErr = process.s
   } finally {
     process.off('SIGINT', onSigint)
     process.off('SIGTERM', onSigterm)
+    if (!translated.some(argument => argument.startsWith('--print='))) restoreTerminal()
   }
   if (outcome.code !== null) return outcome.code
   if (outcome.signal === 'SIGINT') return EXIT_INTERRUPT

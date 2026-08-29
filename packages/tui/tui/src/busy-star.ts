@@ -6,11 +6,15 @@
 
 /** Star frames (one terminal cell each). */
 export const BUSY_STAR_FRAMES = ['✶', '✸', '✹', '✺', '✹', '✸'] as const
+/** Status-star interval while live think/text is on screen. */
+export const BUSY_STAR_INTERVAL_MS = 250
+/** Status-star interval while the turn is busy with no live text delta. */
+export const QUIET_BUSY_STAR_INTERVAL_MS = 400
 
 /**
  * Pick the star glyph for one animation frame. Color is a stable named
  * Ink color: the status bar must not pulse hues, only the glyph.
- * @param tick - monotonic frame counter (increments ~100ms while busy).
+ * @param tick - monotonic frame counter (increments while busy).
  * @returns the glyph and a fixed Ink color name.
  */
 export function busyStarFrame(tick: number): { glyph: string; color: string } {

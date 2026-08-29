@@ -65,6 +65,92 @@ export interface LiveWrapState {
   width: number
 }
 
+/** Incremental bookkeeping for the single visible live-Thinking body row. */
+export interface LiveThinkingTailState {
+  /** Cell-bounded tail, with a leading ellipsis when older text is hidden. */
+  tail: string
+  /** Bounded source suffix without the synthetic leading ellipsis. */
+  sourceTail: string
+  /** Bounded source suffix used to distinguish append from replacement. */
+  matchTail: string
+  /** Number of source code units already consumed. */
+  offset: number
+  width: number
+}
+
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/**
+ * Keep the end of one line within a display-cell budget without splitting a grapheme.
+ * The retained queue stays bounded to the visible suffix while a large source is scanned.
+ * @param value - one logical source line.
+ * @param width - terminal-cell budget.
+ * @returns the full line when it fits, otherwise an ellipsis plus its visible tail.
+ */
+function fitDisplayTail(value: string, width: number): { tail: string; sourceTail: string } {
+  const budget = Math.max(0, Math.floor(width))
+  if (budget === 0 || value === '') return { tail: '', sourceTail: '' }
+  const suffixBudget = Math.max(0, budget - 1)
+  let totalWidth = 0
+  let suffixWidth = 0
+  let head = 0
+  let suffix: { text: string; width: number }[] = []
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(value)) {
+    const segmentWidth = stringWidth(segment)
+    totalWidth += segmentWidth
+    suffix.push({ text: segment, width: segmentWidth })
+    suffixWidth += segmentWidth
+    while (suffixWidth > suffixBudget && head < suffix.length) {
+      suffixWidth -= suffix[head]?.width ?? 0
+      head += 1
+    }
+    if (head >= 256) {
+      suffix = suffix.slice(head)
+      head = 0
+    }
+  }
+  if (totalWidth <= budget) return { tail: value, sourceTail: value }
+  const sourceTail = suffix.slice(head).map(entry => entry.text).join('')
+  return { tail: `…${sourceTail}`, sourceTail }
+}
+
+/**
+ * Project only the visible tail of a growing Thinking stream. Appends inspect
+ * the new delta plus the previously bounded tail; a newline resets the tail.
+ * @param previous - prior incremental state, or null for a new stream.
+ * @param text - full accumulated reasoning text.
+ * @param width - terminal-cell budget after the `  │ ` prefix.
+ * @returns the next bounded tail state.
+ */
+export function projectLiveThinkingTail(
+  previous: LiveThinkingTailState | null,
+  text: string,
+  width: number,
+): LiveThinkingTailState {
+  const budget = Math.max(0, Math.floor(width))
+  const previousMatches = previous !== null
+    && previous.width === budget
+    && text.length >= previous.offset
+    && text.slice(Math.max(0, previous.offset - previous.matchTail.length), previous.offset) === previous.matchTail
+  if (previousMatches && text.length === previous.offset) return previous
+  let source: string
+  if (!previousMatches) {
+    const breakAt = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r'))
+    source = text.slice(breakAt + 1)
+  } else {
+    const delta = text.slice(previous.offset)
+    const breakAt = Math.max(delta.lastIndexOf('\n'), delta.lastIndexOf('\r'))
+    source = breakAt >= 0 ? delta.slice(breakAt + 1) : `${previous.sourceTail}${delta}`
+  }
+  const fitted = fitDisplayTail(source, budget)
+  return {
+    ...fitted,
+    matchTail: fitted.sourceTail === '' ? text.slice(-64) : fitted.sourceTail,
+    offset: text.length,
+    width: budget,
+  }
+}
+
 /**
  * Wrap live assistant text, reusing completed rows from the previous call
  * when the width is unchanged and the source only grew.

@@ -4,7 +4,10 @@ import { mkdtempSync, readFileSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { parseDshTuiArgs, resolveDshBinPath, runDsh, translateDshTuiArgs } from '../bin/dsh-tui.js'
+import {
+  INTERACTIVE_TERMINAL_RESET, parseDshTuiArgs, resolveDshBinPath, restoreInteractiveTerminal, runDsh,
+  translateDshTuiArgs,
+} from '../bin/dsh-tui.js'
 
 /** Commander output goes nowhere in tests. */
 const silent = { stdout: { write: () => {} }, stderr: { write: () => {} } }
@@ -116,8 +119,10 @@ describe('parseDshTuiArgs', () => {
 })
 
 describe('resolveDshBinPath', () => {
-  it('resolves the built dsh bin from the dependency manifest', () => {
-    expect(resolveDshBinPath()).toMatch(/lib[/\\]bin\.js$/)
+  it('resolves the workspace dsh bin, not a leftover bundled runtime', () => {
+    const bin = resolveDshBinPath()
+    expect(bin).toMatch(/apps[/\\]cli[/\\]lib[/\\]bin\.js$/)
+    expect(bin).not.toMatch(/tui-cli[/\\]runtime/)
   })
 })
 
@@ -139,6 +144,18 @@ describe('runDsh', () => {
     expect(await runDsh(['--profile', 'tui'], () => fakeSpawn({ code: 130 }), noWrite)).toBe(130)
   })
 
+  it('boots the TUI dependency graph through production React entry points', async () => {
+    let spawnOptions
+    await runDsh(['--profile', 'tui'], (_command, _args, options) => {
+      spawnOptions = options
+      return fakeSpawn({ code: 0 })
+    }, noWrite)
+    expect(spawnOptions).toMatchObject({
+      stdio: 'inherit',
+      env: { NODE_ENV: 'production' },
+    })
+  })
+
   it('maps signals to the launcher conventions', async () => {
     expect(await runDsh(['--profile', 'tui'], () => fakeSpawn({ signal: 'SIGINT' }), noWrite)).toBe(130)
     expect(await runDsh(['--profile', 'tui'], () => fakeSpawn({ signal: 'SIGTERM' }), noWrite)).toBe(0)
@@ -148,6 +165,35 @@ describe('runDsh', () => {
   it('reports a spawn failure as a failing exit', async () => {
     const outcome = await runDsh(['--profile', 'tui'], () => fakeSpawn({ error: new Error('ENOENT') }), noWrite)
     expect(outcome).toBe(1)
+  })
+
+  it('restores every interactive terminal mode after success, failure, or signal but skips print mode', async () => {
+    let restores = 0
+    const restore = () => { restores += 1 }
+    expect(await runDsh(['--profile', 'tui'], () => fakeSpawn({ code: 0 }), noWrite, restore)).toBe(0)
+    expect(await runDsh(['--profile', 'tui'], () => fakeSpawn({ code: 1 }), noWrite, restore)).toBe(1)
+    expect(await runDsh(['--profile', 'tui'], () => fakeSpawn({ signal: 'SIGKILL' }), noWrite, restore)).toBe(1)
+    expect(restores).toBe(3)
+    expect(await runDsh(['--profile', 'tui', '--print=task'], () => fakeSpawn({ code: 0 }), noWrite, restore)).toBe(0)
+    expect(restores).toBe(3)
+  })
+
+  it('writes an idempotent reset that disables mouse and paste modes and restores the screen', () => {
+    const chunks: string[] = []
+    restoreInteractiveTerminal({ isTTY: true, write: chunk => chunks.push(String(chunk)) })
+    expect(chunks).toEqual([INTERACTIVE_TERMINAL_RESET])
+    expect(INTERACTIVE_TERMINAL_RESET).toContain('\x1b[?1006l')
+    expect(INTERACTIVE_TERMINAL_RESET).toContain('\x1b[?2004l')
+    expect(INTERACTIVE_TERMINAL_RESET).toContain('\x1b[?25h')
+    expect(INTERACTIVE_TERMINAL_RESET).toContain('\x1b[0 q')
+    expect(INTERACTIVE_TERMINAL_RESET).toContain('\x1b[?1049l')
+    restoreInteractiveTerminal({ isTTY: false, write: () => { throw new Error('not a tty') } })
+    restoreInteractiveTerminal({
+      isTTY: true,
+      write: () => {
+        throw new Error('closed')
+      },
+    })
   })
 })
 

@@ -199,6 +199,45 @@ function walkFiles(dir) {
   return out
 }
 
+const PERF_DIAGNOSTIC_MARKERS = ['TUI_PERF', '[dsh-perf]', '[dsh-tui-tree]']
+const PERF_DIAGNOSTIC_EXTENSIONS = ['.js', '.mjs', '.cjs', '.json', '.ts', '.map']
+
+function isPerfDiagnosticPath(file) {
+  return /(?:^|[\\/])tui-perf(?:\.|$)/u.test(file)
+}
+
+function containsPerfDiagnosticMarker(file) {
+  if (!PERF_DIAGNOSTIC_EXTENSIONS.some(extension => file.endsWith(extension))) return false
+  const text = readFileSync(file, 'utf8')
+  return PERF_DIAGNOSTIC_MARKERS.some(marker => text.includes(marker))
+}
+
+/**
+ * Reject repository-only performance logging from npm payload JavaScript.
+ * @param {string[]} roots text trees included in the package.
+ * @returns {void}
+ */
+export function assertNoBundledPerfDiagnostics(roots) {
+  const visit = (current) => {
+    if (!existsSync(current)) return
+    const stat = statSync(current)
+    if (stat.isDirectory()) {
+      for (const entry of readdirSync(current)) visit(join(current, entry))
+      return
+    }
+    if (isPerfDiagnosticPath(current)) {
+      throw new Error(`assemble-runtime: npm payload contains repository-only performance module ${current}`)
+    }
+    if (!PERF_DIAGNOSTIC_EXTENSIONS.some(extension => current.endsWith(extension))) return
+    const text = readFileSync(current, 'utf8')
+    const marker = PERF_DIAGNOSTIC_MARKERS.find(value => text.includes(value))
+    if (marker !== undefined) {
+      throw new Error(`assemble-runtime: npm payload contains repository-only performance marker ${marker} in ${current}`)
+    }
+  }
+  for (const rootPath of roots) visit(rootPath)
+}
+
 /**
  * One package's runtime payload: everything built under `lib/` (the
  * published runtime of every workspace package), plus any top-level entry
@@ -285,7 +324,13 @@ function main() {
   // 2. Every workspace package in the closure, under runtime/node_modules/<name>.
   for (const [name, relDir] of [...workspace].sort()) {
     const manifest = JSON.parse(readFileSync(join(root, relDir, 'package.json'), 'utf8'))
-    const files = payloadFiles(root, relDir, manifest)
+    const payload = payloadFiles(root, relDir, manifest)
+    // Local builds may retain obsolete hashed chunks because the workspace
+    // bundler does not clean between faces. Repository-only TUI diagnostics
+    // are excluded even when such a stale chunk remains in lib/.
+    const files = name === '@deepseek-ai/dsh-tui'
+      ? payload.filter(file => !isPerfDiagnosticPath(file) && !containsPerfDiagnosticMarker(join(root, relDir, file)))
+      : payload
     const destination = join(runtimeDir, 'node_modules', name)
     const bytes = copyPayload(root, relDir, destination, files)
     if (bytes === 0) throw new Error(`assemble-runtime: package ${name} copied nothing (files ${JSON.stringify(manifest.files)})`)
@@ -312,10 +357,12 @@ function main() {
     throw new Error(`assemble-runtime: resolved Ink ${inkManifest.version} does not match wrapper dependency ${resolvedInkVersion ?? '(missing)'}`)
   }
   const cursorHelpers = readFileSync(join(inkRoot, 'build/cursor-helpers.js'), 'utf8')
+  const inkRuntime = readFileSync(join(inkRoot, 'build/ink.js'), 'utf8')
   const logUpdate = readFileSync(join(inkRoot, 'build/log-update.js'), 'utf8')
   const outputRenderer = readFileSync(join(inkRoot, 'build/output.js'), 'utf8')
   if (!cursorHelpers.includes('outputCursorRow - cursorPosition.y')
     || !cursorHelpers.includes('input.outputCursorRow')
+    || !inkRuntime.includes('requestImmediateInputRender')
     || !logUpdate.includes('outputCursorRow: lines.length - 1')
     || !logUpdate.includes('outputCursorRow: nextLines.length - 1')
     || !outputRenderer.includes("findLastIndex(cell => cell.value === '\\uE000')")
@@ -351,6 +398,10 @@ function main() {
     '',
   ].join('\n')
   writeFileSync(join(runtimeDir, 'NOTICE.md'), notice)
+  assertNoBundledPerfDiagnostics([
+    join(pkgDir, 'bin'),
+    join(runtimeDir, 'node_modules', '@deepseek-ai', 'dsh-tui'),
+  ])
   const mb = (totalBytes / 1048576).toFixed(1)
   console.log(`assemble-runtime: ${workspace.size + 1} packages, ${mb} MB payload, ${externals.size} external dependencies written to package.json`)
 }

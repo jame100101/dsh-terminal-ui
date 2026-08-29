@@ -26,6 +26,8 @@ export interface TranscriptLine {
   key: string
   text: string
   color?: string
+  /** Pass `color` to Ink unchanged instead of resolving it through the theme. */
+  exactColor?: boolean
   bold?: boolean
   dim?: boolean
   /** Waiting retry headers blink dim from a Transcript-local timer. */
@@ -39,7 +41,7 @@ export interface TranscriptLine {
   shimmerSince?: number
   /** Grok prompt-block fill (`bg = light`): a gray bar behind user rows. */
   background?: boolean
-  runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string }[]
+  runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string; exactColor?: boolean }[]
   /** Node whose disclosure arrow owns this header line. */
   disclosureNodeId?: number
   /** Thinking arrows toggle the global display; other arrows toggle one node. */
@@ -89,6 +91,40 @@ export function selectTranscriptViewport(
 
 /** Extra projected rows above and below the visible transcript slice. */
 export const TRANSCRIPT_LINE_OVERSCAN = 32
+
+/**
+ * Exclusive prefix sums of block heights: `prefix[0] === 0` and
+ * `prefix[i + 1] === sum(lengths[0..i])`.
+ * @param lengths - per-block row counts.
+ * @returns a prefix array one longer than `lengths`.
+ */
+export function exclusivePrefixSums(lengths: readonly number[]): number[] {
+  const prefix = new Array<number>(lengths.length + 1)
+  prefix[0] = 0
+  for (let index = 0; index < lengths.length; index += 1) {
+    prefix[index + 1] = (prefix[index] ?? 0) + Math.max(0, Math.floor(lengths[index] ?? 0))
+  }
+  return prefix
+}
+
+/**
+ * Block whose start line is the last prefix entry `<= line`.
+ * @param prefix - exclusive prefix sums.
+ * @param line - absolute transcript line.
+ * @returns a block index, or 0 when the prefix is empty.
+ */
+export function nodeIndexAtLine(prefix: readonly number[], line: number): number {
+  if (prefix.length <= 1) return 0
+  let lo = 0
+  let hi = prefix.length - 2
+  const target = Math.max(0, Math.floor(line))
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2)
+    if ((prefix[mid] ?? 0) <= target) lo = mid
+    else hi = mid - 1
+  }
+  return lo
+}
 
 /** One overscan window over per-node (or tail) line blocks. */
 export interface TranscriptBlocksWindow {
@@ -335,6 +371,8 @@ export interface ComposerLayout {
   caretColumn: number
   /** Index into the full wrap of the first visible line. */
   windowStart: number
+  /** Full wrap ranges; callers reuse this instead of wrapping `value` again. */
+  ranges: ComposerLineRange[]
 }
 
 /**
@@ -359,22 +397,38 @@ export function selectComposerLayout(
 ): ComposerLayout {
   const lineWidth = Math.max(1, Math.floor(width))
   const bounded = Math.max(0, Math.min(cursorOffset, value.length))
-  const prefix = value.slice(0, bounded)
-  const prefixLines = wrapComposerText(prefix, lineWidth)
-  const lines = wrapComposerText(value, lineWidth)
-  let caretLineIndex = Math.max(0, Math.min(prefixLines.length - 1, lines.length - 1))
-  const caretLineText = prefixLines[caretLineIndex] ?? ''
-  const caretLineWidth = stringWidth(caretLineText)
-  let caretColumn = caretLineWidth
-  // An exactly-filled row places the caret at the START of the next line.
-  if (caretLineWidth >= lineWidth && bounded < value.length) {
-    caretColumn = 0
-    caretLineIndex = Math.min(caretLineIndex + 1, Math.max(0, lines.length - 1))
+  const ranges = wrapComposerRanges(value, lineWidth)
+  let caretLineIndex = 0
+  for (let index = 0; index < ranges.length; index += 1) {
+    const row = ranges[index]
+    if (row === undefined) continue
+    if (bounded > row.end) {
+      caretLineIndex = index
+      continue
+    }
+    if (bounded < row.start) break
+    caretLineIndex = index
+    break
   }
+  const caretRow = ranges[caretLineIndex]
+  const prefix = value.slice(caretRow?.start ?? 0, bounded)
+  let caretColumn = stringWidth(prefix)
+  // An exactly-filled row places the caret at the START of the next line.
+  if (caretColumn >= lineWidth && bounded < value.length) {
+    caretColumn = 0
+    caretLineIndex = Math.min(caretLineIndex + 1, Math.max(0, ranges.length - 1))
+  }
+  const lines = ranges.map(range => range.text)
   const windowMax = Math.max(1, maxLines)
   const start = Math.max(0, Math.min(caretLineIndex - windowMax + 1, Math.max(0, lines.length - windowMax)))
   const visibleLines = lines.slice(start, start + windowMax)
-  return { visibleLines, caretLine: caretLineIndex - start, caretColumn, windowStart: start }
+  return {
+    visibleLines,
+    caretLine: caretLineIndex - start,
+    caretColumn,
+    windowStart: start,
+    ranges,
+  }
 }
 
 /** One wrapped composer row and its source offsets. */
@@ -426,11 +480,6 @@ export function wrapComposerRanges(value: string, width: number): ComposerLineRa
     offset += source.length + (partIndex === parts.length - 1 ? 0 : 1)
   }
   return out.length === 0 ? [{ text: '', start: 0, end: 0 }] : out
-}
-
-/** Hard-wrap one composer value by cells, keeping empty lines (multi-line input). */
-function wrapComposerText(value: string, width: number): string[] {
-  return wrapComposerRanges(value, width).map(range => range.text)
 }
 
 /** Display cells taken by `› ` on wrap line 0 and the matching indent on later rows. */

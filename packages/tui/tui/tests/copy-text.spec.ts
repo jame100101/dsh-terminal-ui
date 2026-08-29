@@ -7,7 +7,7 @@ const assistant = (id: number, text: string): TuiNode => ({
   kind: 'assistant', id, text, messageId: `m${id}`,
 })
 const tool = (id: number, text: string): TuiNode => ({
-  kind: 'tool', id, detail: 'bash ls', status: 'done', text, args: undefined, callCard: null, resultCard: null,
+  kind: 'tool', id, callId: `c${id}`, name: 'bash', detail: 'bash ls', status: 'done', text, args: undefined, callCard: null, resultCard: null,
 })
 
 describe('semantic copy text', () => {

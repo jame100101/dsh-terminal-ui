@@ -22,6 +22,20 @@ export function shouldCoalesceSessionEvent(event: SessionEvent): boolean {
   return chunk.type === 'text-delta' || chunk.type === 'reasoning-delta'
 }
 
+/**
+ * Saturated live bodies keep the same `live` and `nodes` references. Those
+ * deltas must not schedule a UI publish: the projection did not change.
+ * @param previous - fold before this event.
+ * @param next - fold after this event.
+ * @returns whether the coalesced publisher should run.
+ */
+export function shouldPublishCoalescedFold(
+  previous: { readonly live: unknown; readonly nodes: unknown },
+  next: { readonly live: unknown; readonly nodes: unknown },
+): boolean {
+  return next.live !== previous.live || next.nodes !== previous.nodes
+}
+
 /** Schedule/cancel pair used by the scheduler (injectable in tests). */
 export interface PublishTimer {
   schedule: (callback: () => void, delayMs: number) => unknown

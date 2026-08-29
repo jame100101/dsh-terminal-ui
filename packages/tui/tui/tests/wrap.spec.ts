@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
+import stringWidth from 'string-width'
 import {
-  LIVE_ASSISTANT_CURSOR, LIVE_ASSISTANT_PREFIX, padEndDisplay, wrapDisplayLines, wrapLiveAssistantText,
+  LIVE_ASSISTANT_CURSOR, LIVE_ASSISTANT_PREFIX, padEndDisplay, projectLiveThinkingTail, wrapDisplayLines,
+  wrapLiveAssistantText,
 } from '../src/wrap'
 
 describe('wrapDisplayLines', () => {
@@ -68,5 +70,48 @@ describe('wrapLiveAssistantText', () => {
       wrapDisplayLines(`${LIVE_ASSISTANT_PREFIX}short${LIVE_ASSISTANT_CURSOR}`, 10),
     )
     expect(second.offset).toBe(5)
+  })
+})
+
+describe('projectLiveThinkingTail', () => {
+  it('keeps an appended CJK stream inside the cell budget', () => {
+    let text = ''
+    let state = projectLiveThinkingTail(null, text, 9)
+    for (const chunk of ['第一段', '第二段', '第三段']) {
+      text += chunk
+      state = projectLiveThinkingTail(state, text, 9)
+    }
+    expect(stringWidth(state.tail)).toBeLessThanOrEqual(9)
+    expect(state.tail.startsWith('…')).toBe(true)
+    expect(state.tail.endsWith('三段')).toBe(true)
+    expect(state.offset).toBe(text.length)
+  })
+
+  it('resets to text after the latest streamed line break', () => {
+    const first = projectLiveThinkingTail(null, 'old tail', 20)
+    const second = projectLiveThinkingTail(first, 'old tail\nnew tail', 20)
+    expect(second.tail).toBe('new tail')
+  })
+
+  it('returns the previous state for an unchanged stream', () => {
+    const first = projectLiveThinkingTail(null, 'same', 20)
+    expect(projectLiveThinkingTail(first, 'same', 20)).toBe(first)
+  })
+
+  it('reprojects a replacement that keeps the same source length', () => {
+    const first = projectLiveThinkingTail(null, 'old value', 20)
+    const second = projectLiveThinkingTail(first, 'new value', 20)
+    expect(second.tail).toBe('new value')
+    const emptyTail = projectLiveThinkingTail(null, 'abc\n', 20)
+    expect(projectLiveThinkingTail(emptyTail, 'abcd', 20).tail).toBe('abcd')
+  })
+
+  it('retains only a bounded suffix after a large no-newline stream', () => {
+    const first = projectLiveThinkingTail(null, '字'.repeat(100_000), 80)
+    const second = projectLiveThinkingTail(first, `${'字'.repeat(100_000)}追加`, 80)
+    expect(stringWidth(first.tail)).toBeLessThanOrEqual(80)
+    expect(stringWidth(second.tail)).toBeLessThanOrEqual(80)
+    expect(second.tail.length).toBeLessThan(100)
+    expect(second.tail.endsWith('追加')).toBe(true)
   })
 })

@@ -1,7 +1,10 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { bundleRowPackages, externalDependencies, runtimeClosure, semverMax } from '../scripts/assemble-runtime.mjs'
+import {
+  assertNoBundledPerfDiagnostics, bundleRowPackages, externalDependencies, runtimeClosure, semverMax,
+} from '../scripts/assemble-runtime.mjs'
 
 const root = join(import.meta.dirname, '..', '..', '..')
 
@@ -16,6 +19,25 @@ describe('semverMax', () => {
     expect(semverMax('8.3.0', '15.0.0')).toBe('15.0.0')
     expect(semverMax('19.2.8', '18.3.1')).toBe('19.2.8')
     expect(semverMax('7.2.0', '7.2.0')).toBe('7.2.0')
+  })
+})
+
+describe('npm performance-diagnostic exclusion', () => {
+  it('accepts ordinary runtime code and rejects a performance logger marker', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'dsh-tui-pack-gate-'))
+    try {
+      const file = join(directory, 'index.js')
+      writeFileSync(file, 'export const value = 1\n')
+      expect(() => assertNoBundledPerfDiagnostics([directory])).not.toThrow()
+      writeFileSync(file, 'process.env.TUI_PERF\n')
+      expect(() => assertNoBundledPerfDiagnostics([directory])).toThrow(/repository-only performance marker/u)
+      const declaration = join(directory, 'tui-perf.d.ts')
+      writeFileSync(file, 'export const value = 1\n')
+      writeFileSync(declaration, 'export declare const enabled: boolean\n')
+      expect(() => assertNoBundledPerfDiagnostics([directory])).toThrow(/repository-only performance module/u)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 
@@ -85,14 +107,20 @@ describe('assembled runtime (when present)', () => {
   it('ships the launcher bin, the agent-preset config, the bundle patches, and patched Ink', () => {
     const runtime = join(root, 'apps/tui-cli/runtime')
     if (!existsSync(runtime)) return // built at release time; skip when absent
+    expect(() => assertNoBundledPerfDiagnostics([
+      join(root, 'apps/tui-cli/bin'),
+      join(runtime, 'node_modules/@deepseek-ai/dsh-tui'),
+    ])).not.toThrow()
     expect(existsSync(join(runtime, 'lib/bin.js'))).toBe(true)
     expect(existsSync(join(runtime, 'config/agent-presets'))).toBe(true)
     expect(existsSync(join(runtime, 'node_modules/@deepseek-ai/dsh-tui-app/cordis.patch.yml'))).toBe(true)
     const cursorHelpers = readFileSync(join(runtime, 'node_modules/ink/build/cursor-helpers.js'), 'utf8')
+    const inkRuntime = readFileSync(join(runtime, 'node_modules/ink/build/ink.js'), 'utf8')
     const logUpdate = readFileSync(join(runtime, 'node_modules/ink/build/log-update.js'), 'utf8')
     const outputRenderer = readFileSync(join(runtime, 'node_modules/ink/build/output.js'), 'utf8')
     expect(cursorHelpers).toContain('outputCursorRow - cursorPosition.y')
     expect(cursorHelpers).toContain('input.outputCursorRow')
+    expect(inkRuntime).toContain('requestImmediateInputRender')
     expect(logUpdate).toContain('outputCursorRow: lines.length - 1')
     expect(logUpdate).toContain('outputCursorRow: nextLines.length - 1')
     expect(outputRenderer).toContain("findLastIndex(cell => cell.value === '\\uE000')")

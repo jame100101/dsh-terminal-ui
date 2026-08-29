@@ -42,14 +42,14 @@ interface PtyHarness {
   waitForExit: () => Promise<void>
 }
 
-function spawnFixture(columns: number, rows: number): PtyHarness {
+function spawnFixture(columns: number, rows: number, env: Record<string, string> = {}): PtyHarness {
   const terminal = new xtermHeadless.Terminal({ cols: columns, rows, allowProposedApi: true, scrollback: 0 })
   const pty = nodePty.spawn(process.execPath, ['--import', 'tsx/esm', fixture], {
     cols: columns,
     rows,
     cwd: process.cwd(),
     name: 'xterm-256color',
-    env: { ...process.env, CI: 'false', TERM: 'xterm-256color' },
+    env: { ...process.env, CI: 'false', NODE_ENV: 'production', TERM: 'xterm-256color', ...env },
   })
   activePtys.add(pty)
   let output = ''
@@ -89,6 +89,11 @@ function spawnFixture(columns: number, rows: number): PtyHarness {
       terminal.resize(nextColumns, nextRows)
       pty.resize(nextColumns, nextRows)
       await settleWrite(before)
+      // The first ConPTY chunk is Ink's resize-listener reset. The matching
+      // React commit remeasures the composer and emits the native cursor
+      // suffix in a later chunk, so wait through that second paint.
+      await delay(120)
+      await parsed
     },
     waitForExit: async () => {
       await Promise.race([
@@ -124,7 +129,10 @@ function expectCaretOnComposer(terminal: InstanceType<typeof xtermHeadless.Termi
   const lines = screenLines(terminal)
   const composerRow = composerTopRow(lines)
   expect(composerRow, `composer missing from screen:\n${lines.join('\n')}`).toBeGreaterThanOrEqual(0)
-  expect(terminal.buffer.active.cursorY).toBe(composerRow + caretLine)
+  expect(
+    terminal.buffer.active.cursorY,
+    `cursor=${terminal.buffer.active.cursorY} composer=${composerRow} caretLine=${caretLine}\n${lines.join('\n')}`,
+  ).toBe(composerRow + caretLine)
 }
 
 function expectScrollbarColumn(
@@ -230,5 +238,35 @@ describe('production TUI through a real PTY', () => {
     await harness.waitForExit()
     expect(harness.terminal.buffer.active.type).toBe('normal')
     expect(harness.output().lastIndexOf('\x1b[?1049l')).toBeLessThan(harness.output().lastIndexOf('\x1b[?25h'))
+  }, 30_000)
+
+  it('keeps busy-turn input, permission cycling, animation, and history scrolling responsive', async () => {
+    const harness = spawnFixture(80, 24, { TUI_PTY_BUSY: '1' })
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('Thinking')))
+    const started = Date.now()
+
+    // Enhanced keyboard terminals emit press/repeat/release for one
+    // Shift+Tab. Only the press rotates permission, and later prompt/turn
+    // paints retain that selected mode.
+    await harness.send('\x1b[9;2u')
+    await harness.send('\x1b[9;2:2u')
+    await harness.send('\x1b[9;2:3u')
+    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('workspace write')), 3_000)
+
+    await harness.send('中文字')
+    await harness.send('\x7f')
+    await harness.send('busy-probe')
+    await harness.send('\r')
+    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('accepted:中文busy-probe')), 3_000)
+    await new Promise<void>(resolve => setTimeout(resolve, 200))
+    expect(screenLines(harness.terminal).some(line => line.includes('workspace write'))).toBe(true)
+    await harness.send('\x1b[5~')
+    await harness.send('\x1b[6~')
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(harness.output().length).toBeLessThan(2_000_000)
+
+    harness.pty.kill()
+    await harness.waitForExit()
   }, 30_000)
 })

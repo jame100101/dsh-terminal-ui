@@ -54,6 +54,10 @@ describe('image chips', () => {
       attachments: ['path-only'],
     })
     expect(insertImageChip('', 0, '[Image #3]').draft).toBe('[Image #3]')
+    expect(reconcileImageChips('[Image #1] hello', '[Image #1] hello!', [])).toEqual({
+      draft: '[Image #1] hello!',
+      attachments: [],
+    })
   })
 
   it('treats Backspace and Delete inside a chip as one atomic edit', () => {

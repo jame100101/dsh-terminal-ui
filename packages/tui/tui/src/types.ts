@@ -18,6 +18,12 @@ export type TuiNode =
   | {
     kind: 'tool'
     id: number
+    /** Opaque Harness call id; pairs `tool/call` with `tool/result`. */
+    callId: string
+    /** Tool name from the call event, not parsed from `detail`. */
+    name: string
+    /** Parent call id when this row is a Code Mode sub-dispatch. */
+    parentCallId?: string
     detail: string
     status: ToolStatus
     text: string

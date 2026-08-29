@@ -15,7 +15,10 @@ import { render } from 'ink'
 import stringWidth from 'string-width'
 import { marked } from 'marked'
 import xtermHeadless from '@xterm/headless'
-import { App, brandGlyph, permissionColor, permissionLabel, statusActivityColor, traceLineColor } from '../src/render'
+import {
+  App, brandGlyph, permissionColor, permissionLabel, resolveTranscriptLineColor, statusActivityColor, traceLineColor,
+  WELCOME_CARD_COLOR,
+} from '../src/render'
 import { settingsTabCell } from '../src/settings-chrome'
 import { composerTextWrapWidth, selectComposerLayout, selectTerminalFrameWidth } from '../src/viewport'
 
@@ -64,20 +67,9 @@ afterEach(() => {
 
 const originalWrite = process.stdout.write
 
-/** Strip ANSI escapes so rendered rows can be indexed. */
-function plain(output: string): string[] {
-  return output
-    .replace(/\x1b\][^\x07]*\x07/g, '')
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
-    .split('\n')
-}
-
-/** The last frame's rows (each frame starts with the header title). */
-function lastFrameLines(output: string): string[] {
-  const marker = 'DSH-TUI'
-  const index = output.lastIndexOf(marker)
-  if (index === -1) throw new Error(`header not found in ${JSON.stringify(output.slice(0, 400))}`)
-  return plain(output.slice(index))
+/** The painted terminal rows after every CUP/ED write, not the raw byte stream. */
+function lastFrameLines(capture: Capture): string[] {
+  return capture.screenLines()
 }
 
 /** Number of rendered rows in a frame (a trailing newline adds one entry). */
@@ -159,11 +151,25 @@ class Screen {
         const final = match[2] ?? ''
         index += match[0].length
         switch (final) {
-          case 'J':
-            if (params[0] === 2 || params[0] === 3) {
+          case 'J': {
+            const mode = Number.isFinite(params[0]) ? params[0] : 0
+            if (mode === 2 || mode === 3) {
               for (const row of this.rows) row.fill(' ')
+            } else if (mode === 0) {
+              const current = this.rows[this.y]
+              if (current !== undefined) {
+                for (let column = this.x; column < current.length; column += 1) current[column] = ' '
+              }
+              for (let row = this.y + 1; row < this.rows.length; row += 1) this.rows[row]?.fill(' ')
+            } else if (mode === 1) {
+              for (let row = 0; row < this.y; row += 1) this.rows[row]?.fill(' ')
+              const current = this.rows[this.y]
+              if (current !== undefined) {
+                for (let column = 0; column <= this.x && column < current.length; column += 1) current[column] = ' '
+              }
             }
             break
+          }
           case 'K':
             this.rows[this.y]?.fill(' ')
             break
@@ -305,6 +311,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     compaction: false,
     sandbox: 'read-only',
     occupancy: null,
+    resumeProgress: null,
   })
   const host: TuiHost = {
     submit: () => {},
@@ -314,6 +321,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     selectModel: () => {},
     setEffort: () => {},
     cycleSandbox: () => 'read-only',
+    cancelResume: () => {},
     approve: () => {},
     answerQuestion: () => {},
     updateSetting: () => Promise.resolve(),
@@ -339,7 +347,17 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
   const stdin = fakeStdin()
   const instance = render(
     createElement(App, { store, host }),
-    { exitOnCtrlC: false, patchConsole: false, alternateScreen: true, interactive: true, stdout: capture as never, stdin: stdin as never },
+    {
+      exitOnCtrlC: false,
+      patchConsole: false,
+      alternateScreen: true,
+      interactive: true,
+      incrementalRendering: true,
+      windowsFullscreenDiff: true,
+      coalesceBackpressuredFrames: true,
+      stdout: capture as never,
+      stdin: stdin as never,
+    },
   )
   // Ink 7 probes the kitty keyboard protocol for the first ~200ms after
   // mount (a 'data' listener swallows input during that window); settle past
@@ -353,7 +371,7 @@ describe('Ink 7 full-screen render', () => {
   it('fills the terminal exactly and anchors the caret through Ink’s own cursor suffix', async () => {
     const { capture, unmount, type } = await mount()
     try {
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(frameRows(lines)).toBe(ROWS)
       // The first-load whale banner: fixed-canvas half-block art + compact wordmark.
       expect(lines.some(line => line.includes('▄▄▄██████████████▀'))).toBe(true) // whale silhouette
@@ -429,14 +447,71 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 60_000)
 
+  it('does not leave overlapping chrome after shrinking the terminal', async () => {
+    const nodes: TuiNode[] = [{
+      kind: 'assistant',
+      id: 1,
+      messageId: 'message-1',
+      text: Array.from({ length: 12 }, (_, index) => `代码开发：实现新功能、修复 bug、重构代码 ${index} 研究与探索`).join('\n'),
+    }]
+    const mounted = await mount(nodes)
+    try {
+      mounted.capture.columns = 40
+      mounted.capture.rows = 18
+      mounted.capture.emit('resize')
+      await new Promise<void>(resolve => setTimeout(resolve, 400))
+      const lines = mounted.capture.screenLines()
+      const hits = (needle: string): number => lines.filter(line => line.includes(needle)).length
+      expect(hits('DSH-TUI')).toBe(1)
+      expect(hits('Shift+Tab')).toBeLessThanOrEqual(1)
+      expect(hits('权限')).toBeLessThanOrEqual(1)
+      expect(hits('idle')).toBeLessThanOrEqual(1)
+    } finally {
+      mounted.unmount()
+    }
+  }, 20_000)
+
+  it('does not duplicate chrome after a same-size CJK transcript rewrite', async () => {
+    const textOf = (label: string): string =>
+      Array.from({ length: 12 }, (_, index) => `${label}：实现新功能、修复 bug、重构代码 ${index} 研究与探索`).join('\n')
+    const nodes: TuiNode[] = [{
+      kind: 'assistant',
+      id: 1,
+      messageId: 'message-1',
+      text: textOf('代码开发'),
+    }]
+    const mounted = await mount(nodes)
+    try {
+      const snapshot = mounted.store.getSnapshot()
+      mounted.store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        nodes: [{ kind: 'assistant', id: 1, messageId: 'message-1', text: textOf('会话内容') }],
+      })
+      await new Promise<void>(resolve => setTimeout(resolve, 400))
+      const lines = mounted.capture.screenLines()
+      const hits = (needle: string): number => lines.filter(line => line.includes(needle)).length
+      expect(hits('DSH-TUI')).toBe(1)
+      expect(hits('Shift+Tab')).toBeLessThanOrEqual(1)
+      expect(hits('权限')).toBeLessThanOrEqual(1)
+      expect(hits('idle')).toBeLessThanOrEqual(1)
+      expect(lines.some(line => line.includes('会话内容'))).toBe(true)
+      if (process.platform === 'win32') {
+        expect(mounted.capture.output.includes('\u001B[1;1H\u001B[J')).toBe(true)
+      }
+    } finally {
+      mounted.unmount()
+    }
+  }, 20_000)
+
   it('shows the slash picker and dismisses it with Escape', async () => {
     const { capture, unmount, type } = await mount()
     try {
       await type('/')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       await type('\x1b')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(false)
     } finally {
       unmount()
@@ -470,14 +545,14 @@ describe('Ink 7 full-screen render', () => {
       const snapshot = store.getSnapshot()
       store.set({ ...snapshot, version: snapshot.version + 1, busy: true, live: { text: '正在流式回答', think: '思考中', thinkSince: Date.now() } })
       await type('/')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       // The palette lists commands ALPHABETICALLY (a→z), so the selection
       // starts on /attach; /help is still listed.
       expect(lines.some(line => line.includes('▸ /attach'))).toBe(true)
       expect(lines.some(line => line.includes('/help'))).toBe(true)
       await type('\x1b[B')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       expect(lines.some(line => line.includes('▸ /clear'))).toBe(true)
       expect(lines.some(line => line.includes('▸ /attach'))).toBe(false)
@@ -492,7 +567,7 @@ describe('Ink 7 full-screen render', () => {
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       stdin.write('/')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       // The ESC head of a split `\x1b[B` arrives alone (Ink flushes pending
       // escapes after 20ms); the tail lands later, inside the 60ms confirm
@@ -502,7 +577,7 @@ describe('Ink 7 full-screen render', () => {
       await new Promise<void>(resolve => setTimeout(resolve, 40))
       stdin.write('[B')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       expect(lines.some(line => line.includes('▸ /clear'))).toBe(true)
       expect(lines.some(line => line.includes('› /'))).toBe(true)
@@ -519,22 +594,25 @@ describe('Ink 7 full-screen render', () => {
     }))
     const { capture, unmount, type } = await mount(nodes)
     try {
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
       // One wheel-up tick hides 3 lines and pins the back button.
       await type('\x1b[<64;10;5M')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(true)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(false)
+      const painted = capture.screenLines()
+      expect(painted.filter(line => line.includes('DSH-TUI')).length).toBe(1)
+      expect(painted.filter(line => line.includes('▼ 回到底部') || line.includes('back to bottom')).length).toBe(1)
       // A wheel-down tick brings the newest lines back.
       await type('\x1b[<65;10;5M')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(true)
       // PgDn keeps working as the follow-mode accelerator.
       await type('\x1b[<64;10;5M')
       await type('\x1b[6~')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
     } finally {
       unmount()
@@ -549,7 +627,7 @@ describe('Ink 7 full-screen render', () => {
     try {
       // Scroll up once: the rail and the thumb appear on the right edge.
       await type('\x1b[5~')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.endsWith('█'))).toBe(true)
       const transcriptRows = capture.screenLines().slice(4).filter(line => line.trimEnd().endsWith('█'))
       expect(transcriptRows.length).toBeGreaterThan(3)
@@ -559,20 +637,20 @@ describe('Ink 7 full-screen render', () => {
       // OLDEST lines.
       await type('\x1b[<0;99;5M')
       await type('\x1b[<0;99;5m')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ 第0行'))).toBe(true)
       // Drag (button-motion) partway down: the oldest lines leave the frame
       // while the back-to-bottom button stays pinned.
       await type('\x1b[<0;100;5M')
       await type('\x1b[<32;100;14M')
       await type('\x1b[<0;100;14m')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ 第0行'))).toBe(false)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(true)
       // A press on the bottom content row returns to the newest lines.
       await type('\x1b[<0;99;23M')
       await type('\x1b[<0;99;23m')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(true)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
     } finally {
@@ -605,7 +683,7 @@ describe('Ink 7 full-screen render', () => {
         queued: [{ text: '排队任务'.repeat(100), steer: false }],
       })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(frameRows(lines)).toBe(ROWS)
       // Every transcript row still ends in exactly one gutter cell (rail or
       // thumb) — never wrapped text pushed into or out of the column.
@@ -742,13 +820,13 @@ describe('Ink 7 full-screen render', () => {
       // inert, the other row carries the select action.
       await type('/presets')
       await type('\r')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('预设'))).toBe(true)
       expect(lines.some(line => line.includes('● code'))).toBe(true)
       // The current preset is inert, so the selection lands on minimal.
       await type('\r')
       expect(switched).toEqual(['minimal'])
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('已切换当前会话到预设 minimal'))).toBe(true)
       expect(lines.some(line => line.includes('预设'))).toBe(true)
     } finally {
@@ -783,7 +861,7 @@ describe('Ink 7 full-screen render', () => {
         store.set({ ...snapshot, version: snapshot.version + 1, busy: false, live: null })
       }
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(frameRows(lines)).toBe(ROWS)
       // The live Thinking spinner appears exactly once, not once per tick.
       const thinkingRows = lines.filter(line => line.includes('Thinking'))
@@ -818,6 +896,36 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
+  it('keeps a long no-newline live Thinking tail responsive and on one row', async () => {
+    const { store, capture, unmount } = await mount([{ kind: 'user', id: 1, text: 'hi' }])
+    try {
+      capture.columns = 30
+      capture.rows = 20
+      capture.emit('resize')
+      let think = ''
+      for (let tick = 0; tick < 20; tick += 1) {
+        think += '实时推理内容'.repeat(40)
+        const snapshot = store.getSnapshot()
+        store.set({
+          ...snapshot,
+          version: snapshot.version + 1,
+          busy: true,
+          live: { text: '', think, thinkSince: Date.now() - tick * 100 },
+        })
+        await new Promise<void>(resolve => setTimeout(resolve, 10))
+      }
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      const lines = lastFrameLines(capture)
+      const tails = lines.filter(line => line.includes('│'))
+      expect(frameRows(lines)).toBe(20)
+      expect(tails).toHaveLength(1)
+      expect(tails[0]).toContain('…')
+      expect(stringWidth(tails[0] ?? '')).toBeLessThanOrEqual(30)
+    } finally {
+      unmount()
+    }
+  })
+
   it('leaves idle Tab inert and keeps arrows/Space/text owned by the composer', async () => {
     const rates: { messageId: string; rating: 'positive' | 'negative' }[] = []
     const nodes: TuiNode[] = [
@@ -833,20 +941,20 @@ describe('Ink 7 full-screen render', () => {
     try {
       // Tab no longer enters a transcript-selection mode.
       await type('\t')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('» '))).toBe(false)
       // With no submitted input, ↑/↓ remain history navigation and do
       // not move a transcript cursor onto either message.
       await type('\x1b[A')
       await type('\x1b[B')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('» '))).toBe(false)
       // Space and ordinary keys are inserted into the composer after Tab.
       await type(' ')
       await type('g')
       await type('b')
       expect(rates).toEqual([])
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('›  gb'))).toBe(true)
     } finally {
       unmount()
@@ -874,23 +982,23 @@ describe('Ink 7 full-screen render', () => {
         ],
       })
       await type('/')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('review-code'))).toBe(false)
       await type('skills')
       await type('\r')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('Skills（↑↓ 选择'))).toBe(true)
       expect(lines.filter(line => line.includes('review-code'))).toHaveLength(1)
       expect(lines.some(line => line.includes('without ever wrapping'))).toBe(true)
       expect(lines.some(line => line.includes('must stay hidden'))).toBe(false)
       await type('\r')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› /review-code'))).toBe(true)
       await type('check this')
       await type('\r')
       expect(submitted).toEqual(['/review-code check this'])
       await type('/compact')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('/compact') && line.includes('压缩'))).toBe(true)
       expect(lines.some(line => line.includes('must stay hidden'))).toBe(false)
     } finally {
@@ -929,7 +1037,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\r')
       expect(capture.screenLines().some(line => line.includes('other session'))).toBe(true)
       expect(composerInputRow(capture.screenLines())).toBe(baseline)
-      expect(frameRows(lastFrameLines(capture.output))).toBe(ROWS)
+      expect(frameRows(lastFrameLines(capture))).toBe(ROWS)
     } finally {
       unmount()
     }
@@ -947,10 +1055,10 @@ describe('Ink 7 full-screen render', () => {
     try {
       await type('@Ear')
       await type('')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('@Earlier work') && line.includes('会话'))).toBe(true)
       await type('\t')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('Earlier work') && line.includes('dsh-session:'))).toBe(true)
       await type('\r')
       expect(submitted).toEqual([mention])
@@ -1054,7 +1162,7 @@ describe('Ink 7 full-screen render', () => {
     })
     try {
       await type('\x1b[200~/tmp/a.png\n/tmp/b.webp\x1b[201~')
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(batches).toEqual([['/tmp/a.png', '/tmp/b.webp']])
       expect(lines.some(line => line.includes('[Image #1]') && line.includes('[Image #2]'))).toBe(true)
     } finally {
@@ -1064,7 +1172,9 @@ describe('Ink 7 full-screen render', () => {
 
   it('opens the sessions panel with persisted rows and resumes on Enter', async () => {
     const resumed: string[] = []
+    const refreshes: string[] = []
     const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
+      refreshPanels: (kind) => { refreshes.push(kind) },
       resumeSession: async (id) => {
         resumed.push(id)
         return null
@@ -1082,7 +1192,8 @@ describe('Ink 7 full-screen render', () => {
       })
       await type('/sessions')
       await type('\r')
-      let lines = lastFrameLines(capture.output)
+      expect(refreshes).toEqual(['sessions'])
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('活动会话 / 持久化会话'))).toBe(true)
       expect(lines.some(line => line.includes('session-old0') && line.includes('修好所有测试'))).toBe(true)
       // ↓ onto the persisted row (row 2: head + live row above it), Enter resumes.
@@ -1090,7 +1201,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\x1b[B')
       await type('\r')
       expect(resumed).toEqual(['session-old0001'])
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('已恢复会话 session-old0001'))).toBe(true)
     } finally {
       unmount()
@@ -1111,7 +1222,7 @@ describe('Ink 7 full-screen render', () => {
       })
       await type('/sessions 重构')
       await type('\r')
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('过滤 "重构"'))).toBe(true)
       expect(lines.some(line => line.includes('session-aaa0'))).toBe(true)
       expect(lines.some(line => line.includes('session-bbb0'))).toBe(false)
@@ -1136,7 +1247,7 @@ describe('Ink 7 full-screen render', () => {
       })
       // Settle Ink's next frame after the store update before asserting.
       await type('')
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('活动会话 / 持久化会话'))).toBe(true)
       expect(lines.some(line => line.includes('过滤 "重构"'))).toBe(true)
       expect(lines.some(line => line.includes('session-aaa0'))).toBe(true)
@@ -1170,7 +1281,7 @@ describe('Ink 7 full-screen render', () => {
       const snapshot = store.getSnapshot()
       store.set({ ...snapshot, version: snapshot.version + 1, attachmentCount: 2 })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('2 张图片附件'))).toBe(true)
     } finally {
       unmount()
@@ -1195,7 +1306,7 @@ describe('Ink 7 full-screen render', () => {
       await type('/trajectory')
       await type('\r')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('· assistant'))).toBe(true)
       expect(lines.some(line => line.includes('· tool read'))).toBe(true)
       // The color mapping itself is a pure function (chalk strips ANSI codes
@@ -1217,13 +1328,13 @@ describe('Ink 7 full-screen render', () => {
       const snapshot = store.getSnapshot()
       store.set({ ...snapshot, version: snapshot.version + 1, compaction: true })
       await new Promise<void>(resolve => setTimeout(resolve, 400))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('compacting…'))).toBe(true)
       // Settling the run removes the live row and lands the status row.
       const settled = store.getSnapshot()
       store.set({ ...settled, version: settled.version + 1, compaction: false })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const after = lastFrameLines(capture.output)
+      const after = lastFrameLines(capture)
       expect(after.some(line => line.includes('compacting…'))).toBe(false)
     } finally {
       unmount()
@@ -1244,13 +1355,13 @@ describe('Ink 7 full-screen render', () => {
         },
       })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('◈ plan'))).toBe(true)
       expect(lines.some(line => line.includes('◈ goal [进行中] · round 0/12 · 修好所有测试'))).toBe(true)
       // /goal opens the full detail notice (Enter as its own chunk).
       await type('/goal')
       await type('\r')
-      const notice = lastFrameLines(capture.output)
+      const notice = lastFrameLines(capture)
       expect(notice.some(line => line.includes('目标：修好所有测试'))).toBe(true)
     } finally {
       unmount()
@@ -1261,7 +1372,7 @@ describe('Ink 7 full-screen render', () => {
     const { capture, unmount, type } = await mount()
     try {
       await type('a'.repeat(150))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       // 150 cells wrap onto at least two composer rows; a truncated
       // single-line input could only ever render one row of ≥40 `a`s.
       expect(lines.filter(line => line.includes('a'.repeat(40))).length).toBeGreaterThanOrEqual(2)
@@ -1327,7 +1438,7 @@ describe('Ink 7 full-screen render', () => {
         sandbox: 'workspace-write',
       })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('effort high'))).toBe(true)
       // The permission chip lives on its own row above the composer with the
       // Shift+Tab hint — never in the status bar.
@@ -1342,9 +1453,10 @@ describe('Ink 7 full-screen render', () => {
       expect(permissionColor('read-only')).toBe('whiteBright')
       expect(permissionColor('workspace-write')).toBe('yellowBright')
       expect(permissionColor('danger-full-access')).toBe('redBright')
-      expect(statusActivityColor(false)).toBe('#4A90C4')
-      expect(statusActivityColor(true)).toBe('#4FC3F7')
-      expect(statusActivityColor(true, 'light')).toBe('blue')
+      expect(statusActivityColor(false)).toBe('#61D6D6')
+      expect(statusActivityColor(true)).toBe('#61D6D6')
+      expect(statusActivityColor(true, 'light')).toBe('#61D6D6')
+      expect(resolveTranscriptLineColor({ color: WELCOME_CARD_COLOR, exactColor: true }, 'dark')).toBe('#A99B45')
     } finally {
       unmount()
     }
@@ -1363,7 +1475,7 @@ describe('Ink 7 full-screen render', () => {
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       expect(cycled).toEqual(['cycle'])
       // The pinned permission row is the feedback; no extra "权限 →" notice.
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('权限 →'))).toBe(false)
       // The split form: ESC flushes early, the `[Z` tail lands inside the
       // arbiter window and re-synthesizes as shift+tab.
@@ -1372,10 +1484,54 @@ describe('Ink 7 full-screen render', () => {
       stdin.write('[Z')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       expect(cycled).toEqual(['cycle', 'cycle'])
-      // No CSI tail leaked into the composer as text.
-      expect(lastFrameLines(capture.output).some(line => line.includes('[Z'))).toBe(false)
+      // A tail after the 60ms Escape window is ordinary text. Only the
+      // arbiter-confirmed split sequence retains Shift+Tab semantics.
+      stdin.write('\x1b')
+      await new Promise<void>(resolve => setTimeout(resolve, 100))
+      stdin.write('[Z')
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      expect(cycled).toEqual(['cycle', 'cycle'])
+      expect(lastFrameLines(capture).some(line => line.includes('[Z'))).toBe(true)
+
+      // Kitty's enhanced keyboard protocol reports one physical key as a
+      // press, optional repeats, and a release. Permission is a discrete
+      // action: only the press may rotate it.
+      await type('\x1b[9;2u')
+      await type('\x1b[9;2:2u')
+      await type('\x1b[9;2:3u')
+      expect(cycled).toEqual(['cycle', 'cycle', 'cycle'])
+      // Enter (and a CSI-Z release flushed with it) must not rotate again.
+      await type('hello')
+      await type('\r')
+      expect(cycled).toEqual(['cycle', 'cycle', 'cycle'])
     } finally {
       unmount()
+    }
+  })
+
+  it('keeps a draft local until an in-progress session replay completes', async () => {
+    const submitted: string[] = []
+    const mounted = await mount([], { submit: (text) => { submitted.push(text) } })
+    try {
+      mounted.store.set({
+        ...mounted.store.getSnapshot(),
+        version: mounted.store.getSnapshot().version + 1,
+        resumeProgress: { done: 10, total: 100 },
+      })
+      await mounted.type('继续输入')
+      await mounted.type('\r')
+      expect(submitted).toEqual([])
+      expect(lastFrameLines(mounted.capture).some(line => line.includes('继续输入'))).toBe(true)
+
+      mounted.store.set({
+        ...mounted.store.getSnapshot(),
+        version: mounted.store.getSnapshot().version + 1,
+        resumeProgress: null,
+      })
+      await mounted.type('\r')
+      expect(submitted).toEqual(['继续输入'])
+    } finally {
+      mounted.unmount()
     }
   })
 
@@ -1392,11 +1548,11 @@ describe('Ink 7 full-screen render', () => {
       await type('/effort low')
       await type('\r')
       expect(efforts).toEqual(['high', undefined, 'low'])
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('推理等级 → low'))).toBe(true)
       await type('/effort foo')
       await type('\r')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('用法：/effort off|low|high|max'))).toBe(true)
       expect(efforts).toEqual(['high', undefined, 'low'])
     } finally {
@@ -1411,7 +1567,7 @@ describe('Ink 7 full-screen render', () => {
     })
     try {
       await type('/effort')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('推理力度（↑↓ 选择'))).toBe(true)
       expect(lines.some(line => line.includes('▸ off') && line.includes('当前'))).toBe(true)
       expect(lines.some(line => line.includes('low') && line.includes('低强度推理'))).toBe(true)
@@ -1419,11 +1575,11 @@ describe('Ink 7 full-screen render', () => {
       expect(lines.some(line => line.includes('max') && line.includes('最大强度推理'))).toBe(true)
       expect(lines.some(line => line.includes('/attach'))).toBe(false)
       await type('\x1b[B')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ low'))).toBe(true)
       await type('\r')
       expect(efforts).toEqual(['low'])
-      expect(lastFrameLines(capture.output).some(line => line.includes('推理等级 → low'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('推理等级 → low'))).toBe(true)
     } finally {
       unmount()
     }
@@ -1448,7 +1604,7 @@ describe('Ink 7 full-screen render', () => {
         await type('\x1b[B')
       }
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ ') && line.includes('session-0025'))).toBe(true)
       // Walking back up returns to the first actionable row, not the static
       // header that cannot resume anything.
@@ -1456,7 +1612,7 @@ describe('Ink 7 full-screen render', () => {
         await type('\x1b[A')
       }
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const back = lastFrameLines(capture.output)
+      const back = lastFrameLines(capture)
       expect(back.some(line => line.includes('▸ ') && line.includes('session-0000'))).toBe(true)
     } finally {
       unmount()
@@ -1476,28 +1632,28 @@ describe('Ink 7 full-screen render', () => {
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       // ↑ recalls the newest submission into the composer.
       await type('\x1b[A')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› second task'))).toBe(true)
       // A nonempty draft owns ↑/↓ as caret motion, so a second ↑ stays on
       // the recalled line instead of walking to `first task`.
       await type('\x1b[A')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› second task'))).toBe(true)
       expect(lines.some(line => line.includes('› first task'))).toBe(false)
       // Ctrl+L empties the composer and keeps the history cursor, so the
       // next ↑ on an empty draft walks one further back.
       await type('\x0c')
       await type('\x1b[A')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› first task'))).toBe(true)
       // ↓ walks forward again; past the newest it restores the empty draft.
       await type('\x0c')
       await type('\x1b[B')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› second task'))).toBe(true)
       await type('\x0c')
       await type('\x1b[B')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› second task'))).toBe(false)
       // The recalled line submits like any other input.
       await type('\x1b[A')
@@ -1520,12 +1676,12 @@ describe('Ink 7 full-screen render', () => {
       await type('\x1b[C')
       expect(lastCursorSuffix(capture.output).column).toBe(9)
       await type('\x1b[A')
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› hello'))).toBe(true)
       await type('\r')
       await type('keep')
       await type('\x1b[A')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('› keep'))).toBe(true)
       expect(lines.some(line => line.includes('› hello'))).toBe(false)
     } finally {
@@ -1560,7 +1716,7 @@ describe('Ink 7 full-screen render', () => {
       store.set({ ...snapshot, version: snapshot.version + 1, cwd: process.cwd() })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       await type('@')
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('文件') || line.includes('files'))).toBe(true)
     } finally {
       unmount()
@@ -1575,7 +1731,7 @@ describe('Ink 7 full-screen render', () => {
     try {
       await type('\x1b[<64;10;5M')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(true)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(false)
       // The button pins to the last transcript row: 30-row terminal, 4-row
@@ -1583,7 +1739,7 @@ describe('Ink 7 full-screen render', () => {
       // there returns to the newest lines.
       await type('\x1b[<0;5;24M')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(true)
     } finally {
@@ -1609,14 +1765,14 @@ describe('Ink 7 full-screen render', () => {
       await type('/settings plugins')
       await type('\r')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('插件'))).toBe(true)
       expect(lines.some(line => line.includes('● storage · storage'))).toBe(true)
       expect(lines.some(line => line.includes('○ off · off · 未加载 · 已禁用'))).toBe(true)
       expect(lines.some(line => line.includes('让 Agent 为你修改该配置文件'))).toBe(true)
       await type('\x1b[B')
       await type('\r')
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('插件'))).toBe(true)
       expect(lines.some(line => line.includes('插件配置 · Enter 切换/编辑'))).toBe(false)
       expect(lines.some(line => line.includes('storage →'))).toBe(false)
@@ -1669,7 +1825,7 @@ describe('Ink 7 full-screen render', () => {
   it('labels a settled Thinking row with its 0.1s-precision duration', async () => {
     const { capture, unmount } = await mount([{ kind: 'think', id: 1, text: 'reasoning here', durationMs: 3456 }])
     try {
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('✓ Thinking 3.5s ▶'))).toBe(true)
     } finally {
       unmount()
@@ -1700,12 +1856,12 @@ describe('Ink 7 full-screen render', () => {
     })
     try {
       liveStore = store
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('thinking off'))).toBe(true)
       expect(lines.filter(line => line.includes('✓ Thinking') && line.includes('▶'))).toHaveLength(2)
 
       await type(disclosureClick(lines, '✓ Thinking 1.0s'))
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(updates).toEqual(['expanded'])
       expect(lines.some(line => line.includes('thinking on'))).toBe(true)
       expect(lines.filter(line => line.includes('✓ Thinking') && line.includes('▼'))).toHaveLength(2)
@@ -1715,7 +1871,7 @@ describe('Ink 7 full-screen render', () => {
       // Clicking either expanded row closes every Thinking body and updates
       // the same setting/header state.
       await type(disclosureClick(lines, '✓ Thinking 2.0s'))
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(updates).toEqual(['expanded', 'collapsed'])
       expect(lines.some(line => line.includes('thinking off'))).toBe(true)
       expect(lines.filter(line => line.includes('✓ Thinking') && line.includes('▶'))).toHaveLength(2)
@@ -1731,11 +1887,11 @@ describe('Ink 7 full-screen render', () => {
       kind: 'context', id: 1, producer: 'system', text: 'context detail',
     }])
     try {
-      let lines = lastFrameLines(capture.output)
+      let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('context detail'))).toBe(false)
       const contextHead = lines.find(line => line.includes('▶'))?.trim() ?? ''
       await type(disclosureClick(lines, contextHead.slice(0, -1).trim()))
-      lines = lastFrameLines(capture.output)
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('context detail'))).toBe(true)
       expect(lines.some(line => line.includes('thinking off'))).toBe(true)
     } finally {
@@ -1758,7 +1914,7 @@ describe('Ink 7 full-screen render', () => {
         },
       })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       // The word breaks only at spaces: 'hello world' stays whole on its
       // own row instead of splitting 'llo' off mid-word.
       expect(lines.some(line => line.includes('  │ hello world'))).toBe(true)
@@ -1790,7 +1946,7 @@ describe('Ink 7 full-screen render', () => {
         },
       })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       // Every body row carries the bar…
       const bodyRows = lines.map((line, index) => ({ line, index })).filter(entry => entry.line.includes('思'))
       expect(bodyRows.length).toBeGreaterThan(2)
@@ -1812,7 +1968,7 @@ describe('Ink 7 full-screen render', () => {
       capture.rows = 20
       capture.emit('resize')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(frameRows(lines)).toBe(20)
       // No rendered row may exceed the physical width — the wrap would push
       // its tail onto the next row (the overlap bug).
@@ -1822,11 +1978,12 @@ describe('Ink 7 full-screen render', () => {
       // The welcome panel's borders stay on one intact row each.
       expect(lines.some(line => line.trimStart().startsWith('┏') && line.trimEnd().endsWith('┓'))).toBe(true)
       expect(lines.some(line => line.trimStart().startsWith('┗') && line.trimEnd().endsWith('┛'))).toBe(true)
+      expect(WELCOME_CARD_COLOR).toBe('#A99B45')
       // Typing '/' opens the palette; the palette must respect its height
       // budget so it can never overwrite the composer row below it, and the
       // composer row itself must show the draft.
       await type('/')
-      const afterSlash = lastFrameLines(capture.output)
+      const afterSlash = lastFrameLines(capture)
       const composerRows = afterSlash.filter(line => line.trimStart().startsWith('›'))
       expect(composerRows.length).toBeGreaterThan(0)
       expect(composerRows.at(-1)).toContain('/')
@@ -1851,7 +2008,7 @@ describe('Ink 7 full-screen render', () => {
         live: { text: '', think: '正在推理', thinkSince: Date.now() },
       })
       await new Promise<void>(resolve => setTimeout(resolve, 400))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(line) && line.includes('Thinking'))).toBe(true)
     } finally {
       unmount()
@@ -1873,7 +2030,7 @@ describe('Ink 7 full-screen render', () => {
     try {
       expect(capture.output).toContain('\x1b]0;🐋 DeepSeek Harness\x07')
       expect(capture.output).toContain('\x1b[21t')
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('DSH-TUI'))).toBe(true)
     } finally {
       unmount()
@@ -1889,7 +2046,7 @@ describe('Ink 7 full-screen render', () => {
     ]
     const { capture, unmount } = await mount(nodes)
     try {
-      const lines = lastFrameLines(capture.output).map(line => line.trimEnd())
+      const lines = lastFrameLines(capture).map(line => line.trimEnd())
       const first = lines.findIndex(line => line.includes('▸ first'))
       const think = lines.findIndex(line => line.includes('Thinking'))
       const answer = lines.findIndex(line => line.includes('● answer') || line.includes('answer'))
@@ -1914,7 +2071,7 @@ describe('Ink 7 full-screen render', () => {
     ]
     const { capture, unmount } = await mount(nodes)
     try {
-      const lines = lastFrameLines(capture.output).map(line => line.trimEnd())
+      const lines = lastFrameLines(capture).map(line => line.trimEnd())
       const think = lines.findIndex(line => line.includes('Thinking'))
       const title = lines.findIndex(line => line.includes('Title'))
       const body = lines.findIndex(line => line.includes('Body paragraph'))
@@ -1937,7 +2094,7 @@ describe('Ink 7 full-screen render', () => {
         live: { text: 'streaming', think: '', thinkSince: null },
       })
       await new Promise<void>(resolve => setTimeout(resolve, 400))
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => /[✶✸✹✺]/.test(line)), JSON.stringify(lines.slice(-8))).toBe(true)
     } finally {
       unmount()
@@ -1962,7 +2119,7 @@ describe('Ink 7 full-screen render', () => {
       for (let tick = 0; tick < 30; tick += 1) {
         await type('\x1b[<64;10;5M')
       }
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ the very first prompt'))).toBe(true)
     } finally {
       unmount()
@@ -1976,7 +2133,7 @@ describe('Ink 7 full-screen render', () => {
     ])
     try {
       expect(capture.output).toContain('\x1b[?1000h')
-      const frame = lastFrameLines(capture.output)
+      const frame = lastFrameLines(capture)
       const promptRow = frame.findIndex(line => line.includes('▸ hi there'))
       expect(promptRow).toBeGreaterThanOrEqual(0)
       const row = promptRow + 1
@@ -1985,17 +2142,17 @@ describe('Ink 7 full-screen render', () => {
       await type(`\x1b[<32;4;${row + 1}M`)
       await type(`\x1b[<0;4;${row}m`)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      expect(lastFrameLines(capture.output).some(line =>
+      expect(lastFrameLines(capture).some(line =>
         line.includes('已复制') || line.includes('Copied'))).toBe(false)
       expect(promptRowHasInverse(capture, 'hi there')).toBe(false)
-      const replyRow = lastFrameLines(capture.output).findIndex(line => line.includes('const value = 123'))
+      const replyRow = lastFrameLines(capture).findIndex(line => line.includes('const value = 123'))
       expect(replyRow).toBeGreaterThanOrEqual(0)
       const reply = replyRow + 1
       await type(`\x1b[<0;3;${reply}M`)
       await type(`\x1b[<32;18;${reply}M`)
       await type(`\x1b[<0;18;${reply}m`)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
-      expect(lastFrameLines(capture.output).some(line =>
+      expect(lastFrameLines(capture).some(line =>
         line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
       expect(promptRowHasInverse(capture, 'const value = 123')).toBe(false)
       expect(capture.output).toContain('\x1b[?1000h')
@@ -2031,7 +2188,7 @@ describe('Ink 7 full-screen render', () => {
       await type(`\x1b[<0;18;${end}m`)
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       expect(promptRowHasInverse(capture, 'UNIQUE_ALPHA_LINE')).toBe(false)
-      expect(lastFrameLines(capture.output).some(line =>
+      expect(lastFrameLines(capture).some(line =>
         line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
     } finally {
       unmount()
@@ -2088,7 +2245,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\r')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       expect(submissions).toEqual([])
-      const lines = lastFrameLines(capture.output)
+      const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('已复制') || line.includes('Copied') || line.includes('复制失败') || line.includes('Copy failed'))).toBe(true)
     } finally {
       unmount()

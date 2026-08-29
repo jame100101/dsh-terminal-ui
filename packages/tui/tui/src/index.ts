@@ -38,7 +38,7 @@ import type {} from '@deepseek-ai/dsh-user-approval'
 import type {} from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-llm'
-import type {} from '@deepseek-ai/dsh-tools'
+import type { ToolResult } from '@deepseek-ai/dsh-tools'
 import type { JobSnapshot } from '@deepseek-ai/dsh-jobs'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent'
@@ -71,7 +71,10 @@ import { formatSessionReferenceMention } from '@deepseek-ai/dsh-session-referenc
 import { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
-import { anchorRetry, applyEvent, createScratch, foldFromLog, initialState, rememberToolCallCard } from './fold'
+import {
+  anchorRetry, applyEvent, createScratch, decodeToolResult, foldFromLogYielding,
+  initialState, rememberToolCallCard,
+} from './fold'
 import type { FoldScratch } from './fold'
 import type { FoldState } from './types'
 import { renderAssistantResultPlain, renderNodePlain } from './plain'
@@ -85,7 +88,7 @@ import {
 import { readClipboardImage } from './image-clipboard'
 import { createTuiUserMessage, encodeTuiCommandImages } from './image-submit'
 import { compactCallCard, compactResultCard } from './card-project'
-import { createUiPublishScheduler, shouldCoalesceSessionEvent } from './ui-publish'
+import { createUiPublishScheduler, shouldCoalesceSessionEvent, shouldPublishCoalescedFold } from './ui-publish'
 import { selectPanelSnapshot } from './publish-snapshot'
 import { buildTuiStartupProgram, parseTuiStartupIntent } from './startup-args'
 import type { StartupIntent } from './startup-args'
@@ -102,6 +105,7 @@ import {
 } from './startup'
 import type { ResumeCandidate, ResumeResolution } from './startup'
 import { SessionRecencyStore } from './session-recency'
+import { ProjectionSidecarStore, foldIsIdle, projectionCheckpointIsComplete } from './projection-sidecar'
 import type {
   CommandEntry, CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry,
   SettingsData, SkillEntry, SubagentRow, TuiStore, WorkflowRow,
@@ -200,6 +204,8 @@ interface Surface {
   pendingAttachments: ImageAttachmentRef[]
   /** The surface's working directory (workspace). */
   cwd: string
+  /** Fold replay progress while a session is resuming. */
+  resumeProgress: { done: number; total: number } | null
 }
 
 /** Resolve the current agent scope's human-invocable skill catalog. */
@@ -305,10 +311,9 @@ async function loadSessionRows(ctx: Context, liveRows: readonly SessionEntry[]):
  * `args` on the running row; `applyEvent` then drops `args` and the call view.
  */
 function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): void {
-  if (event.type !== 'tool/call' && event.type !== 'tool/result') return
   const tools = ctx.get('tools')
   if (tools === undefined) return
-  if (event.type === 'tool/call') {
+  if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
     const node = fold.nodes[fold.nodes.length - 1]
     if (node === undefined || node.kind !== 'tool') return
     const definition = tools.get(event.data.name)
@@ -321,18 +326,31 @@ function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): vo
     }
     return
   }
-  // tool/result: still running; applyEvent has not settled the row yet.
+  let callId = ''
+  let result: ToolResult | undefined
+  if (event.type === 'tool/result') {
+    const decoded = decodeToolResult(event)
+    if (decoded === null) return
+    callId = decoded.callId
+    result = {
+      content: decoded.content,
+      isError: decoded.isError,
+      ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
+    }
+  } else if (event.type === 'tool/code-dispatch') {
+    callId = String(event.data.subCallId)
+    result = { content: event.data.content, isError: event.data.isError }
+  } else {
+    return
+  }
+  // Result events run before applyEvent so presentResult can still read args.
   for (let index = fold.nodes.length - 1; index >= 0; index--) {
     const node = fold.nodes[index]
     if (node === undefined || node.kind !== 'tool' || node.status !== 'running') continue
-    const definition = tools.get(node.detail.split(' ')[0] ?? '')
-    if (definition !== undefined && definition.presentResult !== undefined) {
+    if (callId !== '' && node.callId !== callId) continue
+    const definition = tools.get(node.name)
+    if (definition !== undefined && definition.presentResult !== undefined && result !== undefined) {
       try {
-        const result = {
-          content: event.data.message.content,
-          ...(event.data.error === undefined ? {} : { error: event.data.error }),
-          ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
-        } as unknown as Parameters<NonNullable<typeof definition.presentResult>>[1]
         node.resultCard = compactResultCard(definition.presentResult(node.args, result) ?? null)
       } catch {
         node.resultCard = null
@@ -511,6 +529,7 @@ async function subagentRows(ctx: Context, rootSessionId: SessionId): Promise<Sub
  * @param store - the UI store to publish into.
  * @param surface - mutable surface facts.
  * @param refreshSettings - reloads and publishes the /settings page data.
+ * @param foldSidecar - TUI fold projection sidecar.
  * @returns the disposer.
  */
 function subscribe(
@@ -518,6 +537,7 @@ function subscribe(
   store: TuiStore,
   surface: Surface,
   refreshSettings: () => void,
+  foldSidecar: ProjectionSidecarStore,
 ): () => void {
   const publish = (reusePanels = false): void => {
     const previous = store.getSnapshot()
@@ -560,8 +580,13 @@ function subscribe(
       plan: surface.fold.plan,
       goal: surface.fold.goal,
       compaction: surface.fold.compaction,
+      resumeProgress: surface.resumeProgress,
       ...panels,
     })
+    if (foldIsIdle(surface.fold) && !surface.busy && projectionCheckpointIsComplete(surface.agent.session.events)) {
+      const last = surface.agent.session.events.at(-1)
+      foldSidecar.write(surface.agent.session.header, last?.seq ?? 0, surface.fold)
+    }
   }
   const uiPublish = createUiPublishScheduler(() => { publish(true) })
   const off = ctx.on('internal/dispatch', (_mode, eventName, args) => {
@@ -573,16 +598,24 @@ function subscribe(
       if (session !== surface.agent.session) return
       const event = (args as unknown[])[1] as SessionEvent
       // presentResult needs the running row's args; applyEvent drops them.
-      if (event.type === 'tool/result') enrichToolCards(ctx, event, surface.fold)
+      if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
+        enrichToolCards(ctx, event, surface.fold)
+      }
+      const previousFold = surface.fold
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
-      if (event.type === 'tool/call') {
+      if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
         enrichToolCards(ctx, event, surface.fold)
         const node = surface.fold.nodes[surface.fold.nodes.length - 1]
-        if (node?.kind === 'tool') rememberToolCallCard(surface.scratch, String(event.data.callId), node.callCard)
+        if (node?.kind === 'tool') {
+          const callId = event.type === 'tool/call' ? String(event.data.callId) : String(event.data.subCallId)
+          rememberToolCallCard(surface.scratch, callId, node.callCard)
+        }
       }
       anchorRetry(surface.fold, event)
-      if (shouldCoalesceSessionEvent(event)) uiPublish.request(false)
-      else {
+      if (shouldCoalesceSessionEvent(event)) {
+        if (!shouldPublishCoalescedFold(previousFold, surface.fold)) return
+        uiPublish.request(false)
+      } else {
         uiPublish.dispose()
         publish()
       }
@@ -881,6 +914,10 @@ async function boot(
     config.sessionRecencyMaxEntries ?? DEFAULT_SESSION_RECENCY_MAX_ENTRIES,
     (error) => { ctx.logger.warn(`tui: session recency sidecar fault: ${error instanceof Error ? error.message : String(error)}`) },
   )
+  const projections = new ProjectionSidecarStore(
+    homePath('tui', 'projections'),
+    (error) => { ctx.logger.warn(`tui: fold projection sidecar fault: ${error instanceof Error ? error.message : String(error)}`) },
+  )
   const created = await createAgent(ctx, process.cwd())
   // Handle of the surface's CURRENT agent. Switches dispose THIS handle before
   // replacing it — disposing the boot-time `created.handle` on every switch
@@ -893,9 +930,21 @@ async function boot(
     description: command.description,
     needsArgs: command.input !== undefined,
   }))
+  const bootGeneral = tuiScope.get() as GeneralSettings
+  const bootSettings: SettingsData = {
+    general: bootGeneral,
+    models: { providers: [], credentials: [] },
+    plugins: [],
+    configs: {},
+    inventory: { namespaces: [], credentials: [], inspectProviders: 0 },
+    presets: [],
+    currentPreset: undefined,
+  }
   // First paint does not wait for catalog/settings/feedback I/O. Those
   // loads start after this function yields so they cannot contend with
   // Cordis boot or the first Ink frame. Print mode never starts them.
+  // Chrome locale/busyEnter/theme still come from the live `tui` scope so
+  // the first frame cannot paint zh/queue and then overlay en/steer.
   const bootModels: ModelEntry[] = [{
     provider: created.selection.provider,
     model: created.selection.model,
@@ -920,7 +969,7 @@ async function boot(
     models: bootModels,
     sessions: [],
     queued: [],
-    settings: null,
+    settings: bootSettings,
     jobs: [],
     subagents: [],
     workflows: [],
@@ -933,6 +982,7 @@ async function boot(
     compaction: false,
     sandbox: ctx.sandboxPolicy.resolve({ session: created.agent.session }).mode,
     occupancy: null,
+    resumeProgress: null,
   })
   const surface: Surface = {
     fold: initialState(),
@@ -949,7 +999,7 @@ async function boot(
     pendingQuestion: null,
     approvalResolve: null,
     questionResolve: null,
-    settings: null,
+    settings: bootSettings,
     jobs: [],
     subagents: [],
     workflows: new Map(),
@@ -960,6 +1010,7 @@ async function boot(
     },
     pendingAttachments: [],
     cwd: process.cwd(),
+    resumeProgress: null,
   }
   /** Load the model catalog, then the settings pages it feeds (parallel). */
   const loadPanels = (): void => {
@@ -1053,7 +1104,7 @@ async function boot(
   const uiLocale = (): 'zh' | 'en' => surface.settings?.general.locale ?? (tuiScope.get() as GeneralSettings).locale
   /** Select copy without passing display language into Harness services. */
   const uiText = (zh: string, en: string): string => uiLocale() === 'en' ? en : zh
-  let unsubscribe = subscribe(ctx, store, surface, refreshSettings)
+  let unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
   const offSkillsChange = ctx.on('skills/change', () => { refreshCatalogs() }, { global: true })
   const isTty = process.stdin.isTTY === true && process.stdout.isTTY === true
   // Print mode never mounts the interactive answerers: asks fail closed,
@@ -1190,9 +1241,59 @@ async function boot(
       submit()
     }).catch(() => { submit() })
   }
+  const foldHooks = {
+    before(event: SessionEvent, state: FoldState): void {
+      if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
+        enrichToolCards(ctx, event, state)
+      }
+    },
+    after(event: SessionEvent, state: FoldState, replayScratch: FoldScratch): void {
+      if (event.type !== 'tool/call' && event.type !== 'tool/code-dispatch-start') return
+      enrichToolCards(ctx, event, state)
+      const node = state.nodes[state.nodes.length - 1]
+      if (node?.kind === 'tool') {
+        const callId = event.type === 'tool/call' ? String(event.data.callId) : String(event.data.subCallId)
+        rememberToolCallCard(replayScratch, callId, node.callCard)
+      }
+    },
+  }
+  let resumeGeneration = 0
+  let resumeAbort: AbortController | null = null
+  const publishSurfaceFold = (): void => {
+    surface.version += 1
+    store.set({
+      ...store.getSnapshot(),
+      nodes: surface.fold.nodes,
+      trace: surface.fold.trace,
+      todos: surface.fold.todos,
+      stats: surface.fold.stats,
+      live: surface.fold.live,
+      plan: surface.fold.plan,
+      goal: surface.fold.goal,
+      compaction: surface.fold.compaction,
+      sessionId: String(surface.agent.id),
+      resumeProgress: surface.resumeProgress,
+      version: surface.version,
+    })
+  }
+  const cancelResume = (): void => {
+    if (resumeAbort === null) return
+    resumeGeneration += 1
+    resumeAbort.abort()
+    resumeAbort = null
+    surface.resumeProgress = null
+    publishSurfaceFold()
+  }
   /** Swap the surface onto a freshly created agent (/new). */
   const newSession = async (): Promise<void> => {
     try {
+      if (projectionCheckpointIsComplete(surface.agent.session.events)) {
+        projections.write(
+          surface.agent.session.header,
+          surface.agent.session.events.at(-1)?.seq ?? 0,
+          surface.fold,
+        )
+      }
       // A new session continues the preset the surface currently runs.
       const next = await createAgent(ctx, surface.cwd, recordedPreset(surface.agent.session.header, surface.agent.session.events))
       unsubscribe()
@@ -1208,7 +1309,7 @@ async function boot(
       surface.pendingQuestion = null
       surface.feedback = new Map()
       surface.pendingAttachments = []
-      unsubscribe = subscribe(ctx, store, surface, refreshSettings)
+      unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
       refreshCatalogs()
       void loadFeedback()
     } catch (error) {
@@ -1217,6 +1318,14 @@ async function boot(
   }
   /** Resume one persisted session onto the surface; rebuilds the transcript from its log. */
   const resumeSession = async (id: string): Promise<string | null> => {
+    const gen = ++resumeGeneration
+    resumeAbort?.abort()
+    const controller = new AbortController()
+    resumeAbort = controller
+    // Publish before disk access. Large logs can take long enough to read that
+    // the user needs visible progress and a working Escape key during phase 0.
+    surface.resumeProgress = { done: 0, total: 1 }
+    publishSurfaceFold()
     const selected = surface.selection.current ?? ctx.agentDefaultModel.currentSelection()
     const selection: ModelSelection = {
       provider: selected.provider,
@@ -1237,6 +1346,11 @@ async function boot(
         // The in-memory log remains the best available surface.
       }
     }
+    if (controller.signal.aborted || gen !== resumeGeneration) {
+      return uiText('已取消恢复', 'Resume cancelled')
+    }
+    surface.resumeProgress = { done: 0, total: Math.max(1, snapshot?.events.length ?? 1) }
+    publishSurfaceFold()
     const presetId = snapshot === undefined ? undefined : recordedPreset(snapshot.header, snapshot.events)
     const presetService = ctx.get('agentPresets') as { mount(agentCtx: Context, id?: string): Promise<unknown> } | undefined
     // Phase 1 — prepare the next agent. A failure here leaves the current
@@ -1263,34 +1377,83 @@ async function boot(
         },
       })
     } catch (error) {
+      if (gen === resumeGeneration) {
+        resumeAbort = null
+        surface.resumeProgress = null
+        publishSurfaceFold()
+      }
       return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
     }
-    // Phase 2 — the swap. Once the old subscription drops, no failure may
-    // leave the surface without a subscription: input would keep reaching an
-    // agent while no event could reach the UI (the silent "swallowed input"
-    // state). Fail loud, like /new, instead of showing a notice over a deaf
-    // surface.
+    const events: readonly SessionEvent[] = snapshot?.events ?? next.agent.session.events
+    if (gen !== resumeGeneration) {
+      try { await next.dispose() } catch { /* cancelled before swap */ }
+      return uiText('已取消恢复', 'Resume cancelled')
+    }
+    // Phase 2 — fold while the current agent and subscription remain owned by
+    // the surface. Cancellation therefore discards only the prepared handle;
+    // the visible session never observes a partial projection.
     try {
+      const lastSeq = events.at(-1)?.seq ?? 0
+      const sidecar = await projections.read(String(next.agent.session.header.id), next.agent.session.header.createdAt)
+      let fold
+      let scratch
+      if (sidecar !== null && sidecar.lastSeq <= lastSeq) {
+        const suffix = events.filter(event => event.seq > sidecar.lastSeq)
+        surface.resumeProgress = { done: 0, total: Math.max(1, suffix.length) }
+        publishSurfaceFold()
+        const replayed = await foldFromLogYielding(suffix, foldHooks, {
+          seed: { fold: sidecar.fold, scratch: createScratch() },
+          signal: controller.signal,
+          onProgress: (done, total) => {
+            if (gen !== resumeGeneration) return
+            surface.resumeProgress = { done, total }
+            surface.version += 1
+            store.set({ ...store.getSnapshot(), resumeProgress: surface.resumeProgress, version: surface.version })
+          },
+        })
+        fold = replayed.fold
+        scratch = replayed.scratch
+      } else {
+        const replayed = await foldFromLogYielding(events, foldHooks, {
+          signal: controller.signal,
+          onProgress: (done, total) => {
+            if (gen !== resumeGeneration) return
+            surface.resumeProgress = { done, total }
+            surface.version += 1
+            store.set({ ...store.getSnapshot(), resumeProgress: surface.resumeProgress, version: surface.version })
+          },
+        })
+        fold = replayed.fold
+        scratch = replayed.scratch
+      }
+      if (controller.signal.aborted || gen !== resumeGeneration) {
+        try { await next.dispose() } catch { /* the prepared handle is already detached */ }
+        return uiText('已取消恢复', 'Resume cancelled')
+      }
+      // The replay is complete. Clear the abort handle before crossing the
+      // swap's point of no return so a late Escape cannot invalidate the
+      // generation after the old handle starts disposing. Keep replay
+      // progress published until the new subscription owns the surface; this
+      // also keeps composer submits local during old-handle teardown.
+      resumeAbort = null
+      const replayTotal = surface.resumeProgress.total
+      surface.resumeProgress = {
+        done: replayTotal,
+        total: replayTotal,
+      }
+      publishSurfaceFold()
+      if (projectionCheckpointIsComplete(surface.agent.session.events)) {
+        projections.write(
+          surface.agent.session.header,
+          surface.agent.session.events.at(-1)?.seq ?? 0,
+          surface.fold,
+        )
+      }
       unsubscribe()
       await currentHandle.dispose()
       // `resume` returns the AgentHandle itself (agent + dispose); the
       // freshly resumed handle becomes the surface's current handle.
       currentHandle = next
-      // Fold from the authoritative corpus read (persistence repair and
-      // replay validation included) so the resumed transcript shows the
-      // complete history; the agent's in-memory log is the fallback.
-      const events: readonly SessionEvent[] = snapshot?.events ?? next.agent.session.events
-      const { fold, scratch } = foldFromLog(events, {
-        before: (event, state) => {
-          if (event.type === 'tool/result') enrichToolCards(ctx, event, state)
-        },
-        after: (event, state, replayScratch) => {
-          if (event.type !== 'tool/call') return
-          enrichToolCards(ctx, event, state)
-          const node = state.nodes[state.nodes.length - 1]
-          if (node?.kind === 'tool') rememberToolCallCard(replayScratch, String(event.data.callId), node.callCard)
-        },
-      })
       surface.fold = fold
       surface.scratch = scratch
       surface.agent = next.agent
@@ -1301,15 +1464,24 @@ async function boot(
       surface.pendingQuestion = null
       surface.feedback = new Map()
       surface.pendingAttachments = []
-      unsubscribe = subscribe(ctx, store, surface, refreshSettings)
+      surface.resumeProgress = null
+      unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
       // The presets page marks the CURRENT preset: republish settings so the
       // marker follows the resumed session.
       refreshSettings()
       refreshCatalogs()
       void loadFeedback()
       recency.touch(next.agent.session.header)
+      if (projectionCheckpointIsComplete(events)) {
+        projections.write(next.agent.session.header, lastSeq, surface.fold)
+      }
       return null
     } catch (error) {
+      if (gen === resumeGeneration) {
+        resumeAbort = null
+        surface.resumeProgress = null
+        publishSurfaceFold()
+      }
       fail(ctx, error)
       return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
     }
@@ -1628,15 +1800,18 @@ async function boot(
           store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
         },
         cycleSandbox: () => {
-          // Shift+Tab: rotate the session's file-policy override. Appending
-          // the `sandbox/mode` event dispatches through the fold subscription
-          // and republishes the status bar immediately.
+          // Shift+Tab: rotate the session's file-policy override. Write the
+          // snapshot immediately so the permission chip does not wait for the
+          // fold subscription; appending `sandbox/mode` keeps the log durable.
           const current = ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode
           const index = SANDBOX_MODES.indexOf(current)
           const next = SANDBOX_MODES[(index + 1) % SANDBOX_MODES.length] ?? 'read-only'
           setSandboxMode(surface.agent.session, next)
+          surface.version += 1
+          store.set({ ...store.getSnapshot(), sandbox: next, version: surface.version })
           return next
         },
+        cancelResume,
         approve: (outcome) => {
           surface.pendingApproval = null
           const resolve = surface.approvalResolve
@@ -1665,15 +1840,21 @@ async function boot(
         setCredential: (ref, value) => ctx.credentials.set(credentialRef(ref), value),
         unsetCredential: ref => ctx.credentials.unset(credentialRef(ref)),
         refreshSettings: refreshSettings,
-        refreshPanels: () => {
-          surface.jobs = jobsRows(ctx, Date.now())
-          surface.version += 1
-          store.set({ ...store.getSnapshot(), jobs: surface.jobs, version: surface.version })
-          void subagentRows(ctx, surface.agent.id).then((rows) => {
-            surface.subagents = rows
+        refreshPanels: (kind) => {
+          if (kind === 'jobs') {
+            surface.jobs = jobsRows(ctx, Date.now())
             surface.version += 1
-            store.set({ ...store.getSnapshot(), subagents: rows, version: surface.version })
-          }).catch(() => {})
+            store.set({ ...store.getSnapshot(), jobs: surface.jobs, version: surface.version })
+            return
+          }
+          if (kind === 'subagents') {
+            void subagentRows(ctx, surface.agent.id).then((rows) => {
+              surface.subagents = rows
+              surface.version += 1
+              store.set({ ...store.getSnapshot(), subagents: rows, version: surface.version })
+            }).catch(() => {})
+            return
+          }
           const liveRows: SessionEntry[] = ctx.agents.list().map((agent): SessionEntry => ({
             id: agent.id,
             model: agent.options.model ?? '',
@@ -1805,6 +1986,7 @@ async function boot(
     try { unsubscribe() } catch {}
     try { await surface.agent.whenIdle() } catch {}
     await recency.drain()
+    await projections.drain()
   }
 }
 

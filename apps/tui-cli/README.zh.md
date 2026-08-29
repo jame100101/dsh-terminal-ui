@@ -43,4 +43,6 @@ go to stderr.
 
 The wrapper resolves the bundled launcher bin, spawns it with inherited
 stdio, and passes the child's exit code through — it never captures output,
-queries sessions, or renders anything itself.
+queries sessions, or renders anything itself. 交互 child 退出后（包括原生
+fatal）会幂等复位 mouse tracking、bracketed paste、光标可见性、备用屏幕和
+SGR。`--print` 不写这些序列。

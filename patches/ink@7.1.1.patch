@@ -1,8 +1,119 @@
+diff --git a/build/components/App.js b/build/components/App.js
+index 06aa8be7dcda3a1253342cd461c1a7399cd95aad..448d690fc3d9ebac015ebd2e12b1106a3b0c0d78 100644
+--- a/build/components/App.js
++++ b/build/components/App.js
+@@ -14,10 +14,11 @@ import ErrorBoundary from './ErrorBoundary.js';
+ const tab = '\t';
+ const shiftTab = '\u001B[Z';
+ const escape = '\u001B';
++const pendingPasteIdleTimeoutMilliseconds = 2000;
+ // Root component for all Ink apps
+ // It renders stdin and stdout contexts, so that children can access them if needed
+ // It also handles Ctrl+C exiting and cursor visibility
+-function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, exitOnCtrlC, onExit, onWaitUntilRenderFlush, onSuspendTerminal, onRegisterInputControl, setCursorPosition, interactive, renderThrottleMs, }) {
++function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, exitOnCtrlC, onExit, onWaitUntilRenderFlush, onSuspendTerminal, onRegisterInputControl, onImmediateInputRender, setCursorPosition, interactive, renderThrottleMs, }) {
+     const [isFocusEnabled, setIsFocusEnabled] = useState(true);
+     const [activeFocusId, setActiveFocusId] = useState(undefined);
+     // Focusables array is managed internally via setFocusables callback pattern
+@@ -41,6 +42,7 @@ function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, ex
+     const readableListenerRef = useRef(undefined);
+     const inputParserRef = useRef(createInputParser());
+     const pendingInputFlushRef = useRef(undefined);
++    const pendingPasteTimeoutRef = useRef(undefined);
+     // Small delay to let chunked escape sequences complete before flushing as literal input.
+     const pendingInputFlushDelayMilliseconds = 20;
+     const clearPendingInputFlush = useCallback(() => {
+@@ -50,6 +52,13 @@ function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, ex
+         clearTimeout(pendingInputFlushRef.current);
+         pendingInputFlushRef.current = undefined;
+     }, []);
++    const clearPendingPasteTimeout = useCallback(() => {
++        if (!pendingPasteTimeoutRef.current) {
++            return;
++        }
++        clearTimeout(pendingPasteTimeoutRef.current);
++        pendingPasteTimeoutRef.current = undefined;
++    }, []);
+     const clearAnimationTimer = useCallback(() => {
+         if (!animationTimerRef.current) {
+             return;
+@@ -129,8 +138,9 @@ function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, ex
+     const clearInputState = useCallback(() => {
+         inputParserRef.current.reset();
+         clearPendingInputFlush();
++        clearPendingPasteTimeout();
+         detachReadableListener();
+-    }, [clearPendingInputFlush, detachReadableListener]);
++    }, [clearPendingInputFlush, clearPendingPasteTimeout, detachReadableListener]);
+     const disableRawMode = useCallback(() => {
+         pendingDisableRawModeRef.current = false;
+         stdin.setRawMode(false);
+@@ -170,33 +180,57 @@ function App({ children, stdin, stdout, stderr, writeToStdout, writeToStderr, ex
+                 return;
+             }
+             emitInput(pendingEscape);
++            onImmediateInputRender();
+         }, pendingInputFlushDelayMilliseconds);
+-    }, [clearPendingInputFlush, emitInput]);
++    }, [clearPendingInputFlush, emitInput, onImmediateInputRender]);
++    const schedulePendingPasteTimeout = useCallback(() => {
++        clearPendingPasteTimeout();
++        pendingPasteTimeoutRef.current = setTimeout(() => {
++            pendingPasteTimeoutRef.current = undefined;
++            inputParserRef.current.abortPendingPaste();
++        }, pendingPasteIdleTimeoutMilliseconds);
++    }, [clearPendingPasteTimeout]);
+     const handleReadable = useCallback(() => {
+         clearPendingInputFlush();
+         let chunk;
++        let emitted = false;
+         // eslint-disable-next-line @typescript-eslint/no-restricted-types
+         while ((chunk = stdin.read()) !== null) {
+             const inputEvents = inputParserRef.current.push(chunk);
+             for (const event of inputEvents) {
+                 if (typeof event === 'string') {
+                     emitInput(event);
++                    emitted = true;
+                 }
+                 else {
+                     // Keep paste on a separate channel from `useInput` so key handlers
+                     // don't need to branch on mixed key-vs-paste event shapes.
+                     if (internal_eventEmitter.current.listenerCount('paste') === 0) {
+                         emitInput(event.paste);
++                        emitted = true;
+                         continue;
+                     }
+                     internal_eventEmitter.current.emit('paste', event.paste);
++                    emitted = true;
+                 }
+             }
+         }
++        if (emitted) {
++            // Keyboard/paste state commits at discrete priority. Cancel the
++            // trailing animation frame and paint the newest tree immediately;
++            // stdout backpressure still retains only the latest redraw.
++            onImmediateInputRender();
++        }
+         if (inputParserRef.current.hasPendingEscape()) {
+             schedulePendingInputFlush();
+         }
+-    }, [stdin, emitInput, clearPendingInputFlush, schedulePendingInputFlush]);
++        if (inputParserRef.current.isPendingPaste()) {
++            schedulePendingPasteTimeout();
++        }
++        else {
++            clearPendingPasteTimeout();
++        }
++    }, [stdin, emitInput, clearPendingInputFlush, clearPendingPasteTimeout, onImmediateInputRender, schedulePendingInputFlush, schedulePendingPasteTimeout]);
+     const attachReadableListener = useCallback(() => {
+         if (readableListenerRef.current) {
+             return;
 diff --git a/build/cursor-helpers.d.ts b/build/cursor-helpers.d.ts
-index 29681f0..f64043c 100644
+index c6e94667f9aef310093d40520fd8611448d0f0b6..c6fe89bf1be21cd4607620d265581ef5c8347589 100644
 --- a/build/cursor-helpers.d.ts
 +++ b/build/cursor-helpers.d.ts
-@@ -11,8 +11,8 @@ export declare const cursorPositionChanged: (a: CursorPosition | undefined, b: C
+@@ -11,9 +11,9 @@ Compare two cursor positions. Returns true if they differ.
+ export declare const cursorPositionChanged: (a: CursorPosition | undefined, b: CursorPosition | undefined) => boolean;
  /**
  Build escape sequence to move cursor from bottom of output to the target position and show it.
 -Assumes cursor is at (col 0, line visibleLineCount) — i.e. just after the last output line.
@@ -13,7 +124,7 @@ index 29681f0..f64043c 100644
  /**
  Build escape sequence to move cursor from previousCursorPosition back to the bottom of output.
  This must be done before eraseLines or any operation that assumes cursor is at the bottom.
-@@ -25,7 +25,7 @@ export type CursorOnlyInput = {
+@@ -23,7 +23,7 @@ export type CursorOnlyInput = {
      cursorWasShown: boolean;
      previousLineCount: number;
      previousCursorPosition: CursorPosition | undefined;
@@ -23,10 +134,10 @@ index 29681f0..f64043c 100644
  };
  /**
 diff --git a/build/cursor-helpers.js b/build/cursor-helpers.js
-index d2056e8..a967ef2 100644
+index be493545f0a22d2972a36ad858d2e4bbc4c9326a..81a728baf4772f38094231e3891a42ca1546df8d 100644
 --- a/build/cursor-helpers.js
 +++ b/build/cursor-helpers.js
-@@ -8,13 +8,13 @@ export { showCursorEscape, hideCursorEscape };
+@@ -8,13 +8,13 @@ Compare two cursor positions. Returns true if they differ.
  export const cursorPositionChanged = (a, b) => a?.x !== b?.x || a?.y !== b?.y;
  /**
  Build escape sequence to move cursor from bottom of output to the target position and show it.
@@ -43,7 +154,7 @@ index d2056e8..a967ef2 100644
      return ((moveUp > 0 ? ansiEscapes.cursorUp(moveUp) : '') +
          ansiEscapes.cursorTo(cursorPosition.x) +
          showCursorEscape);
-@@ -38,7 +38,7 @@ Hides cursor if it was previously shown, returns to bottom, then repositions.
+@@ -39,7 +39,7 @@ Hides cursor if it was previously shown, returns to bottom, then repositions.
  export const buildCursorOnlySequence = (input) => {
      const hidePrefix = input.cursorWasShown ? hideCursorEscape : '';
      const returnToBottom = buildReturnToBottom(input.previousLineCount, input.previousCursorPosition);
@@ -52,18 +163,558 @@ index d2056e8..a967ef2 100644
      return hidePrefix + returnToBottom + cursorSuffix;
  };
  /**
+diff --git a/build/ink.d.ts b/build/ink.d.ts
+index db6a701cd3f7f36a3f3b825857224fe89a4bdb7b..7f25f0c0ff0ba052747000a8c20ca8229c1327d7 100644
+--- a/build/ink.d.ts
++++ b/build/ink.d.ts
+@@ -23,6 +23,10 @@ export type Options = {
+     waitUntilExit?: () => Promise<unknown>;
+     maxFps?: number;
+     incrementalRendering?: boolean;
++    /** Coalesce obsolete interactive frames while stdout is backpressured. */
++    coalesceBackpressuredFrames?: boolean;
++    /** Allow Windows fullscreen diffs when the bottom-right cell is guaranteed blank. */
++    windowsFullscreenDiff?: boolean;
+     /**
+     Enable React Concurrent Rendering mode.
+
+@@ -90,6 +94,8 @@ export default class Ink {
+     private lastOutputToRender;
+     private lastOutputHeight;
+     private lastTerminalWidth;
++    private lastTerminalRows;
++    private pendingTerminalResets;
+     private readonly container;
+     private readonly rootNode;
+     private fullStaticOutput;
+@@ -100,6 +106,8 @@ export default class Ink {
+     private readonly unsubscribeResize?;
+     private readonly throttledOnRender?;
+     private hasPendingThrottledRender;
++    private outputBackpressured;
++    private hasPendingBackpressuredRender;
+     private kittyProtocolEnabled;
+     private kittyFlags;
+     private cancelKittyDetection?;
+@@ -118,7 +126,10 @@ export default class Ink {
+     calculateLayout: () => void;
+     handleStaticChange: () => void;
+     onRender: () => void;
++    private requestImmediateInputRender;
+     render(node: ReactNode): void;
++    private writeFrameChunk;
++    private handleOutputDrain;
+     writeToStdout(data: string): void;
+     writeToStderr(data: string): void;
+     unmount(error?: Error | number | null): void;
+diff --git a/build/ink.js b/build/ink.js
+index 0082666b281ec2db77b875d6b8460bcc19a59ce7..aaccf21b090f5e7e95679e082d17db8d3785f45d 100644
+--- a/build/ink.js
++++ b/build/ink.js
+@@ -86,7 +86,7 @@ const stripKittyQueryResponsesAndTrailingPartial = (buffer) => {
+ // viewport, leaving stale copies of previous frames behind (#969). Keep the
+ // pre-7.0 behavior of fully clearing between fullscreen frames there.
+ const isWindowsConsole = process.platform === 'win32';
+-const shouldClearTerminalForFrame = ({ isTty, viewportRows, previousOutputHeight, nextOutputHeight, isUnmounting, }) => {
++const shouldClearTerminalForFrame = ({ isTty, viewportRows, previousOutputHeight, nextOutputHeight, isUnmounting, windowsFullscreenDiff, }) => {
+     if (!isTty) {
+         return false;
+     }
+@@ -97,7 +97,7 @@ const shouldClearTerminalForFrame = ({ isTty, viewportRows, previousOutputHeight
+     const isFullscreen = nextOutputHeight >= viewportRows;
+     const isLeavingFullscreen = wasFullscreen && nextOutputHeight < viewportRows;
+     const shouldClearOnUnmount = isUnmounting && wasFullscreen;
+-    if (isWindowsConsole && (wasFullscreen || isFullscreen)) {
++    if (isWindowsConsole && !windowsFullscreenDiff && (wasFullscreen || isFullscreen)) {
+         return true;
+     }
+     return (
+@@ -155,6 +155,8 @@ export default class Ink {
+     lastOutputToRender;
+     lastOutputHeight;
+     lastTerminalWidth;
++    lastTerminalRows;
++    pendingTerminalResets = 0;
+     container;
+     rootNode;
+     // This variable is used only in debug mode to store full static output
+@@ -167,6 +169,8 @@ export default class Ink {
+     unsubscribeResize;
+     throttledOnRender;
+     hasPendingThrottledRender = false;
++    outputBackpressured = false;
++    hasPendingBackpressuredRender = false;
+     kittyProtocolEnabled = false;
+     kittyFlags;
+     cancelKittyDetection;
+@@ -216,6 +220,7 @@ export default class Ink {
+         this.rootNode.onStaticChange = this.handleStaticChange;
+         this.log = logUpdate.create(options.stdout, {
+             incremental: options.incrementalRendering,
++            write: this.writeFrameChunk, absoluteLineDiff: options.windowsFullscreenDiff === true,
+         });
+         this.cursorPosition = undefined;
+         this.throttledLog = unthrottled
+@@ -224,11 +229,11 @@ export default class Ink {
+                 const shouldWrite = this.log.willRender(output);
+                 const sync = this.shouldSync();
+                 if (sync && shouldWrite) {
+-                    this.options.stdout.write(bsu);
++                    this.writeFrameChunk(bsu);
+                 }
+                 this.log(output);
+                 if (sync && shouldWrite) {
+-                    this.options.stdout.write(esu);
++                    this.writeFrameChunk(esu);
+                 }
+             }, undefined, {
+                 leading: true,
+@@ -244,6 +249,8 @@ export default class Ink {
+         this.lastOutputToRender = '';
+         this.lastOutputHeight = 0;
+         this.lastTerminalWidth = getWindowSize(this.options.stdout).columns;
++        this.lastTerminalRows = getWindowSize(this.options.stdout).rows;
++        this.pendingTerminalResets = 0;
+         // This variable is used only in debug mode to store full static output
+         // so that it's rerendered every time, not just new static parts, like in non-debug mode
+         this.fullStaticOutput = '';
+@@ -277,17 +284,24 @@ export default class Ink {
+         void this.exitPromise.catch(noop);
+     }
+     resized = () => {
+-        const currentWidth = getWindowSize(this.options.stdout).columns;
+-        if (currentWidth < this.lastTerminalWidth) {
+-            // We clear the screen when decreasing terminal width to prevent duplicate overlapping re-renders.
+-            this.log.clear();
++        const size = getWindowSize(this.options.stdout);
++        const sizeChanged = size.columns !== this.lastTerminalWidth || size.rows !== this.lastTerminalRows;
++        this.lastTerminalWidth = size.columns;
++        this.lastTerminalRows = size.rows;
++        this.calculateLayout();
++        dom.emitLayoutListeners(this.rootNode);
++        if (sizeChanged) {
++            // ConPTY/xterm reflow the existing cells on a size change. eraseLines
++            // from the previous line list then paints on top of that reflow and
++            // leaves overlapping fragments. Two clearTerminal frames cover the
++            // stale-tree paint in this listener and the matching React commit.
++            this.pendingTerminalResets = 2;
++            this.log.reset();
+             this.lastOutput = '';
+             this.lastOutputToRender = '';
++            this.lastOutputHeight = 0;
+         }
+-        this.calculateLayout();
+-        dom.emitLayoutListeners(this.rootNode);
+         this.onRender();
+-        this.lastTerminalWidth = currentWidth;
+     };
+     resolveExitPromise = () => { };
+     rejectExitPromise = () => { };
+@@ -330,6 +344,15 @@ export default class Ink {
+         if (this.isUnmounted) {
+             return;
+         }
++        // Once stdout applies backpressure, React may continue committing new
++        // state but old terminal frames are obsolete. Retain only the fact that
++        // one redraw is due; the drain handler renders the newest tree relative
++        // to the last frame already accepted by the stream.
++        if (this.options.coalesceBackpressuredFrames && this.outputBackpressured) {
++            this.hasPendingBackpressuredRender = true;
++            return;
++        }
++        this.hasPendingBackpressuredRender = false;
+         // While suspended, the terminal belongs to a child process. Discard queued
+         // renders; resume() forces a full redraw once Ink reclaims the terminal.
+         // Resolve any awaited render commit so callers don't hang during suspension.
+@@ -417,9 +440,14 @@ export default class Ink {
+         }
+         this.renderInteractiveFrame(output, outputHeight, hasStaticOutput ? staticOutput : '');
+     };
++    requestImmediateInputRender = () => {
++        this.throttledOnRender?.cancel();
++        this.hasPendingThrottledRender = false;
++        this.onRender();
++    };
+     render(node) {
+         const tree = (React.createElement(AccessibilityContext.Provider, { value: { isScreenReaderEnabled: this.isScreenReaderEnabled } },
+-            React.createElement(App, { stdin: this.options.stdin, stdout: this.options.stdout, stderr: this.options.stderr, exitOnCtrlC: this.options.exitOnCtrlC, interactive: this.interactive, renderThrottleMs: this.renderThrottleMs, writeToStdout: this.writeToStdout, writeToStderr: this.writeToStderr, setCursorPosition: this.setCursorPosition, onExit: this.handleAppExit, onWaitUntilRenderFlush: this.waitUntilRenderFlush, onSuspendTerminal: this.suspendTerminal, onRegisterInputControl: this.registerInputControl }, node)));
++            React.createElement(App, { stdin: this.options.stdin, stdout: this.options.stdout, stderr: this.options.stderr, exitOnCtrlC: this.options.exitOnCtrlC, interactive: this.interactive, renderThrottleMs: this.renderThrottleMs, writeToStdout: this.writeToStdout, writeToStderr: this.writeToStderr, setCursorPosition: this.setCursorPosition, onExit: this.handleAppExit, onWaitUntilRenderFlush: this.waitUntilRenderFlush, onSuspendTerminal: this.suspendTerminal, onRegisterInputControl: this.registerInputControl, onImmediateInputRender: this.requestImmediateInputRender }, node)));
+         if (this.options.concurrent) {
+             // Concurrent mode: use updateContainer (async scheduling)
+             reconciler.updateContainer(tree, this.container, null, noop);
+@@ -430,6 +458,22 @@ export default class Ink {
+             reconciler.flushSyncWork();
+         }
+     }
++    writeFrameChunk = (data) => {
++        const writable = this.options.stdout.write(data);
++        if (this.options.coalesceBackpressuredFrames && !writable && !this.outputBackpressured) {
++            this.outputBackpressured = true;
++            this.options.stdout.once('drain', this.handleOutputDrain);
++        }
++        return writable;
++    };
++    handleOutputDrain = () => {
++        this.outputBackpressured = false;
++        if (this.isUnmounted || this.isUnmounting || !this.hasPendingBackpressuredRender) {
++            return;
++        }
++        this.calculateLayout();
++        this.onRender();
++    };
+     writeToStdout(data) {
+         if (this.isUnmounted) {
+             return;
+@@ -493,6 +537,10 @@ export default class Ink {
+             return;
+         }
+         this.isUnmounting = true;
++        this.options.stdout.off('drain', this.handleOutputDrain);
++        this.outputBackpressured = false;
++        this.hasPendingBackpressuredRender = false;
++        this.pendingTerminalResets = 0;
+         if (this.beforeExitHandler) {
+             process.off('beforeExit', this.beforeExitHandler);
+             this.beforeExitHandler = undefined;
+@@ -753,25 +801,29 @@ export default class Ink {
+         const viewportRows = isTty ? getWindowSize(this.options.stdout).rows : 24;
+         const isFullscreen = isTty && outputHeight >= viewportRows;
+         const outputToRender = isFullscreen ? output : output + '\n';
+-        const shouldClearTerminal = shouldClearTerminalForFrame({
++        const shouldClearTerminal = this.pendingTerminalResets > 0 || shouldClearTerminalForFrame({
+             isTty,
+             viewportRows,
+             previousOutputHeight: this.lastOutputHeight,
+             nextOutputHeight: outputHeight,
+             isUnmounting: this.isUnmounting,
++            windowsFullscreenDiff: this.options.windowsFullscreenDiff === true,
+         });
+         if (shouldClearTerminal) {
++            if (this.pendingTerminalResets > 0) {
++                this.pendingTerminalResets -= 1;
++            }
+             const sync = this.shouldSync();
+             if (sync) {
+-                this.options.stdout.write(bsu);
++                this.writeFrameChunk(bsu);
+             }
+-            this.options.stdout.write(ansiEscapes.clearTerminal + this.fullStaticOutput + outputToRender);
++            this.writeFrameChunk(ansiEscapes.clearTerminal + this.fullStaticOutput + outputToRender);
+             this.lastOutput = output;
+             this.lastOutputToRender = outputToRender;
+             this.lastOutputHeight = outputHeight;
+             this.log.sync(outputToRender);
+             if (sync) {
+-                this.options.stdout.write(esu);
++                this.writeFrameChunk(esu);
+             }
+             return;
+         }
+@@ -779,13 +831,13 @@ export default class Ink {
+         if (hasStaticOutput) {
+             const sync = this.shouldSync();
+             if (sync) {
+-                this.options.stdout.write(bsu);
++                this.writeFrameChunk(bsu);
+             }
+             this.log.clear();
+-            this.options.stdout.write(staticOutput);
++            this.writeFrameChunk(staticOutput);
+             this.log(outputToRender);
+             if (sync) {
+-                this.options.stdout.write(esu);
++                this.writeFrameChunk(esu);
+             }
+         }
+         else if (output !== this.lastOutput || this.log.isCursorDirty()) {
+diff --git a/build/input-parser.d.ts b/build/input-parser.d.ts
+index 251d98b036ee01f7e43fd1982caf48ca2eb014aa..6b5be52737e81b14d4a21fd32e4edd5f852c817f 100644
+--- a/build/input-parser.d.ts
++++ b/build/input-parser.d.ts
+@@ -3,8 +3,19 @@ export type InputEvent = string | {
+ };
+ export type InputParser = {
+     push: (chunk: string) => InputEvent[];
++    isPendingPaste: () => boolean;
++    abortPendingPaste: (reason?: 'limit' | 'timeout' | 'reset') => boolean;
++    pendingCharacters: () => number;
++    pendingMode: () => 'normal' | 'csi' | 'paste';
++    lastAbortReason: () => 'limit' | 'timeout' | 'reset' | undefined;
++    abortCount: () => number;
+     hasPendingEscape: () => boolean;
+     flushPendingEscape: () => string | undefined;
+     reset: () => void;
+ };
+-export declare const createInputParser: () => InputParser;
++export declare const defaultMaxPendingPasteCharacters: number;
++export declare const defaultMaxPendingControlCharacters: number;
++export declare const createInputParser: (options?: {
++    maxPendingPasteCharacters?: number;
++    maxPendingControlCharacters?: number;
++}) => InputParser;
+diff --git a/build/input-parser.js b/build/input-parser.js
+index 27446479b370b0f47f7c5d9a0d0b9014f26985fd..4bbc11db1026e54f05cfe9e710815d9a5bba75fd 100644
+--- a/build/input-parser.js
++++ b/build/input-parser.js
+@@ -1,6 +1,9 @@
+ const escape = '\u001B';
+ const pasteStart = '\u001B[200~';
+ const pasteEnd = '\u001B[201~';
++const pasteEndOverlap = pasteEnd.length - 1;
++export const defaultMaxPendingPasteCharacters = 1024 * 1024;
++export const defaultMaxPendingControlCharacters = 64;
+ const isCsiParameterByte = (byte) => {
+     return byte >= 0x30 && byte <= 0x3f;
+ };
+@@ -122,7 +125,7 @@ const splitBackspaceBytes = (text, events) => {
+         events.push(text.slice(textSegmentStart));
+     }
+ };
+-const parseKeypresses = (input) => {
++const parseKeypresses = (input, maxPendingControlCharacters) => {
+     const events = [];
+     let index = 0;
+     const pendingFrom = (pendingStartIndex) => ({
+@@ -143,13 +146,29 @@ const parseKeypresses = (input) => {
+         }
+         const parsedEscapeSequence = parseEscapeSequence(input, escapeIndex);
+         if (parsedEscapeSequence === 'pending') {
++            const pendingInput = input.slice(escapeIndex);
++            // Incomplete CSI / SS3 can grow without a final byte. Drop the
++            // unfinished control record rather than retaining it across chunks.
++            if (pendingInput !== '\u001B[200' &&
++                pendingInput.length > maxPendingControlCharacters) {
++                return {
++                    events,
++                    pending: '',
++                };
++            }
+             return pendingFrom(escapeIndex);
+         }
+         if (parsedEscapeSequence.sequence === pasteStart) {
+             const afterStart = parsedEscapeSequence.nextIndex;
+             const endIndex = input.indexOf(pasteEnd, afterStart);
+             if (endIndex === -1) {
+-                return pendingFrom(escapeIndex);
++                // Hand the unfinished paste body to the chunk-list state machine
++                // instead of concatenating it into `pending`.
++                return {
++                    events,
++                    pending: '',
++                    openPaste: input.slice(afterStart),
++                };
+             }
+             events.push({ paste: input.slice(afterStart, endIndex) });
+             index = endIndex + pasteEnd.length;
+@@ -163,23 +182,143 @@ const parseKeypresses = (input) => {
+         pending: '',
+     };
+ };
+-export const createInputParser = () => {
++export const createInputParser = ({ maxPendingPasteCharacters = defaultMaxPendingPasteCharacters, maxPendingControlCharacters = defaultMaxPendingControlCharacters, } = {}) => {
+     let pending = '';
++    let pasteChunks;
++    let pasteChars = 0;
++    let pasteTail = '';
++    let discardPaste = false;
++    let abortReason;
++    let abortCount = 0;
++    const enterNormal = () => {
++        pasteChunks = undefined;
++        pasteChars = 0;
++        pasteTail = '';
++        discardPaste = false;
++    };
++    const abortPaste = (reason) => {
++        if (pasteChunks === undefined && !discardPaste) {
++            return false;
++        }
++        abortReason = reason;
++        abortCount += 1;
++        enterNormal();
++        pending = '';
++        return true;
++    };
++    const pushDiscardedPaste = (chunk) => {
++        const search = pasteTail + chunk;
++        const endIndex = search.indexOf(pasteEnd);
++        if (endIndex === -1) {
++            pasteTail = search.slice(-Math.min(search.length, pasteEndOverlap));
++            return [];
++        }
++        const rest = search.slice(endIndex + pasteEnd.length);
++        enterNormal();
++        return rest.length > 0 ? pushNormal(rest) : [];
++    };
++    const pushPaste = (chunk) => {
++        const search = pasteTail + chunk;
++        const endIndex = search.indexOf(pasteEnd);
++        if (endIndex === -1) {
++            const committed = search.length > pasteEndOverlap
++                ? search.slice(0, search.length - pasteEndOverlap)
++                : '';
++            const nextTail = search.slice(-Math.min(search.length, pasteEndOverlap));
++            if (pasteChars + committed.length + nextTail.length > maxPendingPasteCharacters) {
++                abortPaste('limit');
++                discardPaste = true;
++                pasteTail = nextTail;
++                return [];
++            }
++            if (committed.length > 0) {
++                pasteChunks.push(committed);
++                pasteChars += committed.length;
++            }
++            pasteTail = nextTail;
++            return [];
++        }
++        if (pasteChars + endIndex > maxPendingPasteCharacters) {
++            abortPaste('limit');
++            const rest = search.slice(endIndex + pasteEnd.length);
++            return rest.length > 0 ? pushNormal(rest) : [];
++        }
++        const bodySuffix = search.slice(0, endIndex);
++        if (bodySuffix.length > 0) {
++            pasteChunks.push(bodySuffix);
++            pasteChars += bodySuffix.length;
++        }
++        const content = pasteChunks.join('');
++        enterNormal();
++        const events = [{ paste: content }];
++        const rest = search.slice(endIndex + pasteEnd.length);
++        if (rest.length > 0) {
++            events.push(...pushNormal(rest));
++        }
++        return events;
++    };
++    const pushNormal = (input) => {
++        const parsedInput = parseKeypresses(pending + input, maxPendingControlCharacters);
++        pending = parsedInput.pending;
++        const events = parsedInput.events;
++        if (parsedInput.openPaste !== undefined) {
++            pasteChunks = [];
++            pasteChars = 0;
++            pasteTail = '';
++            events.push(...pushPaste(parsedInput.openPaste));
++        }
++        return events;
++    };
+     return {
+         push(chunk) {
+-            const parsedInput = parseKeypresses(pending + chunk);
+-            pending = parsedInput.pending;
+-            return parsedInput.events;
++            if (discardPaste) {
++                return pushDiscardedPaste(chunk);
++            }
++            if (pasteChunks !== undefined) {
++                return pushPaste(chunk);
++            }
++            return pushNormal(chunk);
++        },
++        isPendingPaste() {
++            return pasteChunks !== undefined || discardPaste;
++        },
++        abortPendingPaste(reason = 'timeout') {
++            return abortPaste(reason);
++        },
++        pendingCharacters() {
++            if (pasteChunks !== undefined) {
++                return pasteStart.length + pasteChars + pasteTail.length;
++            }
++            if (discardPaste) {
++                return 0;
++            }
++            return pending.length;
++        },
++        pendingMode() {
++            if (pasteChunks !== undefined || discardPaste) {
++                return 'paste';
++            }
++            if (pending.startsWith(escape)) {
++                return 'csi';
++            }
++            return 'normal';
++        },
++        lastAbortReason() {
++            return abortReason;
++        },
++        abortCount() {
++            return abortCount;
+         },
+         hasPendingEscape() {
+             // Don't trigger the escape flush timer while assembling a paste start
+             // marker (`\u001B[200` and then `~`) or while waiting for paste end.
+-            return (pending.startsWith(escape) &&
+-                !pending.startsWith(pasteStart) &&
++            return (pasteChunks === undefined &&
++                !discardPaste &&
++                pending.startsWith(escape) &&
+                 pending !== '\u001B[200');
+         },
+         flushPendingEscape() {
+-            if (!pending.startsWith(escape)) {
++            if (pasteChunks !== undefined || discardPaste || !pending.startsWith(escape)) {
+                 return undefined;
+             }
+             const pendingEscape = pending;
+@@ -187,6 +326,10 @@ export const createInputParser = () => {
+             return pendingEscape;
+         },
+         reset() {
++            if (pasteChunks !== undefined || discardPaste) {
++                abortPaste('reset');
++                return;
++            }
+             pending = '';
+         },
+     };
+diff --git a/build/log-update.d.ts b/build/log-update.d.ts
+index 6e9135308e55a9dfcfc051c924682a41e159a895..b438847a1d385539e8b060e832ea31ee8abf6cd6 100644
+--- a/build/log-update.d.ts
++++ b/build/log-update.d.ts
+@@ -15,6 +15,8 @@ declare const logUpdate: {
+     create: (stream: Writable, { showCursor, incremental }?: {
+         showCursor?: boolean | undefined;
+         incremental?: boolean | undefined;
++        write?: ((data: string) => boolean) | undefined;
++        absoluteLineDiff?: boolean | undefined;
+     }) => LogUpdate;
+ };
+ export default logUpdate;
 diff --git a/build/log-update.js b/build/log-update.js
-index 261277c..4a7fc17 100644
+index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..29475f7fcb31b777511943ef1834fb2c9750ed46 100644
 --- a/build/log-update.js
 +++ b/build/log-update.js
-@@ -32,13 +32,12 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+@@ -4,7 +4,7 @@ import { cursorPositionChanged, buildCursorSuffix, buildCursorOnlySequence, buil
+ // Count visible lines in a string, ignoring the trailing empty element
+ // that `split('\n')` produces when the string ends with '\n'.
+ const visibleLineCount = (lines, str) => str.endsWith('\n') ? lines.length - 1 : lines.length;
+-const createStandard = (stream, { showCursor = false } = {}) => {
++const createStandard = (stream, { showCursor = false, write = stream.write.bind(stream), } = {}) => {
+     let previousLineCount = 0;
+     let previousOutput = '';
+     let hasHiddenCursor = false;
+@@ -12,7 +12,9 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+     let cursorDirty = false;
+     let previousCursorPosition;
+     let cursorWasShown = false;
+-    const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
++    // Keep the last mounted cursor until useCursor cleanup commits undefined.
++    // Animation-only frames must not hide the IME caret.
++    const getActiveCursor = () => (cursorDirty ? cursorPosition : previousCursorPosition);
+     const hasChanges = (str, activeCursor) => {
+         const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+         return str !== previousOutput || cursorChanged;
+@@ -31,21 +33,20 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+             return false;
          }
          const lines = str.split('\n');
 -        const visibleCount = visibleLineCount(lines, str);
 -        const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
 +        const cursorSuffix = buildCursorSuffix(lines.length - 1, activeCursor);
          if (str === previousOutput && cursorChanged) {
-             stream.write(buildCursorOnlySequence({
+-            stream.write(buildCursorOnlySequence({
++            write(buildCursorOnlySequence({
                  cursorWasShown,
                  previousLineCount,
                  previousCursorPosition,
@@ -72,16 +723,139 @@ index 261277c..4a7fc17 100644
                  cursorPosition: activeCursor,
              }));
          }
-@@ -88,7 +88,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
-             stream.write(hideCursorEscape);
+         else {
+             previousOutput = str;
+             const returnPrefix = buildReturnToBottomPrefix(cursorWasShown, previousLineCount, previousCursorPosition);
+-            stream.write(returnPrefix +
++            write(returnPrefix +
+                 ansiEscapes.eraseLines(previousLineCount) +
+                 str +
+                 cursorSuffix);
+@@ -57,7 +58,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+     };
+     render.clear = () => {
+         const prefix = buildReturnToBottomPrefix(cursorWasShown, previousLineCount, previousCursorPosition);
+-        stream.write(prefix + ansiEscapes.eraseLines(previousLineCount));
++        write(prefix + ansiEscapes.eraseLines(previousLineCount));
+         previousOutput = '';
+         previousLineCount = 0;
+         previousCursorPosition = undefined;
+@@ -86,10 +87,10 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+         previousOutput = str;
+         previousLineCount = lines.length;
+         if (!activeCursor && cursorWasShown) {
+-            stream.write(hideCursorEscape);
++            write(hideCursorEscape);
          }
          if (activeCursor) {
 -            stream.write(buildCursorSuffix(visibleLineCount(lines, str), activeCursor));
-+            stream.write(buildCursorSuffix(lines.length - 1, activeCursor));
++            write(buildCursorSuffix(lines.length - 1, activeCursor));
          }
          previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
          cursorWasShown = activeCursor !== undefined;
-@@ -130,7 +130,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -102,7 +103,7 @@ const createStandard = (stream, { showCursor = false } = {}) => {
+     render.willRender = (str) => hasChanges(str, getActiveCursor());
+     return render;
+ };
+-const createIncremental = (stream, { showCursor = false } = {}) => {
++const createIncremental = (stream, { showCursor = false, write = stream.write.bind(stream), absoluteLineDiff = false, } = {}) => {
+     let previousLines = [];
+     let previousOutput = '';
+     let hasHiddenCursor = false;
+@@ -110,18 +111,84 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+     let cursorDirty = false;
+     let previousCursorPosition;
+     let cursorWasShown = false;
+-    const getActiveCursor = () => (cursorDirty ? cursorPosition : undefined);
++    const getActiveCursor = () => (cursorDirty ? cursorPosition : previousCursorPosition);
+     const hasChanges = (str, activeCursor) => {
+         const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+         return str !== previousOutput || cursorChanged;
+     };
++    const writeFullFrame = (str, nextLines, activeCursor, returnPrefix) => {
++        const cursorSuffix = buildCursorSuffix(nextLines.length - 1, activeCursor);
++        // ConPTY wrap/reflow desynchronizes relative eraseLines walking.
++        // CUP 1;1 + ED is absolute, so leftover cells cannot survive a rewrite.
++        if (process.platform === 'win32' && absoluteLineDiff) {
++            const hide = cursorWasShown ? hideCursorEscape : '';
++            write(hide + ansiEscapes.cursorTo(0, 0) + ansiEscapes.eraseDown + str + cursorSuffix);
++            return;
++        }
++        write(returnPrefix +
++            ansiEscapes.eraseLines(previousLines.length) +
++            str +
++            cursorSuffix);
++    };
++    const countChangedLines = (nextLines, visibleCount, previousVisible) => {
++        let changed = 0;
++        const limit = Math.max(visibleCount, previousVisible);
++        for (let index = 0; index < limit; index += 1) {
++            if (nextLines[index] !== previousLines[index]) {
++                changed += 1;
++            }
++        }
++        return changed;
++    };
++    // Skip an identical ASCII prefix so a spinner/caret rewrites from the
++    // first changed column. ESC rows and any non-ASCII (CJK width) rewrite
++    // the whole line: CUP columns are cells, not UTF-16 indices.
++    const asciiPrefixLength = (previous, next) => {
++        if (previous.includes('\u001B') || next.includes('\u001B')) {
++            return 0;
++        }
++        const limit = Math.min(previous.length, next.length);
++        let index = 0;
++        while (index < limit) {
++            const code = previous.charCodeAt(index);
++            if (code !== next.charCodeAt(index) || code < 0x20 || code > 0x7e) {
++                break;
++            }
++            index += 1;
++        }
++        return index;
++    };
++    const writeAbsoluteLineDiff = (nextLines, visibleCount, previousVisible, activeCursor) => {
++        const hide = cursorWasShown ? hideCursorEscape : '';
++        const parts = [hide];
++        const limit = Math.max(visibleCount, previousVisible);
++        for (let index = 0; index < limit; index += 1) {
++            const next = index < visibleCount ? nextLines[index] ?? '' : '';
++            const previous = previousLines[index] ?? '';
++            if (next === previous) {
++                continue;
++            }
++            if (index >= visibleCount) {
++                parts.push(ansiEscapes.cursorTo(0, index) + ansiEscapes.eraseLine);
++                continue;
++            }
++            const skip = asciiPrefixLength(previous, next);
++            parts.push(ansiEscapes.cursorTo(skip, index) + next.slice(skip) + ansiEscapes.eraseEndLine);
++        }
++        // buildCursorSuffix assumes the cursor is on the last output row.
++        parts.push(ansiEscapes.cursorTo(0, nextLines.length - 1));
++        parts.push(buildCursorSuffix(nextLines.length - 1, activeCursor));
++        write(parts.join(''));
++    };
++    // The fullscreen caller opts into absolute CUP because relative walking
++    // is unsafe once a prior frame wrapped. Other Ink surfaces keep upstream.
++    const maxLineWalk = absoluteLineDiff ? 0 : 3;
++    const maxAbsoluteDiff = absoluteLineDiff ? 8 : 0;
+     const render = (str) => {
+         if (!showCursor && !hasHiddenCursor) {
+             cliCursor.hide(stream);
+             hasHiddenCursor = true;
+         }
+-        // Only use cursor if setCursorPosition was called since last render.
+-        // This ensures stale positions don't persist after component unmount.
+         const activeCursor = getActiveCursor();
+         cursorDirty = false;
+         const cursorChanged = cursorPositionChanged(activeCursor, previousCursorPosition);
+@@ -132,11 +199,11 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+         const visibleCount = visibleLineCount(nextLines, str);
+         const previousVisible = visibleLineCount(previousLines, previousOutput);
+         if (str === previousOutput && cursorChanged) {
+-            stream.write(buildCursorOnlySequence({
++            write(buildCursorOnlySequence({
                  cursorWasShown,
                  previousLineCount: previousLines.length,
                  previousCursorPosition,
@@ -90,39 +864,126 @@ index 261277c..4a7fc17 100644
                  cursorPosition: activeCursor,
              }));
              previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
-@@ -145,7 +145,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+@@ -144,12 +211,29 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+             return true;
          }
          const returnPrefix = buildReturnToBottomPrefix(cursorWasShown, previousLines.length, previousCursorPosition);
-         if (str === '\n' || previousOutput.length === 0) {
+-        if (str === '\n' || previousOutput.length === 0) {
 -            const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
-+            const cursorSuffix = buildCursorSuffix(nextLines.length - 1, activeCursor);
-             stream.write(returnPrefix +
-                 ansiEscapes.eraseLines(previousLines.length) +
-                 str +
-@@ -187,7 +187,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
-                 // has no trailing newline (fullscreen mode).
+-            stream.write(returnPrefix +
+-                ansiEscapes.eraseLines(previousLines.length) +
+-                str +
+-                cursorSuffix);
++        const changedLines = countChangedLines(nextLines, visibleCount, previousVisible);
++        const sameVisible = visibleCount === previousVisible;
++        const useLineWalk = previousOutput.length > 0 &&
++            str !== '\n' &&
++            sameVisible &&
++            changedLines > 0 &&
++            changedLines <= maxLineWalk;
++        const useAbsoluteDiff = previousOutput.length > 0 &&
++            str !== '\n' &&
++            sameVisible &&
++            changedLines > 0 &&
++            changedLines <= maxAbsoluteDiff &&
++            !useLineWalk;
++        if (useAbsoluteDiff) {
++            writeAbsoluteLineDiff(nextLines, visibleCount, previousVisible, activeCursor);
++            cursorWasShown = activeCursor !== undefined;
++            previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
++            previousOutput = str;
++            previousLines = nextLines;
++            return true;
++        }
++        if (!useLineWalk) {
++            writeFullFrame(str, nextLines, activeCursor, returnPrefix);
+             cursorWasShown = activeCursor !== undefined;
+             previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+             previousOutput = str;
+@@ -157,24 +241,12 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+             return true;
+         }
+         const hasTrailingNewline = str.endsWith('\n');
+-        // We aggregate all chunks for incremental rendering into a buffer, and then write them to stdout at the end.
+         const buffer = [];
+         buffer.push(returnPrefix);
+-        // Clear extra lines if the current content's line count is lower than the previous.
+-        if (visibleCount < previousVisible) {
+-            const previousHadTrailingNewline = previousOutput.endsWith('\n');
+-            const extraSlot = previousHadTrailingNewline ? 1 : 0;
+-            buffer.push(ansiEscapes.eraseLines(previousVisible - visibleCount + extraSlot), ansiEscapes.cursorUp(visibleCount));
+-        }
+-        else {
+-            buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
+-        }
++        buffer.push(ansiEscapes.cursorUp(previousLines.length - 1));
+         for (let i = 0; i < visibleCount; i++) {
+             const isLastLine = i === visibleCount - 1;
+-            // We do not write lines if the contents are the same. This prevents flickering during renders.
+             if (nextLines[i] === previousLines[i]) {
+-                // Don't move past the last line when there's no trailing newline,
+-                // otherwise the cursor overshoots the rendered block.
+                 if (!isLastLine || hasTrailingNewline) {
+                     buffer.push(ansiEscapes.cursorNextLine);
+                 }
+@@ -183,13 +255,11 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+             buffer.push(ansiEscapes.cursorTo(0) +
+                 nextLines[i] +
+                 ansiEscapes.eraseEndLine +
+-                // Don't append newline after the last line when the input
+-                // has no trailing newline (fullscreen mode).
                  (isLastLine && !hasTrailingNewline ? '' : '\n'));
          }
 -        const cursorSuffix = buildCursorSuffix(visibleCount, activeCursor);
 +        const cursorSuffix = buildCursorSuffix(nextLines.length - 1, activeCursor);
          buffer.push(cursorSuffix);
-         stream.write(buffer.join(''));
+-        stream.write(buffer.join(''));
++        write(buffer.join(''));
          cursorWasShown = activeCursor !== undefined;
-@@ -230,7 +230,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
-             stream.write(hideCursorEscape);
+         previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
+         previousOutput = str;
+@@ -198,7 +268,7 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+     };
+     render.clear = () => {
+         const prefix = buildReturnToBottomPrefix(cursorWasShown, previousLines.length, previousCursorPosition);
+-        stream.write(prefix + ansiEscapes.eraseLines(previousLines.length));
++        write(prefix + ansiEscapes.eraseLines(previousLines.length));
+         previousOutput = '';
+         previousLines = [];
+         previousCursorPosition = undefined;
+@@ -227,10 +297,10 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+         previousOutput = str;
+         previousLines = lines;
+         if (!activeCursor && cursorWasShown) {
+-            stream.write(hideCursorEscape);
++            write(hideCursorEscape);
          }
          if (activeCursor) {
 -            stream.write(buildCursorSuffix(visibleLineCount(lines, str), activeCursor));
-+            stream.write(buildCursorSuffix(lines.length - 1, activeCursor));
++            write(buildCursorSuffix(lines.length - 1, activeCursor));
          }
          previousCursorPosition = activeCursor ? { ...activeCursor } : undefined;
          cursorWasShown = activeCursor !== undefined;
+@@ -243,11 +313,11 @@ const createIncremental = (stream, { showCursor = false } = {}) => {
+     render.willRender = (str) => hasChanges(str, getActiveCursor());
+     return render;
+ };
+-const create = (stream, { showCursor = false, incremental = false } = {}) => {
++const create = (stream, { showCursor = false, incremental = false, write = stream.write.bind(stream), absoluteLineDiff = false, } = {}) => {
+     if (incremental) {
+-        return createIncremental(stream, { showCursor });
++        return createIncremental(stream, { showCursor, write, absoluteLineDiff });
+     }
+-    return createStandard(stream, { showCursor });
++    return createStandard(stream, { showCursor, write });
+ };
+ const logUpdate = { create };
+ export default logUpdate;
 diff --git a/build/output.js b/build/output.js
-index 5eeabbc..29e98be 100644
+index c763b7763c5fc133c7fbb53c54c466cdf51c282b..a512d3e987ada1f0b2693fd8b79b178162264f00 100644
 --- a/build/output.js
 +++ b/build/output.js
-@@ -196,7 +196,18 @@ export default class Output {
-         const generatedOutput = output
+@@ -196,6 +196,17 @@ export default class Output {
              .map(line => {
              // See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
              const lineWithoutEmptyItems = line.filter(item => item !== undefined);
@@ -140,3 +1001,31 @@ index 5eeabbc..29e98be 100644
              return styledCharsToString(lineWithoutEmptyItems).trimEnd();
          })
              .join('\n');
+diff --git a/build/render.d.ts b/build/render.d.ts
+index 867edcaf84fe7229c30fb072227a10c2a97ba1c1..bbaf0a12b0b41e171fd8759c751d0b9237bfae75 100644
+--- a/build/render.d.ts
++++ b/build/render.d.ts
+@@ -67,6 +67,10 @@ export type RenderOptions = {
+     @default false
+     */
+     incrementalRendering?: boolean;
++    /** Coalesce obsolete interactive frames while stdout is backpressured. @default false */
++    coalesceBackpressuredFrames?: boolean;
++    /** Allow Windows fullscreen diffs when the bottom-right cell is guaranteed blank. @default false */
++    windowsFullscreenDiff?: boolean;
+     /**
+     Enable React Concurrent Rendering mode.
+
+diff --git a/build/render.js b/build/render.js
+index 6f185f6212d7e1867fb5dc70d26cd64b3931c339..eeeaad29e56fd6b5a46f970d89e005c429ac7fb6 100644
+--- a/build/render.js
++++ b/build/render.js
+@@ -15,6 +15,8 @@ const render = (node, options) => {
+         patchConsole: true,
+         maxFps: 30,
+         incrementalRendering: false,
++        coalesceBackpressuredFrames: false,
++        windowsFullscreenDiff: false,
+         concurrent: false,
+         alternateScreen: false,
+         ...getOptions(options),

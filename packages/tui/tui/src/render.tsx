@@ -13,16 +13,19 @@
 import React, { useCallback, useEffect, useEffectEvent, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { resolve } from 'node:path'
 import {
-  Box, Text, measureElement, render, useApp, useCursor, useInput, usePaste, useStdout,
+  Box, Text, measureElement, render, useAnimation, useApp, useCursor, useInput, usePaste, useStdout,
 } from 'ink'
 import type { DOMElement, Key } from 'ink'
 import stringWidth from 'string-width'
 import { projectCallCard, projectResultCard } from './card-project'
 import { csiTailKey, escapeArbiter, syntheticKey } from './csi-arbiter'
+import { PermissionCycleGate } from './permission-cycle'
 import {
   DISABLE_WHEEL_MOUSE, ENABLE_WHEEL_MOUSE, parseMouseReport, parseMouseWheel, scrollOffsetForWheel, stripMouseReports,
 } from './mouse'
-import { busyStarFrame } from './busy-star'
+import { busyStarFrame, BUSY_STAR_INTERVAL_MS, QUIET_BUSY_STAR_INTERVAL_MS } from './busy-star'
+import { RESTORE_CURSOR_STYLE, cursorStyleForBusy } from './cursor-style'
+import { fitDockLine, goalDockLine, todoDockLine } from './status-color'
 import { formatStats, helpText, localizeFoldStatus, markdownLines, retryCountdownSeconds, welcomeBlock, wrapRuns, fitStatsStrip } from './plain'
 import { welcomeBanner } from './welcome-banner'
 import type { MdRun } from './plain'
@@ -35,15 +38,16 @@ import {
   cycleSettingsPage, filterSettingsRows, hitSettingsTab, SETTINGS_CHROME_ROWS, settingsChromeHit, settingsHintText,
   settingsListIndex, settingsSearchText, settingsTabCell, settingsTabLabels,
 } from './settings-chrome'
-import type { TuiStore } from './store'
+import type { TuiSnapshot, TuiStore } from './store'
 import type { TuiNode } from './types'
 import {
   composerGlyphAt, composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth,
   composerVisibleRowCount, lineSelectableWidth, nextCodePointBoundary,
   previousCodePointBoundary, COMPOSER_PROMPT_WIDTH,
   rememberTranscriptWindow, scrollOffsetForScrollbarRow, selectComposerLayout, selectPanelViewport,
-  wrapComposerRanges, selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow,
+  selectScrollbar, selectTerminalFrameWidth, selectTranscriptBlocksWindow,
   selectTranscriptViewport, transcriptCellAt, transcriptLineAtRow, TRANSCRIPT_LINE_OVERSCAN,
+  exclusivePrefixSums, nodeIndexAtLine,
 } from './viewport'
 import type { TranscriptLine } from './viewport'
 import { copyToClipboard, pasteFromClipboard } from './clipboard'
@@ -63,9 +67,8 @@ import {
   extractSelectedText, glyphSpanAt, selectionFromGlyphs, selectionIsDrag, selectionSpanOnLine, sliceDisplayParts,
 } from './selection'
 import type { GlyphAnchor, TextSelection } from './selection'
-import { countUiInputDelay, countUiRender } from './tui-perf'
-import { padEndDisplay, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
-import type { LiveWrapState } from './wrap'
+import { padEndDisplay, projectLiveThinkingTail, wrapDisplayLines, wrapLiveAssistantText } from './wrap'
+import type { LiveThinkingTailState, LiveWrapState } from './wrap'
 
 const MAX_POPUP_ITEMS = 8
 const CTRL_C_EXIT_WINDOW_MS = 2_000
@@ -134,7 +137,9 @@ interface Copy {
   goalPaused: string
   goalBlocked: (reason: string) => string
   goalComplete: string
-  todoCounts: (active: number, pending: number, done: number) => string
+  todoInProgress: (count: number) => string
+  todoPendingCount: (count: number) => string
+  todoCompleteCount: (count: number) => string
   attachCount: (count: number) => string
   goalNone: string
   goalDetail: (revision: number, phase: string, rounds: number, max: number) => string
@@ -180,6 +185,8 @@ interface Copy {
   copyRange: (n: string, total: number) => string
   copyDone: string
   copyFailed: (reason: string) => string
+  resumeProgress: (done: number, total: number) => string
+  resumeCancel: string
   rateUsage: string
   rateRange: (n: number, total: number) => string
   rateDone: (rating: string, n: number) => string
@@ -236,7 +243,9 @@ const COPY: Record<Locale, Copy> = {
     goalPaused: '已暂停',
     goalBlocked: reason => `已阻塞：${reason}`,
     goalComplete: '已完成',
-    todoCounts: (active, pending, done) => `${active} 进行中 · ${pending} 待办 · ${done} 已完成`,
+    todoInProgress: count => `${count} 进行中`,
+    todoPendingCount: count => `${count} 待办`,
+    todoCompleteCount: count => `${count} 已完成`,
     attachCount: count => `📎 ${count} 张图片附件随下一条消息发送`,
     goalNone: '当前会话没有 goal。用 /goal <目标> 创建一个。',
     goalDetail: (revision, phase, rounds, max) => `◈ goal rev ${revision} · ${phase} · round ${rounds}/${max}`,
@@ -282,6 +291,8 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `没有第 ${n} 条最近回复（共 ${total} 条）`,
     copyDone: '已复制',
     copyFailed: reason => `复制失败：${reason}`,
+    resumeProgress: (done, total) => `恢复 ${done}/${total}`,
+    resumeCancel: '· Esc 取消恢复',
     rateUsage: '用法：/rate up|down [n]（n 为倒数第 n 条助手回复）',
     rateRange: (n, total) => `没有倒数第 ${n} 条可评分回复（共 ${total} 条）`,
     rateDone: (rating, n) => `已更新倒数第 ${n} 条回复的评价：${rating}`,
@@ -335,7 +346,9 @@ const COPY: Record<Locale, Copy> = {
     goalPaused: 'paused',
     goalBlocked: reason => `blocked: ${reason}`,
     goalComplete: 'complete',
-    todoCounts: (active, pending, done) => `${active} in progress · ${pending} pending · ${done} done`,
+    todoInProgress: count => `${count} in progress`,
+    todoPendingCount: count => `${count} pending`,
+    todoCompleteCount: count => `${count} done`,
     attachCount: count => `📎 ${count} image attachment${count === 1 ? '' : 's'} sent with the next message`,
     goalNone: 'This session has no goal. Create one with /goal <objective>.',
     goalDetail: (revision, phase, rounds, max) => `◈ goal rev ${revision} · ${phase} · round ${rounds}/${max}`,
@@ -381,6 +394,8 @@ const COPY: Record<Locale, Copy> = {
     copyRange: (n, total) => `No ${n}-latest reply (${total} available)`,
     copyDone: 'Copied',
     copyFailed: reason => `Copy failed: ${reason}`,
+    resumeProgress: (done, total) => `resume ${done}/${total}`,
+    resumeCancel: '· Esc cancel resume',
     rateUsage: 'Usage: /rate up|down [n] (n selects the Nth-latest assistant reply)',
     rateRange: (n, total) => `There is no rateable assistant reply #${n} from the end (${total} total)`,
     rateDone: (rating, n) => `Updated the Nth-latest assistant reply (${n}): ${rating}`,
@@ -465,6 +480,21 @@ export function themed(color: string | undefined, theme: 'dark' | 'light', fallb
   const mapped = table[intent] ?? intent
   if (!INK_NAMED.test(mapped)) return theme === 'light' ? 'blue' : 'whiteBright'
   return mapped
+}
+
+/**
+ * Resolve one transcript line's foreground without remapping exact TrueColor.
+ * @param line - transcript foreground intent.
+ * @param theme - active TUI theme.
+ * @returns the Ink foreground value.
+ */
+export function resolveTranscriptLineColor(
+  line: Pick<TranscriptLine, 'color' | 'exactColor'>,
+  theme: 'dark' | 'light',
+): string {
+  return line.exactColor === true && line.color !== undefined
+    ? line.color
+    : themed(line.color, theme, 'white')
 }
 
 /** Half-width of the live-Thinking highlight window in cells. */
@@ -597,6 +627,9 @@ export interface SessionReferenceEntry {
   cwd?: string
 }
 
+/** Persisted or live panel whose data is refreshed on open or polling. */
+export type TuiPanelRefreshKind = 'jobs' | 'subagents' | 'sessions'
+
 /** Host callbacks the renderer drives; supplied by the plugin. */
 export interface TuiHost {
   submit(text: string, steer: boolean): void
@@ -608,6 +641,8 @@ export interface TuiHost {
   setEffort(effort: string | undefined): void
   /** Shift+Tab: rotate the session's file-policy mode; returns the new mode. */
   cycleSandbox(): 'read-only' | 'workspace-write' | 'danger-full-access'
+  /** Abort an in-flight session resume fold. */
+  cancelResume(): void
   approve(outcome: 'allowed-once' | 'rejected'): void
   answerQuestion(answers: { id: string; selected: string[]; custom?: string }[]): void
   /** Write one `tui` namespace setting (busyEnter / thinking / theme / locale). */
@@ -616,8 +651,8 @@ export interface TuiHost {
   setCredential(ref: string, value: string): Promise<void>
   /** Remove one credential from the managed store. */
   unsetCredential(ref: string): Promise<void>
-  /** Reload the live /jobs and /subagents panel rows (panel open / poll). */
-  refreshPanels(): void
+  /** Reload only the panel whose data is opening or polling. */
+  refreshPanels(kind: TuiPanelRefreshKind): void
   /** Reload the /settings page data (settings panel open). */
   refreshSettings(): void
   /** Request one running job to stop. */
@@ -880,7 +915,8 @@ function nodeLines(
     }
     case 'tool': {
       const glyph = node.status === 'running' ? '○' : '◇'
-      const title = `${glyph} ${sanitizeTerminalText(node.detail)}${node.status === 'running' ? ' …' : ` · ${node.status}`} ${expanded ? '▼' : '▶'}`
+      const indent = node.parentCallId === undefined ? '' : '  '
+      const title = `${indent}${glyph} ${sanitizeTerminalText(node.detail)}${node.status === 'running' ? ' …' : ` · ${node.status}`} ${expanded ? '▼' : '▶'}`
       const head = wrapText(marker + title, width).map(text => ({
         text,
         color: node.status === 'error' ? 'red' : node.status === 'running' ? 'yellow' : 'green',
@@ -1198,22 +1234,11 @@ const Transcript = React.memo(function Transcript(props: {
   const scrollOffset = props.scrollOffset ?? viewport.offset
   const scrollbar = selectScrollbar(lineCount, props.height, scrollOffset, reserved)
   const hasPulse = props.lines.some(line => line.pulse === true)
-  const [pulseOn, setPulseOn] = useState(true)
-  useEffect(() => {
-    if (!hasPulse) return
-    const interval = setInterval(() => { setPulseOn(value => !value) }, 500)
-    return () => { clearInterval(interval) }
-  }, [hasPulse])
+  const pulse = useAnimation({ interval: 500, isActive: hasPulse })
+  const pulseOn = pulse.frame % 2 === 0
   const hasShimmer = viewport.lines.some(line => line.shimmer !== undefined)
-  const [shimmerTick, setShimmerTick] = useState(0)
-  useEffect(() => {
-    if (!hasShimmer) {
-      setShimmerTick(0)
-      return
-    }
-    const interval = setInterval(() => { setShimmerTick(value => value + 1) }, 100)
-    return () => { clearInterval(interval) }
-  }, [hasShimmer])
+  const shimmer = useAnimation({ interval: 100, isActive: hasShimmer })
+  const shimmerTick = shimmer.frame
   useEffect(() => {
     const capacity = Math.max(1, Math.max(1, Math.floor(props.height)) - reserved)
     const maximumOffset = Math.max(0, lineCount - capacity)
@@ -1252,7 +1277,7 @@ const Transcript = React.memo(function Transcript(props: {
               absoluteIndex,
               lineSelectableWidth(painted.text),
             )
-          const color = themed(line.color, props.theme, 'white')
+          const color = resolveTranscriptLineColor(line, props.theme)
           const dim = line.pulse === true ? pulseOn : line.dim === true
           const body = span === null
             ? (
@@ -1261,7 +1286,7 @@ const Transcript = React.memo(function Transcript(props: {
                   ? painted.runs.map((run, runIndex) => (
                     <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
                       {...run.color !== undefined
-                        ? { color: themed(run.color, props.theme, 'white') }
+                        ? { color: run.exactColor === true ? run.color : themed(run.color, props.theme, 'white') }
                         : run.code === true
                           ? { color: themed('cyan', props.theme, 'cyan') }
                           : {}}>
@@ -1545,6 +1570,8 @@ function ImeTextInput(props: {
   markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
   /** Bumped to drop the composer highlight (Esc). */
   clearSeq?: number
+  /** Bumped when App assigns the draft without going through onChange. */
+  valueSeq?: number
   /** Windows Alt+V / macOS-Linux Ctrl/Meta+V image clipboard. */
   onClipboardImage?: (fallbackToText: boolean) => Promise<boolean>
   /** Return replacement text, `''` to consume an image path, or null for ordinary paste. */
@@ -1553,7 +1580,8 @@ function ImeTextInput(props: {
   const [cursorOffset, setCursorOffset] = useState(props.value.length)
   const cursorOffsetRef = useRef(props.value.length)
   const latestValueRef = useRef(props.value)
-  const pendingLocalValues = useRef(new Set<string>())
+  const valueSeqRef = useRef(-1)
+  const [localValue, setLocalValue] = useState(props.value)
   const inputRef = useRef<DOMElement | null>(null)
   const [origin, setOrigin] = useState({ x: 0, y: 0, measured: false })
   const [mark, setMark] = useState<{ anchor: number; head: number } | null>(null)
@@ -1562,27 +1590,21 @@ function ImeTextInput(props: {
   const pressGlyphRef = useRef<{ start: number; end: number } | null>(null)
 
   useEffect(() => {
-    if (pendingLocalValues.current.delete(props.value)) {
-      if (latestValueRef.current === props.value) {
-        pendingLocalValues.current.clear()
-        const nextOffset = Math.min(cursorOffsetRef.current, props.value.length)
-        cursorOffsetRef.current = nextOffset
-        setCursorOffset(nextOffset)
-      }
-      return
-    }
-    pendingLocalValues.current.clear()
+    const seq = props.valueSeq ?? 0
+    if (seq === valueSeqRef.current) return
+    valueSeqRef.current = seq
     latestValueRef.current = props.value
+    setLocalValue(props.value)
     cursorOffsetRef.current = props.value.length
     setCursorOffset(props.value.length)
     markRef.current = null
     setMark(null)
     if (props.markOutRef !== undefined) props.markOutRef.current = null
-  }, [props.value, props.markOutRef])
+  }, [props.value, props.valueSeq, props.markOutRef])
 
-  const displayValue = props.mask ? props.mask.repeat([...props.value].length) : props.value
+  const displayValue = props.mask ? props.mask.repeat([...localValue].length) : localValue
   const displayCursorOffset = props.mask
-    ? props.mask.length * [...props.value.slice(0, cursorOffset)].length
+    ? props.mask.length * [...localValue.slice(0, cursorOffset)].length
     : cursorOffset
   const boxWidth = Math.max(1, Math.floor(props.width))
   const paintWidth = composerTextPaintWidth(boxWidth)
@@ -1590,15 +1612,20 @@ function ImeTextInput(props: {
   const wrapWidthRef = useRef(textWrapWidth)
   wrapWidthRef.current = textWrapWidth
   const layout = selectComposerLayout(displayValue, displayCursorOffset, textWrapWidth, MAX_COMPOSER_LINES)
-  const composerRanges = wrapComposerRanges(displayValue, textWrapWidth)
-  useLayoutEffect(() => {
+  const composerRanges = layout.ranges
+  const measureInputOrigin = useCallback(() => {
     if (inputRef.current === null) return
     const metrics = measureElement(inputRef.current)
     setOrigin(current =>
       current.measured && current.x === metrics.x && current.y === metrics.y
         ? current
         : { x: metrics.x, y: metrics.y, measured: true })
-  })
+  }, [])
+  useLayoutEffect(measureInputOrigin)
+  // Ink recalculates Yoga after the resize-driven React commit. Measure once
+  // more in the passive phase so the native IME cursor follows a composer
+  // that moved vertically even when its own text and width stayed unchanged.
+  useEffect(measureInputOrigin)
   const moveCursor = useCallback((nextOffset: number) => {
     cursorOffsetRef.current = nextOffset
     setCursorOffset(nextOffset)
@@ -1618,7 +1645,7 @@ function ImeTextInput(props: {
   const commitEdit = useCallback(
     (nextValue: string, nextOffset: number) => {
       latestValueRef.current = nextValue
-      pendingLocalValues.current.add(nextValue)
+      setLocalValue(nextValue)
       publishMark(null)
       moveCursor(nextOffset)
       props.onChange(nextValue)
@@ -1921,6 +1948,7 @@ const Composer = React.memo(function Composer(props: {
   theme: 'dark' | 'light'
   markOutRef?: React.MutableRefObject<{ anchor: number; head: number } | null>
   clearSeq?: number
+  draftSeq?: number
   locale: Locale
   onClipboardImage?: (fallbackToText: boolean) => Promise<boolean>
   onPasteText?: (text: string) => string | null
@@ -1946,6 +1974,7 @@ const Composer = React.memo(function Composer(props: {
               {...(props.mask !== undefined ? { mask: props.mask } : {})}
               {...(props.markOutRef !== undefined ? { markOutRef: props.markOutRef } : {})}
               {...(props.clearSeq !== undefined ? { clearSeq: props.clearSeq } : {})}
+              {...(props.draftSeq !== undefined ? { valueSeq: props.draftSeq } : {})}
               {...(props.onClipboardImage !== undefined ? { onClipboardImage: props.onClipboardImage } : {})}
               {...(props.onPasteText !== undefined ? { onPasteText: props.onPasteText } : {})}
             />
@@ -1992,11 +2021,18 @@ export function permissionColor(mode: 'read-only' | 'workspace-write' | 'danger-
   return mode === 'read-only' ? 'whiteBright' : mode === 'workspace-write' ? 'yellowBright' : 'redBright'
 }
 
-/** Status text color: soft cyan-blue while active, muted blue while idle. */
-export function statusActivityColor(busy: boolean, theme: 'dark' | 'light' = 'dark'): '#4FC3F7' | '#4A90C4' | 'blue' {
-  if (theme === 'light') return 'blue'
-  return busy ? '#4FC3F7' : '#4A90C4'
+/**
+ * Select the exact status text and leading-glyph TrueColor.
+ * @param _busy - retained status-state input; both states share one color.
+ * @param _theme - retained theme input; both themes share one color.
+ * @returns the exact Ink foreground.
+ */
+export function statusActivityColor(_busy: boolean, _theme: 'dark' | 'light' = 'dark'): '#61D6D6' {
+  return '#61D6D6'
 }
+
+/** Exact TrueColor used by the compact welcome card. */
+export const WELCOME_CARD_COLOR = '#A99B45'
 
 /** The status bar: separator, activity row, and the Web-stats strip. */
 function StatusBar(props: {
@@ -2022,19 +2058,16 @@ function StatusBar(props: {
   const queuedLabel = snapshot.queued.length > 0 ? ` · ${copy.queued} ${snapshot.queued.length}` : ''
   const historyPaused = !props.panelOpen && props.scrollOffset > 0 ? ` · ${copy.historyPaused}` : ''
   const planLabel = snapshot.plan.active ? ` · ${copy.plan}` : snapshot.plan.pending ? ` · ${copy.planPending}` : ''
-  const [starTick, setStarTick] = useState(0)
-  useEffect(() => {
-    if (!snapshot.busy) {
-      setStarTick(0)
-      return
-    }
-    const interval = setInterval(() => { setStarTick(value => value + 1) }, 100)
-    return () => { clearInterval(interval) }
-  }, [snapshot.busy])
+  const hasLiveMotion = (snapshot.live?.think ?? '') !== '' || (snapshot.live?.text ?? '') !== ''
+  const intervalMs = hasLiveMotion ? BUSY_STAR_INTERVAL_MS : QUIET_BUSY_STAR_INTERVAL_MS
+  const starAnimation = useAnimation({ interval: intervalMs, isActive: snapshot.busy })
+  const starTick = starAnimation.frame
   const star = snapshot.busy ? busyStarFrame(starTick) : null
-  const left = snapshot.busy
-    ? `${star?.glyph ?? '✶'} ${phaseLabel}${elapsedLabel}${queuedLabel}${planLabel} ${copy.busyCancel}`
-    : `${copy.idle}${historyPaused}${planLabel}`
+  const left = snapshot.resumeProgress !== null
+    ? `${copy.resumeProgress(snapshot.resumeProgress.done, snapshot.resumeProgress.total)} ${copy.resumeCancel}`
+    : snapshot.busy
+      ? `${star?.glyph ?? '✶'} ${phaseLabel}${elapsedLabel}${queuedLabel}${planLabel} ${copy.busyCancel}`
+      : `${copy.idle}${historyPaused}${planLabel}`
   const effortLabel = snapshot.reasoning.effort ?? copy.effortOff
   const effortText = `${copy.effort} ${effortLabel}`
   const rightRest = ` · ${copy.turn} ${snapshot.stats.turns} · ↑${snapshot.stats.tokens.input} ↓${snapshot.stats.tokens.output} Σ${snapshot.stats.tokens.input + snapshot.stats.tokens.output + snapshot.stats.tokens.cacheRead + snapshot.stats.tokens.cacheWrite + snapshot.stats.tokens.reasoning} tok`
@@ -2062,13 +2095,13 @@ function StatusBar(props: {
 
 /** The pinned permission row above the composer: mode label colored by policy plus the Shift+Tab hint. */
 const PermissionBar = React.memo(function PermissionBar(props: {
-  snapshot: ReturnType<TuiStore['getSnapshot']>
+  sandbox: TuiSnapshot['sandbox']
   width: number
   locale: Locale
   theme: 'dark' | 'light'
 }): React.ReactElement {
   const copy = COPY[props.locale]
-  const chip = copy.permissionChip(permissionLabel(props.snapshot.sandbox))
+  const chip = copy.permissionChip(permissionLabel(props.sandbox))
   const hint = copy.permissionHint
   const space = Math.max(4, props.width - 2)
   const hintFits = stringWidth(hint) <= space - 10
@@ -2076,7 +2109,7 @@ const PermissionBar = React.memo(function PermissionBar(props: {
   const chipText = stringWidth(chip) <= chipMax ? chip : fitDisplayText(chip, chipMax)
   return (
     <Box paddingX={1}>
-      <Text bold wrap="truncate" color={themed(permissionColor(props.snapshot.sandbox), props.theme, 'whiteBright')}>
+      <Text bold wrap="truncate" color={themed(permissionColor(props.sandbox), props.theme, 'whiteBright')}>
         {chipText}
       </Text>
       {hintFits ? <Text dimColor wrap="truncate">{hint}</Text> : null}
@@ -2086,7 +2119,7 @@ const PermissionBar = React.memo(function PermissionBar(props: {
   previous.width === next.width
   && previous.locale === next.locale
   && previous.theme === next.theme
-  && previous.snapshot.sandbox === next.snapshot.sandbox
+  && previous.sandbox === next.sandbox
 ))
 
 /** The approval/question takeover occupying the budgeted rows above the composer. */
@@ -2168,24 +2201,33 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
 }): React.ReactElement {
   const snapshot = props.snapshot
   const liveWrapRef = useRef<LiveWrapState | null>(null)
+  const liveThinkTailRef = useRef<LiveThinkingTailState | null>(null)
   const liveText = snapshot.live?.text ?? ''
   if (!snapshot.busy || liveText === '') liveWrapRef.current = null
   else {
     liveWrapRef.current = wrapLiveAssistantText(liveWrapRef.current, liveText, props.contentWidth)
   }
+  const liveThink = snapshot.live?.think ?? ''
+  const liveThinkPrefix = '  │ '
+  if (!snapshot.busy || liveThink === '') liveThinkTailRef.current = null
+  else {
+    liveThinkTailRef.current = projectLiveThinkingTail(
+      liveThinkTailRef.current,
+      liveThink,
+      Math.max(0, props.contentWidth - stringWidth(liveThinkPrefix)),
+    )
+  }
   const liveThinkLines: TranscriptLine[] = (() => {
-    if (snapshot.live === null || !snapshot.busy || snapshot.live.think === '') return []
+    if (snapshot.live === null || !snapshot.busy || liveThink === '') return []
     const lines: TranscriptLine[] = [{
       key: 'live-think',
       text: 'Thinking',
       shimmer: 'thinking',
       ...(snapshot.live.thinkSince !== null ? { shimmerSince: snapshot.live.thinkSince } : {}),
     }]
-    const tail = snapshot.live.think.split('\n').at(-1) ?? ''
-    if (tail !== '') {
-      const tailSpace = Math.max(8, props.contentWidth - 3)
-      const content = stringWidth(tail) <= tailSpace ? tail : `…${tail.slice(-(tailSpace - 1))}`
-      lines.push({ key: 'live-think-tail', text: `  │ ${content}`, dim: true })
+    const content = liveThinkTailRef.current?.tail ?? ''
+    if (content !== '') {
+      lines.push({ key: 'live-think-tail', text: `${liveThinkPrefix}${content}`, dim: true })
     }
     return lines
   })()
@@ -2244,10 +2286,22 @@ export function App(props: {
   store: TuiStore
   host: TuiHost
 }): React.ReactElement {
-  countUiRender()
   const { stdout } = useStdout()
   const { exit } = useApp()
   const snapshot = useSyncExternalStore(props.store.subscribe, props.store.getSnapshot)
+  const cursorStyle = cursorStyleForBusy(snapshot.busy)
+  useEffect(() => {
+    if (stdout.isTTY === true) stdout.write(cursorStyle)
+  }, [cursorStyle, stdout])
+  useEffect(() => () => {
+    if (stdout.isTTY === true) stdout.write(RESTORE_CURSOR_STYLE)
+  }, [stdout])
+  const [pendingSandbox, setPendingSandbox] = useState<TuiSnapshot['sandbox'] | null>(null)
+  const permissionCycleRef = useRef(new PermissionCycleGate())
+  useEffect(() => {
+    if (pendingSandbox !== null && snapshot.sandbox === pendingSandbox) setPendingSandbox(null)
+  }, [pendingSandbox, snapshot.sandbox])
+  const sandbox = pendingSandbox ?? snapshot.sandbox
   const theme = snapshot.settings?.general.theme ?? 'dark'
   const locale = snapshot.settings?.general.locale ?? 'zh'
   const copy = COPY[locale]
@@ -2268,6 +2322,11 @@ export function App(props: {
   const transcriptContentWidth = Math.max(1, width - 3)
 
   const [draft, setDraft] = useState('')
+  const [draftSeq, setDraftSeq] = useState(0)
+  const assignDraft = useCallback((next: string | ((current: string) => string)) => {
+    setDraftSeq(seq => seq + 1)
+    setDraft(next)
+  }, [])
   const pastedTextBlocksRef = useRef<readonly PastedTextBlock[]>([])
   const nextPastedTextOrdinalRef = useRef(1)
   const replacePastedTextBlocks = useCallback((blocks: readonly PastedTextBlock[]): void => {
@@ -2292,6 +2351,9 @@ export function App(props: {
     transcriptScrollOffsetRef.current = clamped
     setTranscriptScrollOffset(clamped)
   }, [])
+  const wheelBurstRef = useRef<Array<'up' | 'down'>>([])
+  const wheelCoalesceRef = useRef(false)
+  const panelWheelDeltaRef = useRef(0)
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set())
   const [viewMode, setViewMode] = useState<'chat' | 'trajectory'>('chat')
   const [notice, setNotice] = useState('')
@@ -2392,7 +2454,7 @@ export function App(props: {
   // The /jobs panel polls its rows once a second while open.
   useEffect(() => {
     if (panel?.kind !== 'jobs') return
-    const interval = setInterval(() => { props.host.refreshPanels() }, 1000)
+    const interval = setInterval(() => { props.host.refreshPanels('jobs') }, 1000)
     return () => { clearInterval(interval) }
   }, [panel?.kind, props.host])
 
@@ -2667,7 +2729,7 @@ export function App(props: {
         ...(color === undefined ? { dim: true } : { color }),
       }
     }), [snapshot.trace, transcriptContentWidth])
-  const historyBlocks = useMemo((): TranscriptLine[][] => {
+  const preparedHistory = useMemo((): { node: TuiNode; count: number; topPad: boolean; botPad: boolean }[] => {
     const liveNodes = new Set(visibleNodes)
     if (![...nodeLineCache.current.lines.keys()].some(node => liveNodes.has(node))) {
       nodeLineCache.current.lines.clear()
@@ -2696,10 +2758,20 @@ export function App(props: {
       }
       previousKind = node.kind
     }
-    const lengths = prepared.map(entry =>
+    return prepared
+  }, [
+    visibleNodes, transcriptContentWidth,
+    expanded, thinkDefaultOpen, snapshot.feedback, locale,
+  ])
+  const historyHeightIndex = useMemo(() => {
+    const lengths = preparedHistory.map(entry =>
       entry.count + (entry.topPad ? 1 : 0) + (entry.botPad ? 1 : 0))
-    let total = 0
-    for (const length of lengths) total += length
+    const prefix = exclusivePrefixSums(lengths)
+    const total = prefix[prefix.length - 1] ?? 0
+    return { lengths, prefix, total }
+  }, [preparedHistory])
+  const historyBlocks = useMemo((): TranscriptLine[][] => {
+    const { lengths, prefix, total } = historyHeightIndex
     const reserved = transcriptScrollOffset > 0 ? 1 : 0
     const capacity = Math.max(1, Math.max(1, Math.floor(transcriptHeight)) - reserved)
     const extra = TRANSCRIPT_LINE_OVERSCAN
@@ -2714,36 +2786,39 @@ export function App(props: {
     const windowEnd = Math.min(total, end + extra)
     const keep = new Set<TuiNode>()
     const blocks: TranscriptLine[][] = []
-    let cursor = 0
-    for (let index = 0; index < prepared.length; index += 1) {
-      const entry = prepared[index]
+    if (preparedHistory.length === 0) return blocks
+    const first = nodeIndexAtLine(prefix, windowStart)
+    const last = nodeIndexAtLine(prefix, Math.max(windowStart, windowEnd - 1))
+    const hiddenPrefix = prefix[first] ?? 0
+    if (hiddenPrefix > 0) blocks.push(sparseCountBlock(hiddenPrefix))
+    for (let index = first; index <= last; index += 1) {
+      const entry = preparedHistory[index]
       const length = lengths[index]
+      const blockStart = prefix[index] ?? 0
       if (entry === undefined || length === undefined) continue
-      const next = cursor + length
-      if (next > windowStart && cursor < windowEnd) {
-        keep.add(entry.node)
-        const body = cachedNodeLines(
-          nodeLineCache.current,
-          entry.node,
-          transcriptContentWidth,
-          expandedOf(entry.node),
-          snapshot.feedback,
-          locale,
-        )
-        const block: TranscriptLine[] = []
-        if (entry.topPad) block.push({ key: `${entry.node.id}-vpad-top`, text: ' ' })
-        block.push(...body)
-        if (entry.botPad) block.push({ key: `${entry.node.id}-vpad-bot`, text: ' ' })
-        blocks.push(block)
-      } else {
-        blocks.push(sparseCountBlock(length))
-      }
-      cursor = next
+      if (blockStart + length <= windowStart || blockStart >= windowEnd) continue
+      keep.add(entry.node)
+      const body = cachedNodeLines(
+        nodeLineCache.current,
+        entry.node,
+        transcriptContentWidth,
+        expandedOf(entry.node),
+        snapshot.feedback,
+        locale,
+      )
+      const block: TranscriptLine[] = []
+      if (entry.topPad) block.push({ key: `${entry.node.id}-vpad-top`, text: ' ' })
+      block.push(...body)
+      if (entry.botPad) block.push({ key: `${entry.node.id}-vpad-bot`, text: ' ' })
+      blocks.push(block)
     }
+    const paintedEnd = prefix[last + 1] ?? total
+    const hiddenTail = Math.max(0, total - paintedEnd)
+    if (hiddenTail > 0) blocks.push(sparseCountBlock(hiddenTail))
     pruneNodeLineCache(nodeLineCache.current, keep)
     return blocks
   }, [
-    visibleNodes, transcriptContentWidth,
+    preparedHistory, historyHeightIndex, transcriptContentWidth,
     expanded, thinkDefaultOpen, snapshot.feedback, locale,
     transcriptScrollOffset, transcriptHeight,
   ])
@@ -2764,7 +2839,11 @@ export function App(props: {
     // Too narrow/short for the art: the plain adaptive welcome card.
     return welcomeBlock(transcriptContentWidth, snapshot.model, snapshot.cwd, snapshot.sessionId, locale).map((line, index) => {
       const chrome = line.startsWith('┏') || line.startsWith('┃') || line.startsWith('┗')
-      return { key: `welcome-${index}`, text: line, ...(chrome ? { color: 'yellow' } : { dim: true }) }
+      return {
+        key: `welcome-${index}`,
+        text: line,
+        ...(chrome ? { color: WELCOME_CARD_COLOR, exactColor: true } : { dim: true }),
+      }
     })
   }, [visibleNodes.length, transcriptContentWidth, transcriptHeight, snapshot.model, snapshot.cwd, snapshot.sessionId, locale])
   const settledBlocks = viewMode === 'trajectory'
@@ -2783,10 +2862,28 @@ export function App(props: {
       lines.push({ key: 'queue-dock', text: fitDisplayText(`${copy.queueDock} ${snapshot.queued.length}：${preview}`, transcriptContentWidth), color: 'yellow' })
     }
     if (snapshot.todos.length > 0) {
-      const pending = snapshot.todos.filter(todo => todo.status === 'pending').length
-      const active = snapshot.todos.filter(todo => todo.status === 'in_progress').length
-      const done = snapshot.todos.filter(todo => todo.status === 'completed').length
-      lines.push({ key: 'todo-dock', text: fitDisplayText(`${copy.todoDock} ${copy.todoCounts(active, pending, done)}`, transcriptContentWidth), color: 'yellow' })
+      let pending = 0
+      let active = 0
+      let done = 0
+      for (const todo of snapshot.todos) {
+        if (todo.status === 'pending') pending += 1
+        else if (todo.status === 'in_progress') active += 1
+        else done += 1
+      }
+      const dock = todoDockLine(
+        copy.todoDock,
+        copy.todoInProgress(active),
+        copy.todoPendingCount(pending),
+        copy.todoCompleteCount(done),
+      )
+      const fitted = fitDockLine(dock, transcriptContentWidth)
+      lines.push({
+        key: 'todo-dock',
+        text: fitted.text,
+        color: fitted.color,
+        runs: fitted.runs,
+        ...(fitted.exactColor === true ? { exactColor: true } : {}),
+      })
     }
     if (snapshot.goal !== null) {
       const phaseLabel = snapshot.goal.phase === 'active' ? copy.goalActive
@@ -2794,10 +2891,20 @@ export function App(props: {
           : snapshot.goal.phase === 'blocked' ? copy.goalBlocked(snapshot.goal.blockedReason?.message ?? snapshot.goal.blockedReason?.code ?? '')
             : copy.goalComplete
       const objective = snapshot.goal.objective.length <= 80 ? snapshot.goal.objective : `${snapshot.goal.objective.slice(0, 80)}…`
+      const dock = goalDockLine(
+        copy.goalDock,
+        phaseLabel,
+        `round ${snapshot.goal.roundsStarted}/${snapshot.goal.maxGoalRounds}`,
+        objective,
+        snapshot.goal.phase,
+      )
+      const fitted = fitDockLine(dock, transcriptContentWidth)
       lines.push({
         key: 'goal-dock',
-        text: fitDisplayText(`${copy.goalDock} [${phaseLabel}] · round ${snapshot.goal.roundsStarted}/${snapshot.goal.maxGoalRounds} · ${objective}`, transcriptContentWidth),
-        color: 'yellow',
+        text: fitted.text,
+        color: fitted.color,
+        runs: fitted.runs,
+        ...(fitted.exactColor === true ? { exactColor: true } : {}),
       })
     }
     if (snapshot.pendingImages.length > 0) {
@@ -2883,17 +2990,17 @@ export function App(props: {
     setPluginEdit(null)
     setPluginEditText('')
     setSettingsFilter('')
-    setDraft('')
+    assignDraft('')
     setPaletteDismissedInput(null)
     setNotice('')
     if (kind === 'settings') {
       // The plugins page is a read-only projection of the current Loader
       // tree, so refresh it whenever settings opens.
       props.host.refreshSettings()
-    } else {
-      props.host.refreshPanels()
+    } else if (kind === 'jobs' || kind === 'subagents' || kind === 'sessions') {
+      props.host.refreshPanels(kind)
     }
-  }, [props.host])
+  }, [assignDraft, props.host])
 
   // A launcher-provided startup panel (bare --resume picker, or an ambiguous
   // --resume query) opens once the app mounts; the host object is stable for
@@ -2966,7 +3073,7 @@ export function App(props: {
     if (text === '/skills' || text.startsWith('/skills ')) {
       // `/skills` is the discovery surface. The selected item still inserts
       // the canonical `/name ` text owned by the Harness skill pre-step.
-      setDraft(`${text === '/skills' ? '/skills' : text} `)
+      assignDraft(`${text === '/skills' ? '/skills' : text} `)
       setPaletteDismissedInput(null)
       return
     }
@@ -3101,12 +3208,12 @@ export function App(props: {
     // dispatch without a model turn; unknown lines become model messages.
     props.host.submit(text, false)
     setNotice('')
-  }, [exitApp, viewMode, snapshot, props.host, openPanel, locale, copy, stdout])
+  }, [assignDraft, exitApp, viewMode, snapshot, props.host, openPanel, locale, copy, stdout])
 
   const submit = useCallback((value: string, steer = false): void => {
     const trimmed = expandPastedTextBlocks(value, pastedTextBlocksRef.current).trim()
     if (trimmed.startsWith('/')) {
-      setDraft('')
+      assignDraft('')
       executeCommand(trimmed)
       return
     }
@@ -3123,7 +3230,7 @@ export function App(props: {
       setNotice(copy.inputTooLarge(inputBytes, MAX_TURN_INPUT_BYTES))
       return
     }
-    setDraft('')
+    assignDraft('')
     applyTranscriptScroll(0)
     const busyEnter = snapshot.settings?.general.busyEnter ?? 'queue'
     const effectiveSteer = snapshot.busy
@@ -3136,6 +3243,7 @@ export function App(props: {
     historyScratchRef.current = ''
     setHistoryIndex(-1)
   }, [
+    assignDraft,
     executeCommand,
     snapshot.busy,
     snapshot.settings?.general.busyEnter,
@@ -3152,17 +3260,17 @@ export function App(props: {
     const item = palette[Math.min(paletteSelectedIndex, palette.length - 1)]
     if (item === undefined) return
     if (item.insert !== undefined) {
-      setDraft(item.insert)
+      assignDraft(item.insert)
       setPaletteDismissedInput(item.insert.endsWith('/') ? null : item.insert)
       setPaletteSelectedIndex(0)
       return
     }
     if (item.command !== undefined) {
       if (completeOnly) {
-        setDraft(item.command)
+        assignDraft(item.command)
         setPaletteDismissedInput(item.command)
       } else {
-        setDraft('')
+        assignDraft('')
         setPaletteDismissedInput(null)
         executeCommand(item.command)
       }
@@ -3170,15 +3278,15 @@ export function App(props: {
       return
     }
     if (completeOnly || item.needsArgs) {
-      setDraft(`/${item.name} `)
+      assignDraft(`/${item.name} `)
       setPaletteDismissedInput(null)
       setPaletteSelectedIndex(0)
       return
     }
-    setDraft('')
+    assignDraft('')
     setPaletteDismissedInput(null)
     executeCommand(`/${item.name}`)
-  }, [palette, paletteSelectedIndex, executeCommand])
+  }, [assignDraft, palette, paletteSelectedIndex, executeCommand])
 
   /** Commit the composer's plugin-config edit into the namespace. */
   const commitPluginEdit = useCallback((): void => {
@@ -3213,9 +3321,13 @@ export function App(props: {
       applyPalette(false)
       return
     }
+    if (snapshot.resumeProgress !== null) return
     if (panelOpen) return
     submit(value, steer)
-  }, [pluginEdit, commitPluginEdit, settingsEdit, settingsEditText, settingsConfirm, palette, applyPalette, panelOpen, submit])
+  }, [
+    pluginEdit, commitPluginEdit, settingsEdit, settingsEditText, settingsConfirm,
+    palette, applyPalette, snapshot.resumeProgress, panelOpen, submit,
+  ])
 
   // ── settings credential edit through the composer ────────────────────
   const commitCredentialEdit = useCallback((): void => {
@@ -3459,6 +3571,10 @@ export function App(props: {
   // Every Escape action funnels through here so the 60ms phantom-Escape
   // confirmation window can drop split-CSI artifacts without side effects.
   const handleEscape = useEffectEvent(() => {
+    if (snapshot.resumeProgress !== null) {
+      props.host.cancelResume()
+      return
+    }
     const composerMark = composerMarkRef.current
     if (composerMark !== null && composerMark.anchor !== composerMark.head) {
       composerMarkRef.current = null
@@ -3520,7 +3636,7 @@ export function App(props: {
       setPaletteDismissedInput(draft)
       return
     }
-    if (draft !== '') setDraft('')
+    if (draft !== '') assignDraft('')
     else if (snapshot.busy) props.host.cancel()
   })
   useEffect(() => () => {
@@ -3589,20 +3705,19 @@ export function App(props: {
       }
       return
     }
-    // Shift+Tab rotates the session's file-policy mode (the Web permission
-    // control). It may arrive as one `\x1b[Z` chunk or split across the
-    // Escape arbiter, which re-synthesizes it as tab+shift by this point.
-    // The pinned permission row above the composer shows the new mode, so
-    // no extra notice is needed.
-    if ((key.shift && key.tab) || input === '\x1b[Z') {
-      props.host.cycleSandbox()
+    // Shift+Tab rotates file policy. A matching release, or a CSI-Z that
+    // ConPTY flushes in the same drain as Enter, must not rotate again.
+    const looksLikeShiftTab = (key.shift && key.tab) || input === '\x1b[Z'
+    if (looksLikeShiftTab) {
+      permissionCycleRef.current.request(input, key, () => {
+        setPendingSandbox(props.host.cycleSandbox())
+      })
       return
     }
     // The wheel scrolls the panel when one is open, the transcript otherwise.
     // Panels anchor to the TOP, so wheel-up walks toward older rows.
     const wheel = parseMouseWheel(input)
     if (wheel !== null) {
-      const wheelStarted = performance.now()
       if (selectingRef.current) return
       if (textSelection !== null) {
         textSelectionRef.current = null
@@ -3610,13 +3725,33 @@ export function App(props: {
         selectionLinesRef.current = new Map()
       }
       if (panelOpen) {
-        const delta = wheel === 'up' ? -3 : 3
-        setSettingsTop(current => Math.max(0, Math.min(settingsViewport.maximumOffset, current + delta)))
+        panelWheelDeltaRef.current += wheel === 'up' ? -3 : 3
+        if (!wheelCoalesceRef.current) {
+          wheelCoalesceRef.current = true
+          queueMicrotask(() => {
+            wheelCoalesceRef.current = false
+            const delta = panelWheelDeltaRef.current
+            panelWheelDeltaRef.current = 0
+            if (delta === 0) return
+            setSettingsTop(current => Math.max(0, Math.min(settingsViewport.maximumOffset, current + delta)))
+          })
+        }
       } else {
-        applyTranscriptScroll(current =>
-          scrollOffsetForWheel(current, transcriptMaximumOffset.current, wheel))
+        wheelBurstRef.current.push(wheel)
+        if (!wheelCoalesceRef.current) {
+          wheelCoalesceRef.current = true
+          queueMicrotask(() => {
+            wheelCoalesceRef.current = false
+            const ticks = wheelBurstRef.current
+            wheelBurstRef.current = []
+            if (ticks.length === 0) return
+            applyTranscriptScroll(current => ticks.reduce(
+              (offset, direction) => scrollOffsetForWheel(offset, transcriptMaximumOffset.current, direction),
+              current,
+            ))
+          })
+        }
       }
-      countUiInputDelay(performance.now() - wheelStarted)
       return
     }
     // A mouse click can activate the floating back-to-bottom button, the
@@ -3875,7 +4010,7 @@ export function App(props: {
         ? history.length - 1
         : Math.max(0, historyIndex - 1)
       setHistoryIndex(nextIndex)
-      setDraft(history[nextIndex] ?? '')
+      assignDraft(history[nextIndex] ?? '')
       setPaletteDismissedInput(null)
       return
     }
@@ -3885,18 +4020,18 @@ export function App(props: {
       const nextIndex = historyIndex + 1
       if (nextIndex >= history.length) {
         setHistoryIndex(-1)
-        setDraft(historyScratchRef.current)
+        assignDraft(historyScratchRef.current)
         historyScratchRef.current = ''
       } else {
         setHistoryIndex(nextIndex)
-        setDraft(history[nextIndex] ?? '')
+        assignDraft(history[nextIndex] ?? '')
       }
       setPaletteDismissedInput(null)
       return
     }
     if (key.ctrl && input === 'l') {
       setNotice('')
-      setDraft('')
+      assignDraft('')
       return
     }
     if (key.ctrl && input === 'd') {
@@ -3993,7 +4128,7 @@ export function App(props: {
           theme={theme}
         />
       ) : null}
-      <PermissionBar snapshot={snapshot} width={width} locale={locale} theme={theme} />
+      <PermissionBar sandbox={sandbox} width={width} locale={locale} theme={theme} />
       <Composer
         draft={composerDraft}
         onDraftChange={pluginEdit !== null
@@ -4006,7 +4141,11 @@ export function App(props: {
               // edits a recalled history line (leaving history browsing).
               setPaletteDismissedInput(null)
               if (historyIndex !== -1 && value !== '') setHistoryIndex(-1)
-              setDraft(current => props.host.syncImageChips(current, value))
+              setDraft((current) => {
+                const next = props.host.syncImageChips(current, value)
+                if (next !== value) setDraftSeq(seq => seq + 1)
+                return next
+              })
             }}
         onSubmit={submitComposer}
         disabled={pluginEdit !== null || settingsEdit !== null
@@ -4021,6 +4160,7 @@ export function App(props: {
         locale={locale}
         markOutRef={composerMarkRef}
         clearSeq={composerClearSeq}
+        draftSeq={draftSeq}
         {...(pluginEdit?.kind === 'secret' ? { mask: '•' } : {})}
         onClipboardImage={async (fallbackToText) => {
           const result = await props.host.attachClipboardImage()
@@ -4029,7 +4169,7 @@ export function App(props: {
             return false
           }
           if (result.chip !== undefined) {
-            setDraft(current => insertImageChip(current, current.length, result.chip).draft)
+            assignDraft(current => insertImageChip(current, current.length, result.chip).draft)
           }
           setNotice(copy.attachDone('clipboard'))
           return true
@@ -4043,7 +4183,7 @@ export function App(props: {
                 return
               }
               if (result.chips !== undefined) {
-                setDraft(current => result.chips?.reduce(
+                assignDraft(current => result.chips?.reduce(
                   (next, chip) => insertImageChip(next, next.length, chip).draft,
                   current,
                 ) ?? current)
@@ -4067,7 +4207,7 @@ export function App(props: {
               return
             }
             if (result.chip !== undefined) {
-              setDraft(current => insertImageChip(current, current.length, result.chip).draft)
+              assignDraft(current => insertImageChip(current, current.length, result.chip).draft)
             }
             setNotice(copy.attachDone(classified.path))
           })
@@ -4096,12 +4236,26 @@ export function App(props: {
 export async function runInk(store: TuiStore, host: TuiHost): Promise<void> {
   const instance = render(
     <App store={store} host={host} />,
-    { alternateScreen: true, interactive: true, exitOnCtrlC: false, patchConsole: true },
+    {
+      alternateScreen: true,
+      interactive: true,
+      exitOnCtrlC: false,
+      patchConsole: true,
+      // The root intentionally leaves the physical last column blank, making
+      // Ink's Windows fullscreen line diff safe. A columns/rows change still
+      // takes one clearTerminal paint. Same-size Windows frames rewrite from
+      // CUP 1;1 + erase-down so ConPTY wrap cannot leave overlapping cells.
+      // If the terminal applies backpressure, Ink retains only one redraw.
+      incrementalRendering: true,
+      windowsFullscreenDiff: true,
+      coalesceBackpressuredFrames: true,
+    },
   )
+  let exitError: unknown
   try {
     await instance.waitUntilExit()
-  } catch {
-    // Ink teardown failures must not block the exit request.
+  } catch (error) {
+    exitError = error
   } finally {
     try {
       instance.unmount()
@@ -4112,7 +4266,7 @@ export async function runInk(store: TuiStore, host: TuiHost): Promise<void> {
       // Ink discards effect-cleanup output while leaving the alternate screen,
       // so the terminal owner repeats the app-owned mouse-mode reset afterward.
       await new Promise<void>((resolve, reject) => {
-        process.stdout.write(DISABLE_WHEEL_MOUSE, (error) => {
+        process.stdout.write(DISABLE_WHEEL_MOUSE + RESTORE_CURSOR_STYLE, (error) => {
           if (error === null || error === undefined) resolve()
           else reject(error)
         })
@@ -4121,5 +4275,6 @@ export async function runInk(store: TuiStore, host: TuiHost): Promise<void> {
       // Process shutdown may close stdout before the mouse reset is written.
     }
   }
+  if (exitError !== undefined) throw exitError
   host.exit()
 }

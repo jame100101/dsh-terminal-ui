@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   COMPOSER_PROMPT_WIDTH, COMPOSER_WRAP_GUTTER, composerGlyphAt, composerOffsetAt,
   composerOffsetForVerticalMove, composerTextPaintWidth, composerTextWrapWidth, composerVisibleRowCount,
-  lineSelectableWidth, nextCodePointBoundary, previousCodePointBoundary, scrollOffsetForScrollbarRow,
+  exclusivePrefixSums, lineSelectableWidth, nextCodePointBoundary, nodeIndexAtLine, previousCodePointBoundary,
+  scrollOffsetForScrollbarRow,
   selectComposerLayout, selectInputViewport, selectPanelViewport, selectScrollbar, selectTerminalFrameWidth,
   rememberTranscriptWindow, selectTranscriptBlocksWindow, selectTranscriptViewport, transcriptCellAt,
   transcriptLineAtRow, wrapComposerRanges,
@@ -75,6 +76,20 @@ describe('selectTranscriptViewport', () => {
     const lines = Array.from({ length: 10 }, (_, index) => line(`l${index}`))
     const viewport = selectTranscriptViewport(lines, 5, 2, 1)
     expect(viewport.lines.map(entry => entry.text)).toEqual(['l4', 'l5', 'l6', 'l7'])
+  })
+})
+
+describe('exclusivePrefixSums', () => {
+  it('maps a line to its block in log time', () => {
+    const prefix = exclusivePrefixSums([3, 5, 2])
+    expect(prefix).toEqual([0, 3, 8, 10])
+    expect(nodeIndexAtLine(prefix, 0)).toBe(0)
+    expect(nodeIndexAtLine(prefix, 2)).toBe(0)
+    expect(nodeIndexAtLine(prefix, 3)).toBe(1)
+    expect(nodeIndexAtLine(prefix, 7)).toBe(1)
+    expect(nodeIndexAtLine(prefix, 8)).toBe(2)
+    expect(nodeIndexAtLine(prefix, 9)).toBe(2)
+    expect(nodeIndexAtLine([0], 0)).toBe(0)
   })
 })
 
@@ -306,6 +321,8 @@ describe('code-point boundaries', () => {
 describe('selectComposerLayout', () => {
   it('keeps a short value on one line with the caret at its end', () => {
     const layout = selectComposerLayout('hello', 5, 20, 5)
+    expect(layout.ranges).toHaveLength(1)
+    expect(layout.ranges[0]).toEqual({ text: 'hello', start: 0, end: 5 })
     expect(layout.visibleLines).toEqual(['hello'])
     expect(layout.caretLine).toBe(0)
     expect(layout.caretColumn).toBe(5)

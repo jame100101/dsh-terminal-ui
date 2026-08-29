@@ -278,6 +278,7 @@
         "./packages/workspace/*/src",
         "./packages/sdk/*/src",
         "./packages/interaction/*/src",
+        "./packages/tui/*/src",
         "./packages/boot/*/src",
         "./packages/examples/*/src",
         "./packages/util/*/src",

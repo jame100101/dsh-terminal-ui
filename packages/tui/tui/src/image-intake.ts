@@ -150,6 +150,7 @@ export function reconcileImageChips<T>(
   nextDraft: string,
   attachments: readonly T[],
 ): { draft: string; attachments: T[] } {
+  if (attachments.length === 0) return { draft: nextDraft, attachments: [] }
   const previousIndices = new Set(chipIndices(previousDraft).filter(index => index < attachments.length))
   if (previousIndices.size === 0) {
     return { draft: nextDraft, attachments: [...attachments] }

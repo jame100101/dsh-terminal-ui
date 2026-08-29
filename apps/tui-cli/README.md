@@ -43,4 +43,7 @@ go to stderr.
 
 The wrapper resolves the bundled launcher bin, spawns it with inherited
 stdio, and passes the child's exit code through — it never captures output,
-queries sessions, or renders anything itself.
+queries sessions, or renders anything itself. After an interactive child
+exits, including a native fatal, it writes an idempotent reset for mouse
+tracking, bracketed paste, cursor visibility, the alternate screen, and
+SGR. `--print` skips that write.

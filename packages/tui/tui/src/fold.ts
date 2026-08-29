@@ -14,12 +14,13 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 // Empty type imports carry declaration merges: compaction extends the session
 // event vocabulary with `compaction/*`, commands with `command/run`/`done`,
 // llm-retry with `llm/retry`, plan-mode with `plan/mode`, goal with
-// `goal/change`.
+// `goal/change`, tools with `tool/code-dispatch*`.
 import type {} from '@deepseek-ai/dsh-compaction'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-llm-retry'
 import type {} from '@deepseek-ai/dsh-plan-mode'
 import type {} from '@deepseek-ai/dsh-goal'
+import type {} from '@deepseek-ai/dsh-tools'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { FoldState, GoalRow, SessionStats, TuiNode, ToolStatus } from './types'
 import { compactResultCard } from './card-project'
@@ -37,6 +38,10 @@ export const MAX_THINK_TEXT = 4_000
 export const MAX_CONTEXT_TEXT = 4_000
 /** Newest transcript rows the fold retains (matches the render window). */
 export const MAX_FOLD_NODES = 3_000
+/** Soft cap on projected node+trace+live characters; oldest rows drop first. */
+export const MAX_FOLD_CHARS = 1_500_000
+/** Events processed between `setImmediate` yields during resume replay. */
+export const FOLD_YIELD_EVERY = 400
 /** Newest trajectory lines the fold retains. */
 export const MAX_TRACE = 512
 /** Status-row text cap. */
@@ -62,14 +67,22 @@ function capBody(text: string, cap: number): string {
  * @param state - a folded transcript.
  * @returns retained character count.
  */
+function nodeResidentChars(node: TuiNode): number {
+  if (node.kind === 'tool') return node.detail.length + node.text.length + node.callId.length + node.name.length
+  if (node.kind === 'retry') return node.retryId.length + node.provider.length
+  if (node.kind === 'deliverables') return node.paths.reduce((sum, path) => sum + path.length, 0)
+  if ('text' in node) return node.text.length
+  return 0
+}
+
+/**
+ * Count characters retained by the bounded transcript projection.
+ * @param state - Current TUI fold.
+ * @returns Characters held by nodes, trace entries, and the live buffer.
+ */
 export function foldResidentChars(state: FoldState): number {
   let total = 0
-  for (const node of state.nodes) {
-    if (node.kind === 'tool') total += node.detail.length + node.text.length
-    else if (node.kind === 'retry') total += node.retryId.length + node.provider.length
-    else if (node.kind === 'deliverables') total += node.paths.reduce((sum, path) => sum + path.length, 0)
-    else if ('text' in node) total += node.text.length
-  }
+  for (const node of state.nodes) total += nodeResidentChars(node)
   for (const entry of state.trace) total += entry.text.length
   if (state.live !== null) total += state.live.text.length + state.live.think.length
   return total
@@ -146,11 +159,44 @@ function previewArgs(argumentsJson: string): string {
   return `${singleLine.slice(0, MAX_ARGS_PREVIEW)}…`
 }
 
-/** Index of the most recent settled tool row, or -1. */
-function lastRunningTool(nodes: readonly TuiNode[]): number {
+/** Preview already-normalized Code Mode dispatch arguments. */
+function previewUnknownArgs(value: unknown): string {
+  if (typeof value === 'string') return previewArgs(value)
+  try {
+    return previewArgs(JSON.stringify(value) ?? '')
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Decode the paired call id and failure bit from a `tool/result` event.
+ * Status uses the tool-result block's `isError`; `event.data.error` is only
+ * a diagnostic supplement.
+ * @param event - a session event.
+ * @returns the decoded result, or null when the event is not `tool/result`.
+ */
+export function decodeToolResult(event: SessionEvent): {
+  callId: string
+  isError: boolean
+  content: ContentBlock[]
+} | null {
+  if (event.type !== 'tool/result') return null
+  const content = event.data.message.content
+  const block = content.find(entry => entry.type === 'tool-result')
+  return {
+    callId: block?.type === 'tool-result' ? String(block.toolCallId) : '',
+    isError: block?.type === 'tool-result' && block.isError === true,
+    content,
+  }
+}
+
+/** Index of the tool row with this call id, or -1. */
+function findToolByCallId(nodes: readonly TuiNode[], callId: string): number {
+  if (callId === '') return -1
   for (let index = nodes.length - 1; index >= 0; index--) {
     const node = nodes[index]
-    if (node !== undefined && node.kind === 'tool' && node.status === 'running') return index
+    if (node !== undefined && node.kind === 'tool' && node.callId === callId) return index
   }
   return -1
 }
@@ -343,6 +389,25 @@ function trimRing<T>(items: T[], max: number, scratch: FoldScratch): T[] {
   return items.slice(items.length - max)
 }
 
+/** Drop oldest nodes until the projected character budget fits. */
+function trimFoldNodes(nodes: TuiNode[], scratch: FoldScratch): TuiNode[] {
+  const next = trimRing(nodes, MAX_FOLD_NODES, scratch)
+  let chars = 0
+  for (const node of next) chars += nodeResidentChars(node)
+  if (chars <= MAX_FOLD_CHARS) return next
+  let start = 0
+  while (start < next.length - 1 && chars > MAX_FOLD_CHARS) {
+    chars -= nodeResidentChars(next[start] as TuiNode)
+    start += 1
+  }
+  if (start === 0) return next
+  if (batchScratches.has(scratch)) {
+    next.splice(0, start)
+    return next
+  }
+  return next.slice(start)
+}
+
 /**
  * Fold one complete raw event log into transcript state (resume replay).
  * The same prefix contract as {@link applyEvent}: a persisted session's
@@ -367,6 +432,60 @@ export function foldFromLog(
       fold = applyEvent(fold, event, scratch)
       hooks?.after?.(event, fold, scratch)
     }
+  } finally {
+    batchScratches.delete(scratch)
+  }
+  return { fold, scratch }
+}
+
+/**
+ * Replay a log with `setImmediate` yields so a long resume does not monopolize
+ * the event loop. The folded result matches {@link foldFromLog}.
+ * @param events - the session log in seq order.
+ * @param hooks - optional presentation enrichment immediately before or after each event folds.
+ * @param options - yield stride and progress callback.
+ * @returns the folded transcript state and its scratch.
+ */
+export async function foldFromLogYielding(
+  events: readonly SessionEvent[],
+  hooks?: {
+    before?(event: SessionEvent, fold: FoldState, scratch: FoldScratch): void
+    after?(event: SessionEvent, fold: FoldState, scratch: FoldScratch): void
+  },
+  options?: {
+    yieldEvery?: number
+    onProgress?(done: number, total: number): void
+    signal?: AbortSignal
+    seed?: { fold: FoldState; scratch: FoldScratch }
+  },
+): Promise<{ fold: FoldState; scratch: FoldScratch }> {
+  const yieldEvery = Math.max(1, options?.yieldEvery ?? FOLD_YIELD_EVERY)
+  const scratch = options?.seed?.scratch ?? createScratch()
+  let fold = options?.seed === undefined
+    ? initialState()
+    : {
+      ...options.seed.fold,
+      nodes: [...options.seed.fold.nodes],
+      trace: [...options.seed.fold.trace],
+      todos: [...options.seed.fold.todos],
+    }
+  batchScratches.add(scratch)
+  try {
+    for (let index = 0; index < events.length; index += 1) {
+      if (options?.signal?.aborted === true) break
+      const event = events[index]
+      if (event === undefined) continue
+      hooks?.before?.(event, fold, scratch)
+      fold = applyEvent(fold, event, scratch)
+      hooks?.after?.(event, fold, scratch)
+      if ((index + 1) % yieldEvery === 0) {
+        options?.onProgress?.(index + 1, events.length)
+        await new Promise<void>((resolve) => {
+          setImmediate(resolve)
+        })
+      }
+    }
+    if (options?.signal?.aborted !== true) options?.onProgress?.(events.length, events.length)
   } finally {
     batchScratches.delete(scratch)
   }
@@ -433,12 +552,18 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       if (live === null) live = { text: '', think: '', thinkSince: null }
       const chunk = event.data.chunk
       if (chunk.type === 'text-delta') {
-        live = { ...live, text: capBody(live.text + chunk.text, MAX_ASSISTANT_TEXT) }
+        if (live.text.length < MAX_ASSISTANT_TEXT) {
+          live = { ...live, text: capBody(live.text + chunk.text, MAX_ASSISTANT_TEXT) }
+        }
       } else if (chunk.type === 'reasoning-delta') {
-        live = {
-          ...live,
-          think: capBody(live.think + chunk.text, MAX_THINK_TEXT),
-          thinkSince: live.thinkSince ?? (live.think === '' ? event.time : live.thinkSince),
+        if (live.think.length < MAX_THINK_TEXT) {
+          live = {
+            ...live,
+            think: capBody(live.think + chunk.text, MAX_THINK_TEXT),
+            thinkSince: live.thinkSince ?? (live.think === '' ? event.time : live.thinkSince),
+          }
+        } else if (live.thinkSince === null) {
+          live = { ...live, thinkSince: event.time }
         }
       } else if (chunk.type === 'usage' && scratch.step !== null) {
         scratch.step.usage = usageOf(chunk.usage)
@@ -480,6 +605,8 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       nodes = appendNode(nodes, {
         kind: 'tool',
         id: event.seq,
+        callId: String(event.data.callId),
+        name: event.data.name,
         detail: `${event.data.name} ${previewArgs(event.data.arguments)}`,
         status: 'running',
         text: '',
@@ -492,9 +619,11 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       break
     }
     case 'tool/result': {
+      const decoded = decodeToolResult(event)
       const text = blocksText(event.data.message.content, MAX_TOOL_TEXT)
-      const status: ToolStatus = event.data.error === undefined ? 'done' : 'error'
-      const index = lastRunningTool(nodes)
+      const status: ToolStatus = decoded?.isError === true ? 'error' : 'done'
+      const callId = decoded?.callId ?? ''
+      const index = findToolByCallId(nodes, callId)
       if (index >= 0) {
         const running = nodes[index]
         if (running !== undefined && running.kind === 'tool') {
@@ -511,9 +640,19 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
           }
         }
       } else {
-        nodes = appendNode(nodes, { kind: 'tool', id: event.seq, detail: 'tool', status, text, args: undefined, callCard: null, resultCard: null }, scratch)
+        nodes = appendNode(nodes, {
+          kind: 'tool',
+          id: event.seq,
+          callId,
+          name: 'tool',
+          detail: 'tool',
+          status,
+          text,
+          args: undefined,
+          callCard: null,
+          resultCard: null,
+        }, scratch)
       }
-      const callId = toolResultCallId(event)
       if (status === 'done') {
         const seen = new Set(scratch.turnProduced)
         for (const path of producedPaths(scratch.toolCallCards.get(callId))) {
@@ -688,6 +827,61 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       }
       break
     }
+    case 'tool/code-dispatch-start': {
+      nodes = appendNode(nodes, {
+        kind: 'tool',
+        id: event.seq,
+        callId: String(event.data.subCallId),
+        name: event.data.name,
+        parentCallId: String(event.data.parentCallId),
+        detail: `${event.data.name} ${previewUnknownArgs(event.data.arguments)}`,
+        status: 'running',
+        text: '',
+        args: event.data.arguments,
+        callCard: null,
+        resultCard: null,
+      }, scratch)
+      scratch.toolStarts.set(String(event.data.subCallId), event.time)
+      traces = appendTrace(traces, trace(event.seq, `tool ${event.data.name}`), scratch)
+      break
+    }
+    case 'tool/code-dispatch': {
+      const callId = String(event.data.subCallId)
+      const text = blocksText(event.data.content, MAX_TOOL_TEXT)
+      const status: ToolStatus = event.data.isError ? 'error' : 'done'
+      const index = findToolByCallId(nodes, callId)
+      if (index >= 0) {
+        const running = nodes[index]
+        if (running !== undefined && running.kind === 'tool') {
+          nodes = writableNodes(nodes, scratch)
+          nodes[index] = {
+            ...running,
+            status,
+            text,
+            args: undefined,
+            callCard: null,
+            resultCard: compactResultCard(running.resultCard),
+          }
+        }
+      } else {
+        nodes = appendNode(nodes, {
+          kind: 'tool',
+          id: event.seq,
+          callId,
+          name: event.data.name,
+          parentCallId: String(event.data.parentCallId),
+          detail: event.data.name,
+          status,
+          text,
+          args: undefined,
+          callCard: null,
+          resultCard: null,
+        }, scratch)
+      }
+      scratch.toolStarts.delete(callId)
+      traces = appendTrace(traces, trace(event.seq, `result ${status}`), scratch)
+      break
+    }
     case 'compaction/start': {
       // No settled row: while the run is in flight the renderer draws a live
       // gradient row keyed off `compaction` (the run is usually brief).
@@ -705,7 +899,7 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       break
   }
   return {
-    nodes: trimRing(nodes, MAX_FOLD_NODES, scratch),
+    nodes: trimFoldNodes(nodes, scratch),
     trace: trimRing(traces, MAX_TRACE, scratch),
     todos,
     live,
@@ -755,11 +949,7 @@ function usageOf(usage: {
   }
 }
 
-/** Read the paired callId from a tool-result's tool-result block. */
-function toolResultCallId(event: SessionEvent & { type: 'tool/result' }): string {
-  const block = event.data.message.content.find(entry => entry.type === 'tool-result')
-  return block?.type === 'tool-result' ? block.toolCallId : ''
-}
+
 
 /** Parse raw tool-call arguments JSON; failures degrade to the raw string. */
 function parseArgsLenient(argumentsJson: string): unknown {

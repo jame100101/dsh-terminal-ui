@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createUiPublishScheduler, shouldCoalesceSessionEvent } from '../src/ui-publish'
+import { createUiPublishScheduler, shouldCoalesceSessionEvent, shouldPublishCoalescedFold } from '../src/ui-publish'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 function event(type: string, data: unknown): SessionEvent {
@@ -14,6 +14,16 @@ describe('shouldCoalesceSessionEvent', () => {
     expect(shouldCoalesceSessionEvent(event('tool/call', { name: 'bash' }))).toBe(false)
     expect(shouldCoalesceSessionEvent(event('assistant/message', { message: { content: [] } }))).toBe(false)
     expect(shouldCoalesceSessionEvent(event('turn/end', { reason: { kind: 'completed' } }))).toBe(false)
+  })
+})
+
+describe('shouldPublishCoalescedFold', () => {
+  it('skips a publish when live and nodes stay the same object', () => {
+    const live = { text: 'a', think: '', thinkSince: null }
+    const nodes: unknown[] = []
+    expect(shouldPublishCoalescedFold({ live, nodes }, { live, nodes })).toBe(false)
+    expect(shouldPublishCoalescedFold({ live, nodes }, { live: { ...live }, nodes })).toBe(true)
+    expect(shouldPublishCoalescedFold({ live, nodes }, { live, nodes: [{}] })).toBe(true)
   })
 })
 

@@ -9,7 +9,7 @@ overrides:
   '@deepseek-ai/schemastery': link:vendor/schemastery
 
 patchedDependencies:
-  ink@7.1.1: 792048f58743f8b39cbeae935f42fdb59bf9cbcc3409f2c85e0c68ba9293643d
+  ink@7.1.1: 42034a0e7b75c5d90659303caa02f4702dfb17ca3f42105ba5b1fa918202e56e
   node-pty@1.2.0-beta.15: ca2b142414ce22d506389e71bd140e45d274f3c20b80baf37014caf59089f321
 
 importers:
@@ -457,7 +457,7 @@ importers:
         version: 5.0.0
       ink:
         specifier: 7.1.1
-        version: 7.1.1(patch_hash=792048f58743f8b39cbeae935f42fdb59bf9cbcc3409f2c85e0c68ba9293643d)(@types/react@19.2.18)(react@19.2.8)
+        version: 7.1.1(patch_hash=42034a0e7b75c5d90659303caa02f4702dfb17ca3f42105ba5b1fa918202e56e)(@types/react@19.2.18)(react@19.2.8)
       is-in-ci:
         specifier: 2.0.0
         version: 2.0.0
@@ -8424,7 +8424,7 @@ importers:
         version: 15.0.0
       ink:
         specifier: 7.1.1
-        version: 7.1.1(patch_hash=792048f58743f8b39cbeae935f42fdb59bf9cbcc3409f2c85e0c68ba9293643d)(@types/react@19.2.18)(react@19.2.8)
+        version: 7.1.1(patch_hash=42034a0e7b75c5d90659303caa02f4702dfb17ca3f42105ba5b1fa918202e56e)(@types/react@19.2.18)(react@19.2.8)
       marked:
         specifier: ^16.1.1
         version: 16.4.2
@@ -18800,7 +18800,7 @@ snapshots:
 
   inherits@2.0.4: {}
 
-  ink@7.1.1(patch_hash=792048f58743f8b39cbeae935f42fdb59bf9cbcc3409f2c85e0c68ba9293643d)(@types/react@19.2.18)(react@19.2.8):
+  ink@7.1.1(patch_hash=42034a0e7b75c5d90659303caa02f4702dfb17ca3f42105ba5b1fa918202e56e)(@types/react@19.2.18)(react@19.2.8):
     dependencies:
       '@alcalzone/ansi-tokenize': 0.3.0
       ansi-escapes: 7.3.0

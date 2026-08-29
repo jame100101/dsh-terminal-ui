@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BUSY_STAR_FRAMES, busyStarFrame } from '../src/busy-star'
+import { BUSY_STAR_FRAMES, BUSY_STAR_INTERVAL_MS, QUIET_BUSY_STAR_INTERVAL_MS, busyStarFrame } from '../src/busy-star'
 import { liveShimmerPaint, themed, thinkingShimmerColor, thinkingShimmerLevel } from '../src/render'
 import stringWidth from 'string-width'
 
@@ -13,6 +13,9 @@ describe('busyStarFrame', () => {
     expect(busyStarFrame(6).glyph).toBe(busyStarFrame(0).glyph)
     expect(busyStarFrame(0).color).toBe('yellow')
     expect(busyStarFrame(2).color).toBe('yellow')
+    expect(BUSY_STAR_INTERVAL_MS).toBe(250)
+    expect(QUIET_BUSY_STAR_INTERVAL_MS).toBeGreaterThan(BUSY_STAR_INTERVAL_MS)
+    expect(QUIET_BUSY_STAR_INTERVAL_MS).toBeLessThanOrEqual(500)
   })
 })
 

@@ -11,7 +11,7 @@ interface CursorPosition {
 
 interface LogUpdate {
   (output: string): boolean
-  setCursorPosition: (position: CursorPosition) => void
+  setCursorPosition: (position: CursorPosition | undefined) => void
 }
 
 interface LogUpdateModule {
@@ -68,5 +68,29 @@ describe('Ink cursor-only terminal updates', () => {
       await flush(terminal)
       expect(terminal.buffer.active.cursorY).toBe(expectedRow)
     }
+  })
+
+  it('keeps the last mounted caret when a later frame does not resubmit it', async () => {
+    const terminal = new xtermHeadless.Terminal({ cols: 12, rows: 6, allowProposedApi: true, convertEol: true })
+    const stream = {
+      columns: 12,
+      isTTY: true,
+      write: (output: string): boolean => {
+        terminal.write(output)
+        return true
+      },
+    }
+    const logUpdate = await loadLogUpdate()
+    const render = logUpdate.create(stream, { showCursor: true, incremental: true })
+    render.setCursorPosition({ x: 1, y: 2 })
+    render('a\nb\nc\nd')
+    await flush(terminal)
+    expect(terminal.buffer.active.cursorY).toBe(2)
+    render('a\nB\nc\nd')
+    await flush(terminal)
+    expect(terminal.buffer.active.cursorY).toBe(2)
+    render.setCursorPosition(undefined)
+    render('a\nB\nc\nd')
+    await flush(terminal)
   })
 })

@@ -287,7 +287,7 @@ describe('renderAssistantResultPlain', () => {
       { kind: 'user', id: 0, text: 'prompt' },
       { kind: 'assistant', id: 1, text: 'first', messageId: 'm1' },
       { kind: 'think', id: 2, text: 'hidden', durationMs: 100 },
-      { kind: 'tool', id: 3, text: 'tool output', detail: 'bash', status: 'done', args: {}, callCard: null, resultCard: null },
+      { kind: 'tool', id: 3, callId: 'c3', name: 'bash', text: 'tool output', detail: 'bash', status: 'done', args: {}, callCard: null, resultCard: null },
       { kind: 'assistant', id: 4, text: '', messageId: 'm2' },
       { kind: 'assistant', id: 5, text: 'second', messageId: 'm3' },
     ]

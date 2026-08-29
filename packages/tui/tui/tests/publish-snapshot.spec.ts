@@ -37,6 +37,7 @@ function snapshot(overrides: Partial<TuiSnapshot> = {}): TuiSnapshot {
     compaction: false,
     sandbox: 'read-only',
     occupancy: null,
+    resumeProgress: null,
     ...overrides,
   }).getSnapshot()
 }

@@ -5,7 +5,6 @@
  * @module @deepseek-ai/dsh-tui/src/store
  */
 
-import { countUiPublish } from './tui-perf'
 import type { GoalRow, LiveBuffer, PlanState, SessionStats, TodoItem, TraceEntry, TuiNode } from './types'
 
 /** One editable top-level field of a plugin's settings namespace. */
@@ -260,6 +259,8 @@ export interface TuiSnapshot {
   sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
   /** Web-parity context occupancy projection; null without the projection service. */
   occupancy: { projectedTokens: number; contextWindow: number } | null
+  /** Fold replay progress while a session is resuming; null when idle. */
+  resumeProgress: { done: number; total: number } | null
 }
 
 /** Minimal subscribe/getSnapshot store contract for useSyncExternalStore. */
@@ -286,7 +287,6 @@ export function createTuiStore(initial: TuiSnapshot): TuiStore {
     set: (next) => {
       if (next.version === snapshot.version) return
       snapshot = next
-      countUiPublish()
       for (const listener of [...listeners]) listener()
     },
   }
