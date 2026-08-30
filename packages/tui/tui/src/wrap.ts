@@ -69,12 +69,14 @@ export interface LiveWrapState {
 export interface LiveThinkingTailState {
   /** Cell-bounded tail, with a leading ellipsis when older text is hidden. */
   tail: string
-  /** Bounded source suffix without the synthetic leading ellipsis. */
+  /** Bounded display suffix without the synthetic leading ellipsis. */
   sourceTail: string
-  /** Bounded source suffix used to distinguish append from replacement. */
+  /** Bounded raw-source suffix used to distinguish append from replacement. */
   matchTail: string
   /** Number of source code units already consumed. */
   offset: number
+  /** The consumed source ended in CR, so an appended LF completes the same break. */
+  endedWithCarriageReturn: boolean
   width: number
 }
 
@@ -114,9 +116,15 @@ function fitDisplayTail(value: string, width: number): { tail: string; sourceTai
   return { tail: `…${sourceTail}`, sourceTail }
 }
 
+/** Render source line breaks as one compact separator inside the live tail row. */
+function visibleThinkingText(value: string): string {
+  return value.replaceAll('\r\n', ' ↵ ').replaceAll(/[\r\n]/gu, ' ↵ ')
+}
+
 /**
  * Project only the visible tail of a growing Thinking stream. Appends inspect
- * the new delta plus the previously bounded tail; a newline resets the tail.
+ * the new delta plus the previously bounded tail. Line breaks remain visible
+ * as compact separators instead of temporarily clearing the body row.
  * @param previous - prior incremental state, or null for a new stream.
  * @param text - full accumulated reasoning text.
  * @param width - terminal-cell budget after the `  │ ` prefix.
@@ -135,18 +143,18 @@ export function projectLiveThinkingTail(
   if (previousMatches && text.length === previous.offset) return previous
   let source: string
   if (!previousMatches) {
-    const breakAt = Math.max(text.lastIndexOf('\n'), text.lastIndexOf('\r'))
-    source = text.slice(breakAt + 1)
+    source = visibleThinkingText(text)
   } else {
-    const delta = text.slice(previous.offset)
-    const breakAt = Math.max(delta.lastIndexOf('\n'), delta.lastIndexOf('\r'))
-    source = breakAt >= 0 ? delta.slice(breakAt + 1) : `${previous.sourceTail}${delta}`
+    let delta = text.slice(previous.offset)
+    if (previous.endedWithCarriageReturn && delta.startsWith('\n')) delta = delta.slice(1)
+    source = `${previous.sourceTail}${visibleThinkingText(delta)}`
   }
   const fitted = fitDisplayTail(source, budget)
   return {
     ...fitted,
-    matchTail: fitted.sourceTail === '' ? text.slice(-64) : fitted.sourceTail,
+    matchTail: text.slice(-64),
     offset: text.length,
+    endedWithCarriageReturn: text.endsWith('\r'),
     width: budget,
   }
 }

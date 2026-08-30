@@ -3,7 +3,7 @@
  * TUI: a fixed-height root Box (full-screen frames, so Ink always takes its
  * whole-screen clear path), a transcript viewport driven by a bottom-anchored
  * scroll offset with mouse-wheel/paging input parsed straight from Ink's
- * input stream, a single-line `› ` composer whose caret is anchored through
+ * input stream, a wrapping `›` composer whose caret is anchored through
  * Ink's own `useCursor`/`measureElement` (no manual CUP writes), and the dsh
  * extras layered in: render-intent tool cards, retry rows, markdown runs,
  * the Web-stats strip, slash picker, panels, and approval takeovers.
@@ -19,6 +19,7 @@ import type { DOMElement, Key } from 'ink'
 import stringWidth from 'string-width'
 import { projectCallCard, projectResultCard } from './card-project'
 import { csiTailKey, escapeArbiter, syntheticKey } from './csi-arbiter'
+import { formatCostUsd } from './deepseek-cost'
 import { PermissionCycleGate } from './permission-cycle'
 import {
   DISABLE_WHEEL_MOUSE, ENABLE_WHEEL_MOUSE, parseMouseReport, parseMouseWheel, scrollOffsetForWheel, stripMouseReports,
@@ -1158,9 +1159,9 @@ const Header = React.memo(function Header(props: {
 ))
 
 /**
- * One already-wrapped row with an inverse mid-span. Segments partition by
- * glyph start column so a CJK split cannot duplicate a character or wrap the
- * row onto a second terminal line (which would shift the transcript).
+ * One already-wrapped row with a highlighted mid-span. Keep every segment in
+ * one Ink text layout: exact-width sibling boxes can independently clip or
+ * displace glyphs when Windows Terminal repaints a styled selection.
  */
 function SelectedLine(props: {
   text: string
@@ -1182,11 +1183,8 @@ function SelectedLine(props: {
     ...(props.color !== undefined ? { color: props.color } : {}),
   }
   const selected = props.highlight === 'blue'
-    ? <Text wrap="truncate" color="white" backgroundColor="blue">{mid}</Text>
-    : <Text wrap="truncate" inverse>{mid}</Text>
-  const beforeW = stringWidth(before)
-  const midW = stringWidth(mid)
-  const afterW = stringWidth(after)
+    ? <Text color="white" backgroundColor="blue">{mid}</Text>
+    : <Text inverse>{mid}</Text>
   return (
     <Box
       flexDirection="row"
@@ -1195,15 +1193,11 @@ function SelectedLine(props: {
       overflow="hidden"
       width={Math.max(1, props.lineWidth)}
     >
-      {beforeW > 0
-        ? <Box width={beforeW} height={1} flexGrow={0} flexShrink={0} overflow="hidden"><Text {...rest}>{before}</Text></Box>
-        : null}
-      {midW > 0
-        ? <Box width={midW} height={1} flexGrow={0} flexShrink={0} overflow="hidden">{selected}</Box>
-        : null}
-      {afterW > 0
-        ? <Box width={afterW} height={1} flexGrow={0} flexShrink={0} overflow="hidden"><Text {...rest}>{after}</Text></Box>
-        : null}
+      <Text {...rest}>
+        {before}
+        {mid === '' ? null : selected}
+        {after}
+      </Text>
     </Box>
   )
 }
@@ -1511,10 +1505,10 @@ function fitDisplayText(value: string, width: number): string {
 /** Cap on composer lines: overflowing text wraps, never steals the frame. */
 const MAX_COMPOSER_LINES = 5
 /** Prompt on wrap line 0; later wrap rows use the same cell budget. */
-const COMPOSER_PROMPT = '› '
-const COMPOSER_INDENT = '  '
+const COMPOSER_PROMPT = '›'
+const COMPOSER_INDENT = ' '
 
-/** One composer wrap row: a 2-cell prefix plus already-wrapped text. */
+/** One composer wrap row: a 1-cell prefix plus already-wrapped text. */
 function ComposerTextRow(props: {
   prefix: string
   text: string
@@ -1935,7 +1929,7 @@ function NativeCursor({ x, y }: { x: number; y: number }): null {
   return null
 }
 
-/** The composer: a separator, the `› ` prompt, and the wrapping input. */
+/** The composer: a separator, the `›` prompt, and the wrapping input. */
 const Composer = React.memo(function Composer(props: {
   draft: string
   onDraftChange: (value: string) => void
@@ -2096,6 +2090,7 @@ function StatusBar(props: {
 /** The pinned permission row above the composer: mode label colored by policy plus the Shift+Tab hint. */
 const PermissionBar = React.memo(function PermissionBar(props: {
   sandbox: TuiSnapshot['sandbox']
+  costUsd: number
   width: number
   locale: Locale
   theme: 'dark' | 'light'
@@ -2104,15 +2099,21 @@ const PermissionBar = React.memo(function PermissionBar(props: {
   const chip = copy.permissionChip(permissionLabel(props.sandbox))
   const hint = copy.permissionHint
   const space = Math.max(4, props.width - 2)
-  const hintFits = stringWidth(hint) <= space - 10
-  const chipMax = Math.max(4, space - (hintFits ? stringWidth(hint) : 0))
+  const cost = formatCostUsd(props.costUsd)
+  const showCost = space >= 24
+  const leftSpace = Math.max(4, space - (showCost ? stringWidth(cost) + 1 : 0))
+  const hintFits = stringWidth(hint) <= leftSpace - 10
+  const chipMax = Math.max(4, leftSpace - (hintFits ? stringWidth(hint) : 0))
   const chipText = stringWidth(chip) <= chipMax ? chip : fitDisplayText(chip, chipMax)
   return (
-    <Box paddingX={1}>
-      <Text bold wrap="truncate" color={themed(permissionColor(props.sandbox), props.theme, 'whiteBright')}>
-        {chipText}
-      </Text>
-      {hintFits ? <Text dimColor wrap="truncate">{hint}</Text> : null}
+    <Box paddingX={1} justifyContent="space-between">
+      <Box>
+        <Text bold wrap="truncate" color={themed(permissionColor(props.sandbox), props.theme, 'whiteBright')}>
+          {chipText}
+        </Text>
+        {hintFits ? <Text dimColor wrap="truncate">{hint}</Text> : null}
+      </Box>
+      {showCost ? <Text dimColor>{cost}</Text> : null}
     </Box>
   )
 }, (previous, next) => (
@@ -2120,6 +2121,7 @@ const PermissionBar = React.memo(function PermissionBar(props: {
   && previous.locale === next.locale
   && previous.theme === next.theme
   && previous.sandbox === next.sandbox
+  && previous.costUsd === next.costUsd
 ))
 
 /** The approval/question takeover occupying the budgeted rows above the composer. */
@@ -2896,7 +2898,6 @@ export function App(props: {
         phaseLabel,
         `round ${snapshot.goal.roundsStarted}/${snapshot.goal.maxGoalRounds}`,
         objective,
-        snapshot.goal.phase,
       )
       const fitted = fitDockLine(dock, transcriptContentWidth)
       lines.push({
@@ -4128,7 +4129,7 @@ export function App(props: {
           theme={theme}
         />
       ) : null}
-      <PermissionBar sandbox={sandbox} width={width} locale={locale} theme={theme} />
+      <PermissionBar sandbox={sandbox} costUsd={snapshot.stats.costUsd} width={width} locale={locale} theme={theme} />
       <Composer
         draft={composerDraft}
         onDraftChange={pluginEdit !== null

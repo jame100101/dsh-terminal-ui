@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-30-tui-deepseek-session-cost.md
+2026-08-30-tui-deepseek-session-cost.md: 8af9f329adfbca266db0375969283068a2ceddcc
+2026-08-30-tui-deepseek-session-cost.zh.md: 6a68ac5130c0171b6b5db4fc5a497f092e236723

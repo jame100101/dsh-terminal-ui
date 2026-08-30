@@ -10,7 +10,7 @@ function snapshot(overrides: Partial<TuiSnapshot> = {}): TuiSnapshot {
     trace: [],
     todos: [],
     stats: { turns: 0, steps: 0, llmMs: 0, toolMs: 0, ttftMs: 0, stepsWithTtft: 0, decodeMs: 0,
-      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }, contextWindow: 0 },
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 }, contextWindow: 0, costUsd: 0 },
     live: null,
     busy: false,
     provider: 'p',

@@ -57,7 +57,7 @@
 | compaction 展示 | CompactionItem/Card 详情 | 实时 compacting 渐变行 + compacted 状态 | 🟡 |
 | 回合尾统计 | 回合尾 stats | └ turn N · LLM/工具/TTFT | ✅ |
 | deliverables（产出文件） | ProducedFiles 列表 + 点击打开 | 无（未投影 produced-files） | ❌ |
-| 消息操作（复制/打开文件） | 复制按钮、打开文件 | 默认拖选自动复制；输入框 TUI 选区；`/copy` 最近回复。打开文件仍无。剩余 composer 项见 `packages/tui/tui/bug.md` | 🟡 |
+| 消息操作（复制/打开文件） | 复制按钮、打开文件 | 默认拖选自动复制；输入框 TUI 选区；`/copy` 最近回复。打开文件仍无。 | 🟡 |
 | 消息反馈 👍/👎 | 悬停操作 + 备注 | 选择消息后 g/b（同 messageFeedback CAS 服务） | 🟡 |
 | 图片渲染 | 消息内缩略图 + lightbox | 图片块不渲染（仅文本） | ❌ |
 | 轨迹视图 | 时间线分组 + 时长视图 + 预览 | /trajectory 扁平轨迹（蓝=模型/红=工具/青=用户） | 🟡 |

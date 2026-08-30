@@ -89,7 +89,18 @@ describe('projection sidecar', () => {
     expect(() => parseProjectionSidecar('x'.repeat(MAX_SIDECAR_BYTES + 1))).toThrow(/size cap/u)
   })
 
-  it('keeps projectionVersion 1 in a written document', async () => {
+  it('rejects a projection written before cost entered the persisted fold', () => {
+    expect(() => parseProjectionSidecar(JSON.stringify({
+      formatVersion: 1,
+      projectionVersion: PROJECTION_VERSION - 1,
+      sessionId: 'sess-1',
+      createdAt: 10,
+      lastSeq: 0,
+      fold: initialState(),
+    }))).toThrow(`projectionVersion ${PROJECTION_VERSION}`)
+  })
+
+  it('writes the current projection version', async () => {
     await withDir(async (directory) => {
       const store = new ProjectionSidecarStore(directory, () => {})
       store.write(header('sess-1', 10), 0, idleFold())

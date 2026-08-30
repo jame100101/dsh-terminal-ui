@@ -349,6 +349,64 @@ describe('session fold', () => {
     expect(tail?.kind === 'status' && tail.text).toBe('└ turn 1 · LLM 100ms · 工具 300ms · TTFT 90ms')
   })
 
+  it('accumulates pi-compatible DeepSeek cost using each step request route', () => {
+    const state = foldAll([
+      event('step/start', { turn: 1, step: 1 }, 0, 0),
+      event('request/header', {
+        header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }, reason: 'initial',
+      }, 1, 1),
+      event('assistant/chunk', {
+        turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'one' },
+      }, 2, 2),
+      event('assistant/chunk', {
+        turn: 1, step: 1,
+        chunk: { type: 'usage', usage: { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 1_000_000 } },
+      }, 3, 3),
+      event('step/end', { turn: 1, step: 1 }, 4, 4),
+      event('step/start', { turn: 1, step: 2 }, 5, 5),
+      event('request/header', {
+        header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-pro' } }, reason: 'change',
+      }, 6, 6),
+      event('assistant/chunk', {
+        turn: 1, step: 2, chunk: { type: 'reasoning-delta', index: 0, text: 'two' },
+      }, 7, 7),
+      event('assistant/chunk', {
+        turn: 1, step: 2,
+        chunk: {
+          type: 'usage',
+          usage: {
+            inputTokens: 1_000_000,
+            outputTokens: 1_000_000,
+            cacheReadTokens: 1_000_000,
+            reasoningTokens: 900_000,
+          },
+        },
+      }, 8, 8),
+      event('step/end', { turn: 1, step: 2 }, 9, 9),
+    ])
+    expect(state.stats.costUsd).toBeCloseTo(0.4228 + 1.308625)
+  })
+
+  it('prices a completed usage-only response without inventing timing samples', () => {
+    const state = foldAll([
+      event('step/start', { turn: 1, step: 1 }, 0, 10),
+      event('request/header', {
+        header: { config: { provider: 'deepseek-official', model: 'deepseek-v4-flash' } }, reason: 'initial',
+      }, 1, 11),
+      event('assistant/message', {
+        turn: 1,
+        step: 1,
+        message: { id: 'empty', role: 'assistant', content: [], source: { kind: 'model' } },
+        usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 },
+      }, 2, 12),
+      event('step/end', { turn: 1, step: 1 }, 3, 13),
+    ])
+    expect(state.stats.tokens).toMatchObject({ input: 1_000_000, output: 1_000_000 })
+    expect(state.stats.costUsd).toBeCloseTo(0.42)
+    expect(state.stats.llmMs).toBe(0)
+    expect(state.stats.stepsWithTtft).toBe(0)
+  })
+
   it('folds the context window from request/context', () => {
     const state = foldAll([
       event('request/context', { provider: 'deepseek-official', model: 'deepseek-v4-flash', contextWindow: 128000 }, 0),

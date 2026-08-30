@@ -1,65 +1,15 @@
 /**
- * Styled colors for todo and goal dock status. Glyphs and labels stay on the
- * line, named colors follow the active theme, and requested TrueColor values
- * pass directly to Ink.
+ * Uniform colors for todo and goal dock rows. Requested TrueColor values pass
+ * directly to Ink so status changes do not make the compact dock visually noisy.
  * @module @deepseek-ai/dsh-tui/src/status-color
  */
 
 import stringWidth from 'string-width'
-import type { GoalRow, TodoItem } from './types'
 
-/** Exact pending-todo foreground. */
-export const TODO_PENDING_COLOR = '#C9B84A'
-/** Exact completed-todo foreground. */
-export const TODO_COMPLETED_COLOR = '#3FB950'
-/** Exact goal glyph/title foreground. */
-export const GOAL_TITLE_COLOR = '#61D6D6'
-/** Exact dock separator foreground. */
-export const DOCK_SEPARATOR_COLOR = '#666666'
-/** Exact goal objective foreground. */
-export const GOAL_BODY_COLOR = '#A7A7A7'
-
-/**
- * Resolve the theme token for one todo status.
- * @param status - Durable todo status.
- * @returns The matching theme color token.
- */
-export function todoStatusColor(status: TodoItem['status']): 'cyan' | '#C9B84A' | '#3FB950' {
-  switch (status) {
-    case 'in_progress':
-      return 'cyan'
-    case 'pending':
-      return TODO_PENDING_COLOR
-    case 'completed':
-      return TODO_COMPLETED_COLOR
-    default: {
-      const exhaustive: never = status
-      return exhaustive
-    }
-  }
-}
-
-/**
- * Resolve the theme token for one goal phase.
- * @param phase - Durable goal phase.
- * @returns The matching theme color token.
- */
-export function goalPhaseColor(phase: GoalRow['phase']): 'blue' | 'yellow' | 'red' | 'green' {
-  switch (phase) {
-    case 'active':
-      return 'blue'
-    case 'paused':
-      return 'yellow'
-    case 'blocked':
-      return 'red'
-    case 'complete':
-      return 'green'
-    default: {
-      const exhaustive: never = phase
-      return exhaustive
-    }
-  }
-}
+/** Exact foreground for the complete todo row. */
+export const TODO_LINE_COLOR = '#8A8A8A'
+/** Exact foreground for the complete goal row. */
+export const GOAL_LINE_COLOR = '#61D6D6'
 
 /** One styled run on a dock row. Glyph and label text stay in `text`. */
 export interface DockRun {
@@ -87,7 +37,7 @@ function exactRun(text: string, color: string): DockRun {
 }
 
 /**
- * Build the todo dock row: labels stay visible; each count uses its status color.
+ * Build the todo dock row with one quiet foreground for every segment.
  * @param dockLabel - `todo` / localized dock word.
  * @param inProgressLabel - localized in-progress fragment including the count.
  * @param pendingLabel - localized pending fragment including the count.
@@ -100,24 +50,21 @@ export function todoDockLine(
   pendingLabel: string,
   doneLabel: string,
 ): DockLine {
-  const runs: DockRun[] = [
-    { text: `${dockLabel} `, color: 'gray' },
-    { text: inProgressLabel, color: todoStatusColor('in_progress') },
-    exactRun(' · ', DOCK_SEPARATOR_COLOR),
-    exactRun(pendingLabel, todoStatusColor('pending')),
-    exactRun(' · ', DOCK_SEPARATOR_COLOR),
-    exactRun(doneLabel, todoStatusColor('completed')),
-  ]
-  return { text: runs.map(run => run.text).join(''), color: 'gray', runs }
+  const text = `${dockLabel} ${inProgressLabel} · ${pendingLabel} · ${doneLabel}`
+  return {
+    text,
+    color: TODO_LINE_COLOR,
+    exactColor: true,
+    runs: [exactRun(text, TODO_LINE_COLOR)],
+  }
 }
 
 /**
- * Build the goal dock row with distinct title, phase, separators, round, and objective colors.
+ * Build the goal dock row with one quiet foreground for every segment.
  * @param dockLabel - localized glyph/title, such as `◈ goal`.
  * @param phaseLabel - localized phase label without brackets.
  * @param roundLabel - current/max round label.
  * @param objective - bounded goal objective preview.
- * @param phase - durable goal phase.
  * @returns text plus styled runs.
  */
 export function goalDockLine(
@@ -125,21 +72,13 @@ export function goalDockLine(
   phaseLabel: string,
   roundLabel: string,
   objective: string,
-  phase: GoalRow['phase'],
 ): DockLine {
-  const runs: DockRun[] = [
-    exactRun(`${dockLabel} `, GOAL_TITLE_COLOR),
-    { text: `[${phaseLabel}]`, color: goalPhaseColor(phase) },
-    exactRun(' · ', DOCK_SEPARATOR_COLOR),
-    { text: roundLabel, color: 'white' },
-    exactRun(' · ', DOCK_SEPARATOR_COLOR),
-    exactRun(objective, GOAL_BODY_COLOR),
-  ]
+  const text = `${dockLabel} [${phaseLabel}] · ${roundLabel} · ${objective}`
   return {
-    text: runs.map(run => run.text).join(''),
-    color: GOAL_TITLE_COLOR,
+    text,
+    color: GOAL_LINE_COLOR,
     exactColor: true,
-    runs,
+    runs: [exactRun(text, GOAL_LINE_COLOR)],
   }
 }
 

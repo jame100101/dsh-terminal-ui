@@ -270,6 +270,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     turns: 0, steps: 0, llmMs: 0, toolMs: 0, ttftMs: 0, stepsWithTtft: 0, decodeMs: 0,
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
     contextWindow: 0,
+    costUsd: 0,
   }
   const store = createTuiStore({
     version: 0,
@@ -387,12 +388,12 @@ describe('Ink 7 full-screen render', () => {
       const inputRow = composerInputRow(lines)
       expect(frameRows(lines) - 1 - suffix.moveUp).toBe(inputRow - 1)
       // ansi-escapes' cursorTo is 1-based (it emits x + 1): the caret at
-      // 0-based column 3 (after the '› ' prompt) renders as column 4.
-      expect(suffix.column).toBe(4)
-      // Typing moves the caret with the text (after 'ab': 0-based 5 → 6).
+      // 0-based column 2 (after the left-shifted '›' prompt) renders as column 3.
+      expect(suffix.column).toBe(3)
+      // Typing moves the caret with the text (after 'ab': 0-based 4 → 5).
       await type('ab')
       const typed = lastCursorSuffix(capture.output)
-      expect(typed.column).toBe(6)
+      expect(typed.column).toBe(5)
       expect(capture.terminal.buffer.active.cursorY).toBe(composerInputRow(capture.screenLines()) - 1)
     } finally {
       unmount()
@@ -580,7 +581,7 @@ describe('Ink 7 full-screen render', () => {
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       expect(lines.some(line => line.includes('▸ /clear'))).toBe(true)
-      expect(lines.some(line => line.includes('› /'))).toBe(true)
+      expect(lines.some(line => line.includes('›/'))).toBe(true)
       // No stray CSI tail leaked into the composer as text.
       expect(lines.some(line => line.includes('[B'))).toBe(false)
     } finally {
@@ -926,6 +927,25 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
+  it('keeps the live Thinking body visible when a streamed chunk ends in a newline', async () => {
+    const { store, capture, unmount } = await mount([{ kind: 'user', id: 1, text: 'hi' }])
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        busy: true,
+        live: { text: '', think: '换行前仍应显示\n', thinkSince: Date.now() },
+      })
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      const lines = lastFrameLines(capture)
+      expect(lines.some(line => line.includes('Thinking'))).toBe(true)
+      expect(lines.some(line => line.includes('│') && line.includes('换行前仍应显示') && line.includes('↵'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  })
+
   it('leaves idle Tab inert and keeps arrows/Space/text owned by the composer', async () => {
     const rates: { messageId: string; rating: 'positive' | 'negative' }[] = []
     const nodes: TuiNode[] = [
@@ -955,7 +975,7 @@ describe('Ink 7 full-screen render', () => {
       await type('b')
       expect(rates).toEqual([])
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›  gb'))).toBe(true)
+      expect(lines.some(line => line.includes('› gb'))).toBe(true)
     } finally {
       unmount()
     }
@@ -993,7 +1013,7 @@ describe('Ink 7 full-screen render', () => {
       expect(lines.some(line => line.includes('must stay hidden'))).toBe(false)
       await type('\r')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› /review-code'))).toBe(true)
+      expect(lines.some(line => line.includes('›/review-code'))).toBe(true)
       await type('check this')
       await type('\r')
       expect(submitted).toEqual(['/review-code check this'])
@@ -1389,6 +1409,58 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
+  it('aligns CJK composer wrap rows and paints every source glyph once', async () => {
+    const mounted = await mount()
+    try {
+      const draft = '复制输入不应吞字'.repeat(24)
+      await mounted.type(draft)
+      const lines = lastFrameLines(mounted.capture)
+      const layout = selectComposerLayout(draft, draft.length, composerWrapWidth(COLUMNS), 5)
+      const firstRow = composerInputRow(lines) - 1
+      const composerRows = lines.slice(firstRow, firstRow + layout.visibleLines.length)
+      expect(composerRows.length).toBeGreaterThan(1)
+      expect(composerRows[0]?.search(/[复制输入不应吞字]/u)).toBe(
+        composerRows[1]?.search(/[复制输入不应吞字]/u),
+      )
+      const painted = composerRows
+        .map(line => line.replace(/[^复制输入不应吞字]/gu, ''))
+        .join('')
+      expect(painted).toBe(draft)
+    } finally {
+      mounted.unmount()
+    }
+  })
+
+  it('keeps every composer glyph while a first-row mouse selection is painted', async () => {
+    const submitted: string[] = []
+    const mounted = await mount([], { submit: (text) => { submitted.push(text) } })
+    try {
+      const firstLine = '• 全部给出复杂度，无 tick，整树重渲染/重折叠/重 markdown，Composer 与 ChatTranscript 的 memo 被'
+      const draft = `${firstLine}\n  不稳定回调/snapshot 身份击穿是最大渲染浪费点。`
+      await mounted.type(draft)
+      const row = composerInputRow(mounted.capture.screenLines())
+      const selectedStart = firstLine.indexOf('整树')
+      const selectedEnd = selectedStart + '整树'.length
+      const startColumn = stringWidth(firstLine.slice(0, selectedStart))
+      const endColumn = startColumn + stringWidth('整树')
+      // Root padding (1) + prompt (1) + SGR's 1-based coordinate.
+      await mounted.type(`\x1b[<0;${startColumn + 3};${row}M`)
+      await mounted.type(`\x1b[<32;${endColumn + 2};${row}M`)
+      await mounted.type(`\x1b[<0;${endColumn + 2};${row}m`)
+      const layout = selectComposerLayout(draft, draft.length, composerWrapWidth(COLUMNS), 5)
+      const rows = mounted.capture.screenLines().slice(row - 1, row - 1 + layout.visibleLines.length)
+      expect(rows[0]).toContain(`›${layout.visibleLines[0]}`)
+      for (let index = 1; index < rows.length; index += 1) {
+        expect(rows[index]).toContain(` ${layout.visibleLines[index]}`)
+      }
+      await mounted.type('X')
+      await mounted.type('\r')
+      expect(submitted).toEqual([`${draft.slice(0, selectedStart)}X${draft.slice(selectedEnd)}`])
+    } finally {
+      mounted.unmount()
+    }
+  })
+
   it('shows one compact token for a large paste and submits the exact retained text', async () => {
     const submissions: string[] = []
     const pasted = Array.from({ length: 628 }, (_, index) => `line-${index}`).join('\n')
@@ -1436,6 +1508,7 @@ describe('Ink 7 full-screen render', () => {
         version: snapshot.version + 1,
         reasoning: { effort: 'high', levels: ['low', 'medium', 'high', 'max'] },
         sandbox: 'workspace-write',
+        stats: { ...snapshot.stats, costUsd: 1.308625 },
       })
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       const lines = lastFrameLines(capture)
@@ -1445,6 +1518,7 @@ describe('Ink 7 full-screen render', () => {
       const chip = lines.find(line => line.includes('权限 workspace write'))
       expect(chip).toBeDefined()
       expect(chip).toContain('Shift+Tab 切换')
+      expect(chip?.trimEnd().endsWith('$1.309')).toBe(true)
       expect(lines.some(line => line.includes('权限 workspace write') && line.includes('Σ'))).toBe(false)
       // The mode colors are pure mappings: white / yellow / red.
       expect(permissionLabel('read-only')).toBe('read only')
@@ -1633,28 +1707,28 @@ describe('Ink 7 full-screen render', () => {
       // ↑ recalls the newest submission into the composer.
       await type('\x1b[A')
       let lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› second task'))).toBe(true)
+      expect(lines.some(line => line.includes('›second task'))).toBe(true)
       // A nonempty draft owns ↑/↓ as caret motion, so a second ↑ stays on
       // the recalled line instead of walking to `first task`.
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› second task'))).toBe(true)
-      expect(lines.some(line => line.includes('› first task'))).toBe(false)
+      expect(lines.some(line => line.includes('›second task'))).toBe(true)
+      expect(lines.some(line => line.includes('›first task'))).toBe(false)
       // Ctrl+L empties the composer and keeps the history cursor, so the
       // next ↑ on an empty draft walks one further back.
       await type('\x0c')
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› first task'))).toBe(true)
+      expect(lines.some(line => line.includes('›first task'))).toBe(true)
       // ↓ walks forward again; past the newest it restores the empty draft.
       await type('\x0c')
       await type('\x1b[B')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› second task'))).toBe(true)
+      expect(lines.some(line => line.includes('›second task'))).toBe(true)
       await type('\x0c')
       await type('\x1b[B')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› second task'))).toBe(false)
+      expect(lines.some(line => line.includes('›second task'))).toBe(false)
       // The recalled line submits like any other input.
       await type('\x1b[A')
       await type('\r')
@@ -1670,20 +1744,20 @@ describe('Ink 7 full-screen render', () => {
     })
     try {
       await type('hello')
-      expect(lastCursorSuffix(capture.output).column).toBe(9)
-      await type('\x1b[D')
       expect(lastCursorSuffix(capture.output).column).toBe(8)
+      await type('\x1b[D')
+      expect(lastCursorSuffix(capture.output).column).toBe(7)
       await type('\x1b[C')
-      expect(lastCursorSuffix(capture.output).column).toBe(9)
+      expect(lastCursorSuffix(capture.output).column).toBe(8)
       await type('\x1b[A')
       let lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› hello'))).toBe(true)
+      expect(lines.some(line => line.includes('›hello'))).toBe(true)
       await type('\r')
       await type('keep')
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› keep'))).toBe(true)
-      expect(lines.some(line => line.includes('› hello'))).toBe(false)
+      expect(lines.some(line => line.includes('›keep'))).toBe(true)
+      expect(lines.some(line => line.includes('›hello'))).toBe(false)
     } finally {
       unmount()
     }

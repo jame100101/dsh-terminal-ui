@@ -127,6 +127,8 @@ export interface SessionStats {
   decodeMs: number
   tokens: TokenTotals
   contextWindow: number
+  /** Pi-compatible estimated DeepSeek spend in US dollars. */
+  costUsd: number
 }
 
 /** Everything the fold owns: settled rows, trace lines, todos, live buffer, stats. */

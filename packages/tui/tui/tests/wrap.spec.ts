@@ -87,10 +87,24 @@ describe('projectLiveThinkingTail', () => {
     expect(state.offset).toBe(text.length)
   })
 
-  it('resets to text after the latest streamed line break', () => {
+  it('keeps streamed line breaks visible without clearing the prior tail', () => {
     const first = projectLiveThinkingTail(null, 'old tail', 20)
     const second = projectLiveThinkingTail(first, 'old tail\nnew tail', 20)
-    expect(second.tail).toBe('new tail')
+    expect(second.tail).toBe('old tail ↵ new tail')
+  })
+
+  it('keeps a visible body when a streamed chunk ends in a line break', () => {
+    const lf = projectLiveThinkingTail(null, 'still visible\n', 30)
+    expect(lf.tail).toBe('still visible ↵ ')
+
+    const crlf = projectLiveThinkingTail(null, 'first\r\nsecond', 30)
+    expect(crlf.tail).toBe('first ↵ second')
+  })
+
+  it('collapses a CRLF split across two streamed chunks to one separator', () => {
+    const first = projectLiveThinkingTail(null, 'first\r', 30)
+    const second = projectLiveThinkingTail(first, 'first\r\nsecond', 30)
+    expect(second.tail).toBe('first ↵ second')
   })
 
   it('returns the previous state for an unchanged stream', () => {

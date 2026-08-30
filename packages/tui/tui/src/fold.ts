@@ -24,6 +24,7 @@ import type {} from '@deepseek-ai/dsh-tools'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { FoldState, GoalRow, SessionStats, TuiNode, ToolStatus } from './types'
 import { compactResultCard } from './card-project'
+import { deepSeekCostUsd } from './deepseek-cost'
 import { formatMs } from './plain'
 
 /** Tool-result text cap: rows stay display-sized even for giant outputs. */
@@ -108,6 +109,7 @@ export function initialState(): FoldState {
       decodeMs: 0,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
       contextWindow: 0,
+      costUsd: 0,
     },
     plan: { active: false, pending: false },
     goal: null,
@@ -257,6 +259,13 @@ interface StepState {
   firstChunkTime: number | null
   lastChunkTime: number | null
   usage: TokenUsageSample | null
+  route: PricingRoute | null
+}
+
+/** Exact request route used to price one completed model step. */
+interface PricingRoute {
+  provider: string
+  model: string
 }
 
 /** The committed-step usage sample folded into the totals. */
@@ -270,13 +279,19 @@ interface TokenUsageSample {
 
 /** Fold one step boundary: commit its timing and usage into the stats. */
 function commitStep(stats: SessionStats, step: StepState): SessionStats {
-  if (step.firstChunkTime === null || step.lastChunkTime === null) return stats
+  const firstChunkTime = step.firstChunkTime
+  const lastChunkTime = step.lastChunkTime
+  const timed = firstChunkTime !== null && lastChunkTime !== null
+  if (!timed && step.usage === null) return stats
+  const stepCost = step.usage === null || step.route === null
+    ? 0
+    : deepSeekCostUsd(step.route.provider, step.route.model, step.usage)
   return {
     ...stats,
-    llmMs: stats.llmMs + Math.max(0, step.lastChunkTime - step.startTime),
-    ttftMs: stats.ttftMs + Math.max(0, step.firstChunkTime - step.startTime),
-    stepsWithTtft: stats.stepsWithTtft + 1,
-    decodeMs: stats.decodeMs + Math.max(0, step.lastChunkTime - step.firstChunkTime),
+    llmMs: stats.llmMs + (timed ? Math.max(0, lastChunkTime - step.startTime) : 0),
+    ttftMs: stats.ttftMs + (timed ? Math.max(0, firstChunkTime - step.startTime) : 0),
+    stepsWithTtft: stats.stepsWithTtft + (timed ? 1 : 0),
+    decodeMs: stats.decodeMs + (timed ? Math.max(0, lastChunkTime - firstChunkTime) : 0),
     tokens: step.usage === null ? stats.tokens : {
       input: stats.tokens.input + step.usage.input,
       output: stats.tokens.output + step.usage.output,
@@ -284,12 +299,15 @@ function commitStep(stats: SessionStats, step: StepState): SessionStats {
       cacheWrite: stats.tokens.cacheWrite + step.usage.cacheWrite,
       reasoning: stats.tokens.reasoning + step.usage.reasoning,
     },
+    costUsd: stats.costUsd + stepCost,
   }
 }
 
 /** Mutable per-event bookkeeping the fold carries between calls. */
 export interface FoldScratch {
   step: StepState | null
+  /** Latest logged request route, retained across steps in one replay. */
+  requestRoute: PricingRoute | null
   toolStarts: Map<string, number>
   /** Compact call presentations retained until their matching result. */
   toolCallCards: Map<string, unknown>
@@ -310,6 +328,7 @@ export interface FoldScratch {
 export function createScratch(): FoldScratch {
   return {
     step: null,
+    requestRoute: null,
     toolStarts: new Map(),
     toolCallCards: new Map(),
     turnProduced: [],
@@ -543,9 +562,24 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
     }
     case 'step/start': {
       live = { text: '', think: '', thinkSince: null }
-      scratch.step = { startTime: event.time, firstChunkTime: null, lastChunkTime: null, usage: null }
+      scratch.step = {
+        startTime: event.time,
+        firstChunkTime: null,
+        lastChunkTime: null,
+        usage: null,
+        route: scratch.requestRoute,
+      }
       traces = appendTrace(traces, trace(event.seq, `step ${event.data.turn}.${event.data.step} start`), scratch)
       stats = { ...stats, steps: stats.steps + 1 }
+      break
+    }
+    case 'request/header': {
+      const route = {
+        provider: event.data.header.config.provider,
+        model: event.data.header.config.model,
+      }
+      scratch.requestRoute = route
+      if (scratch.step !== null) scratch.step.route = route
       break
     }
     case 'assistant/chunk': {
@@ -894,7 +928,7 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       break
     }
     default:
-      // `request/header`, `session/end-seed`, approval audit pairs, and
+      // `session/end-seed`, approval audit pairs, and
       // plugin-merged types are structural: no transcript row.
       break
   }

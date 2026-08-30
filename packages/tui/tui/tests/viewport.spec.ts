@@ -434,11 +434,11 @@ describe('selectComposerLayout', () => {
     expect(composerGlyphAt('ab\ncd', 20, 1, 1)).toEqual({ start: 4, end: 5 })
   })
 
-  it('reserves a two-cell prompt prefix and a one-cell wrap gutter', () => {
-    expect(COMPOSER_PROMPT_WIDTH).toBe(2)
+  it('reserves a one-cell prompt prefix and a one-cell wrap gutter', () => {
+    expect(COMPOSER_PROMPT_WIDTH).toBe(1)
     expect(COMPOSER_WRAP_GUTTER).toBe(1)
-    expect(composerTextPaintWidth(20)).toBe(18)
-    expect(composerTextWrapWidth(20)).toBe(17)
+    expect(composerTextPaintWidth(20)).toBe(19)
+    expect(composerTextWrapWidth(20)).toBe(18)
     expect(composerTextWrapWidth(20)).toBeLessThan(composerTextPaintWidth(20))
     expect(composerTextWrapWidth(3)).toBe(1)
     expect(composerTextWrapWidth(2)).toBe(1)

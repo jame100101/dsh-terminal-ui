@@ -482,8 +482,8 @@ export function wrapComposerRanges(value: string, width: number): ComposerLineRa
   return out.length === 0 ? [{ text: '', start: 0, end: 0 }] : out
 }
 
-/** Display cells taken by `› ` on wrap line 0 and the matching indent on later rows. */
-export const COMPOSER_PROMPT_WIDTH = 2
+/** Display cell taken by `›` on wrap line 0 and the matching indent on later rows. */
+export const COMPOSER_PROMPT_WIDTH = 1
 /**
  * Empty cell at the end of each composer wrap row. A line that fills the
  * painted box clips its last glyph under Ink `truncate` (width `>=` box)
@@ -494,7 +494,7 @@ export const COMPOSER_WRAP_GUTTER = 1
 /**
  * Painted text cells after the prompt prefix (includes {@link COMPOSER_WRAP_GUTTER}).
  * @param boxWidth - inner width of the composer input box, including the prefix.
- * @returns cells in the text box to the right of `› `/indent.
+ * @returns cells in the text box to the right of `›`/indent.
  */
 export function composerTextPaintWidth(boxWidth: number): number {
   return Math.max(1, Math.floor(boxWidth) - COMPOSER_PROMPT_WIDTH)

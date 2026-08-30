@@ -44,6 +44,7 @@ const initial = {
     decodeMs: 0,
     tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 },
     contextWindow: 0,
+    costUsd: 0,
   },
   live: null,
   busy: false,
