@@ -106,6 +106,7 @@ import {
 import type { ResumeCandidate, ResumeResolution } from './startup'
 import { SessionRecencyStore } from './session-recency'
 import { ProjectionSidecarStore, foldIsIdle, projectionCheckpointIsComplete } from './projection-sidecar'
+import { createTuiAgent, resolveTuiPreset, SessionPresetQueue } from './preset-lifecycle'
 import type {
   CommandEntry, CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry,
   SettingsData, SkillEntry, SubagentRow, TuiStore, WorkflowRow,
@@ -809,32 +810,6 @@ function recordedPreset(header: { agentPreset?: string }, events: readonly Sessi
   return header.agentPreset
 }
 
-/** Create one agent over the current default-model selection. */
-async function createAgent(
-  ctx: Context,
-  cwd: string,
-  agentPreset?: string,
-): Promise<{ agent: Agent; handle: AgentHandle; selection: ModelSelection; ref: ModelSelectionRef }> {
-  const selection = ctx.agentDefaultModel.currentSelection()
-  const ref: ModelSelectionRef = { current: selection, assembled: undefined }
-  const presetService = ctx.get('agentPresets') as { mount(agentCtx: Context, id?: string): Promise<unknown> } | undefined
-  const handle = await ctx.agents.create({
-    sessionId: SessionId(`session-${randomUUID()}`),
-    meta: { cwd, ...(agentPreset === undefined ? {} : { agentPreset }) },
-    agentOptions: { provider: selection.provider, model: selection.model },
-    setup: async (agentCtx) => {
-      installModelSelection(agentCtx, ref)
-      if (agentPreset !== undefined) {
-        // The preset's standing composition joins the agent's scope; a broken
-        // or unknown preset rejects here and rolls the creation back.
-        if (presetService === undefined) throw new Error('agent 预设服务未加载（bundle 缺 dsh-agent-presets）')
-        await presetService.mount(agentCtx, agentPreset)
-      }
-    },
-  })
-  return { agent: handle.agent, handle, selection, ref }
-}
-
 /**
  * Fork the CURRENT surface session at its last completed turn (or the turn
  * containing atSeq) into a new persisted artifact: created with the cut seed
@@ -852,16 +827,26 @@ async function createForkArtifact(ctx: Context, surface: Surface, atSeq?: number
   if (cut === null) return null
   const selection: ModelSelection = surface.selection.current ?? ctx.agentDefaultModel.currentSelection()
   const ref: ModelSelectionRef = { current: selection, assembled: undefined }
+  const recorded = recordedPreset(surface.agent.session.header, events)
+  const preset = await resolveTuiPreset(ctx, recorded)
   const fork = await ctx.agents.create({
     sessionId: SessionId(`session-${randomUUID()}`),
     seed: events.slice(0, cut),
-    meta: { cwd: surface.cwd, parentSession: surface.agent.id, seedLength: cut },
+    meta: {
+      cwd: surface.cwd,
+      parentSession: surface.agent.id,
+      seedLength: cut,
+      ...(preset.kind === 'preset' ? { agentPreset: preset.id } : {}),
+    },
     agentOptions: {
       provider: selection.provider,
       model: selection.model,
       ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
     },
-    setup: (agentCtx) => { installModelSelection(agentCtx, ref) },
+    setup: async (agentCtx) => {
+      installModelSelection(agentCtx, ref)
+      if (preset.kind === 'preset') await preset.service.mount(agentCtx, preset.id)
+    },
   })
   const forkId = fork.agent.id
   // A fork is a persisted artifact to resume from /sessions, not a second
@@ -918,7 +903,7 @@ async function boot(
     homePath('tui', 'projections'),
     (error) => { ctx.logger.warn(`tui: fold projection sidecar fault: ${error instanceof Error ? error.message : String(error)}`) },
   )
-  const created = await createAgent(ctx, process.cwd())
+  const created = await createTuiAgent(ctx, process.cwd())
   // Handle of the surface's CURRENT agent. Switches dispose THIS handle before
   // replacing it — disposing the boot-time `created.handle` on every switch
   // leaked each intermediate agent (multiple live sessions the /sessions
@@ -1199,47 +1184,58 @@ async function boot(
     }
     return { data: bytes, mediaType, name: basename(absolute) }
   }
-  const dispatchOrFollowup = (text: string, steer: boolean): void => {
-    const submit = (): void => {
-      const sending = attachmentsForSubmit(text, surface.pendingAttachments)
-      surface.pendingAttachments = sending
-      const prose = stripImageChips(text)
-      if (sending.length > 0 && !currentModelAcceptsImage()) {
+  const presetQueue = new SessionPresetQueue()
+  // Prompt admission and preset selection share the same session queue. The
+  // claim lands before the next switch checks blank state, closing the event gap.
+  const dispatchOrFollowup = async (text: string, steer: boolean): Promise<void> => {
+    const commandAgent = surface.agent
+    const submit = async (): Promise<void> => {
+      await presetQueue.run(commandAgent.id, () => {
+        // A delayed fallback from a replaced session never lands in the new
+        // session's composer or attachment queue.
+        if (surface.agent !== commandAgent) return
+        const sending = attachmentsForSubmit(text, surface.pendingAttachments)
+        surface.pendingAttachments = sending
+        const prose = stripImageChips(text)
+        if (sending.length > 0 && !currentModelAcceptsImage()) {
+          publishPendingImages()
+          process.stderr.write(`${uiText(
+            '当前模型不接受图片。请在 /settings models 选择带 · 图 的模型，或在 settings.yaml 为该模型声明 input: [text, image]。',
+            'The current model does not accept images. Pick a model marked · image in /settings models, or set input: [text, image] for it in settings.yaml.',
+          )}\n`)
+          return
+        }
+        const message = createTuiUserMessage(prose, sending)
+        surface.pendingAttachments = []
         publishPendingImages()
-        process.stderr.write(`${uiText(
-          '当前模型不接受图片。请在 /settings models 选择带 · 图 的模型，或在 settings.yaml 为该模型声明 input: [text, image]。',
-          'The current model does not accept images. Pick a model marked · image in /settings models, or set input: [text, image] for it in settings.yaml.',
-        )}\n`)
-        return
-      }
-      const message = createTuiUserMessage(prose, sending)
-      surface.pendingAttachments = []
-      publishPendingImages()
-      if (steer) surface.agent.steer(message)
-      else surface.agent.followup(message)
-      recency.touch(surface.agent.session.header)
+        if (steer) commandAgent.steer(message)
+        else commandAgent.followup(message)
+        presetQueue.claimPrompt(commandAgent.id)
+        recency.touch(commandAgent.session.header)
+      })
     }
     if (!text.startsWith('/')) {
-      submit()
+      await submit()
       return
     }
     const commands = ctx.get('commands')
     if (commands === undefined) {
-      submit()
+      await submit()
       return
     }
-    const commandAgent = surface.agent
-    void encodeTuiCommandImages(ctx.attachments, surface.pendingAttachments).then(images =>
-      commands.execute(commandAgent, text, images, new AbortController().signal),
-    ).then((execution) => {
+    try {
+      const images = await encodeTuiCommandImages(ctx.attachments, surface.pendingAttachments)
+      const execution = await commands.execute(commandAgent, text, images, new AbortController().signal)
       if (execution !== undefined) {
         surface.pendingAttachments = []
         publishPendingImages()
         recency.touch(commandAgent.session.header)
         return
       }
-      submit()
-    }).catch(() => { submit() })
+      await submit()
+    } catch {
+      await submit()
+    }
   }
   const foldHooks = {
     before(event: SessionEvent, state: FoldState): void {
@@ -1294,10 +1290,13 @@ async function boot(
           surface.fold,
         )
       }
-      // A new session continues the preset the surface currently runs.
-      const next = await createAgent(ctx, surface.cwd, recordedPreset(surface.agent.session.header, surface.agent.session.events))
+      // A new session continues the preset the surface currently runs; a
+      // metadata-free session resolves the roster default instead.
+      const previousSessionId = surface.agent.id
+      const next = await createTuiAgent(ctx, surface.cwd, recordedPreset(surface.agent.session.header, surface.agent.session.events))
       unsubscribe()
       await currentHandle.dispose()
+      presetQueue.forget(previousSessionId)
       currentHandle = next.handle
       surface.fold = initialState()
       surface.scratch = createScratch()
@@ -1352,11 +1351,14 @@ async function boot(
     surface.resumeProgress = { done: 0, total: Math.max(1, snapshot?.events.length ?? 1) }
     publishSurfaceFold()
     const presetId = snapshot === undefined ? undefined : recordedPreset(snapshot.header, snapshot.events)
-    const presetService = ctx.get('agentPresets') as { mount(agentCtx: Context, id?: string): Promise<unknown> } | undefined
+    const missingPresetMetadata = snapshot !== undefined && presetId === undefined
     // Phase 1 — prepare the next agent. A failure here leaves the current
     // surface (agent and subscription) untouched: report it as a notice.
     let next: AgentHandle
     try {
+      // Old metadata-free sessions adopt the current roster default. Passing
+      // its resolved id to mount keeps marker, log, and composition identical.
+      const preset = await resolveTuiPreset(ctx, presetId)
       next = await ctx.agents.resume({
         resumeSessionId: SessionId(id),
         agentOptions: {
@@ -1366,16 +1368,14 @@ async function boot(
         },
         setup: async (agentCtx) => {
           installModelSelection(agentCtx, ref)
-          if (presetId !== undefined) {
-            // The resumed session rebuilds the composition its log was
-            // produced under (model-visible ⟺ logged).
-            if (presetService === undefined) {
-              throw new Error(uiText('agent 预设服务未加载（bundle 缺 dsh-agent-presets）', 'Agent preset service is not loaded (bundle lacks dsh-agent-presets)'))
-            }
-            await presetService.mount(agentCtx, presetId)
-          }
+          if (preset.kind === 'preset') await preset.service.mount(agentCtx, preset.id)
         },
       })
+      if (missingPresetMetadata && preset.kind === 'preset') {
+        // Persist the fallback so a later default change cannot silently
+        // recompose this migrated session under different model-visible rows.
+        next.agent.session.append('agent-preset/selected', { agentPreset: preset.id })
+      }
     } catch (error) {
       if (gen === resumeGeneration) {
         resumeAbort = null
@@ -1384,7 +1384,7 @@ async function boot(
       }
       return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
     }
-    const events: readonly SessionEvent[] = snapshot?.events ?? next.agent.session.events
+    const events: readonly SessionEvent[] = next.agent.session.events
     if (gen !== resumeGeneration) {
       try { await next.dispose() } catch { /* cancelled before swap */ }
       return uiText('已取消恢复', 'Resume cancelled')
@@ -1449,8 +1449,10 @@ async function boot(
           surface.fold,
         )
       }
+      const previousSessionId = surface.agent.id
       unsubscribe()
       await currentHandle.dispose()
+      presetQueue.forget(previousSessionId)
       // `resume` returns the AgentHandle itself (agent + dispose); the
       // freshly resumed handle becomes the surface's current handle.
       currentHandle = next
@@ -1492,37 +1494,40 @@ async function boot(
    * swapped, and it is recorded in the log afterwards.
    */
   const switchPreset = async (id: string): Promise<string | null> => {
-    // Web parity: recomposing is limited to a BLANK session (no turn has
-    // started yet) — a started conversation's history was produced under its
-    // preset's tools, so its preset is fixed.
-    if (surface.agent.session.events.some(event => event.type === 'turn/start')) {
-      return uiText(
-        '预设已锁定：当前会话已经开始对话，预设不可再变更（请 /new 开新会话后再切换）',
-        'Preset locked: this conversation has started; use /new before selecting another preset',
-      )
-    }
-    const presetService = ctx.get('agentPresets') as { recompose(agentCtx: Context, id: string): Promise<{ id: string }> } | undefined
-    if (presetService === undefined) {
-      return uiText(
-        'agent 预设服务未加载（bundle 缺 dsh-agent-presets）',
-        'Agent preset service is not loaded (bundle lacks dsh-agent-presets)',
-      )
-    }
-    try {
-      // The re-link is safe by construction: an unknown or unusable preset
-      // throws with the agent exactly as it was.
-      const preset = await presetService.recompose(surface.agent.ctx, id)
-      // Recorded only after the swap committed: the log states what the
-      // agent runs, and a rejected mount leaves the previous composition.
-      surface.agent.session.append('agent-preset/selected', { agentPreset: preset.id })
-      // The presets page marks the CURRENT preset: republish settings so the
-      // marker follows the switch.
-      refreshSettings()
-      refreshCatalogs()
-      return null
-    } catch (error) {
-      return `${uiText('切换预设失败', 'Preset switch failed')}: ${error instanceof Error ? error.message : String(error)}`
-    }
+    const agent = surface.agent
+    return await presetQueue.run(agent.id, async () => {
+      if (surface.agent !== agent) {
+        return uiText('会话已切换，未应用预设', 'The session changed before the preset could be applied')
+      }
+      // Re-read after earlier queued work. A prompt claims the session in this
+      // queue before `turn/start` becomes observable.
+      if (presetQueue.presetLocked(agent.id, agent.session.events)) {
+        return uiText(
+          '预设已锁定：当前会话已经开始对话，预设不可再变更（请 /new 开新会话后再切换）',
+          'Preset locked: this conversation has started; use /new before selecting another preset',
+        )
+      }
+      const presetService = ctx.get('agentPresets')
+      if (presetService === undefined) {
+        return uiText(
+          'agent 预设服务未加载（bundle 缺 dsh-agent-presets）',
+          'Agent preset service is not loaded (bundle lacks dsh-agent-presets)',
+        )
+      }
+      try {
+        // recompose resolves and prepares the target before moving the scope;
+        // an invalid target leaves the previous composition installed.
+        const preset = await presetService.recompose(agent.ctx, id)
+        agent.session.append('agent-preset/selected', { agentPreset: preset.id })
+        if (surface.agent === agent) {
+          refreshSettings()
+          refreshCatalogs()
+        }
+        return null
+      } catch (error) {
+        return `${uiText('切换预设失败', 'Preset switch failed')}: ${error instanceof Error ? error.message : String(error)}`
+      }
+    })
   }
   /** Print the ambiguous-resume candidates to stderr and request the usage exit. */
   const failAmbiguous = (candidates: readonly ResumeCandidate[]): void => {
@@ -1611,7 +1616,7 @@ async function boot(
     }
     const firstCount = store.getSnapshot().nodes.length
     const turnBefore = lastTurnNumber(surface.agent.session.events)
-    dispatchOrFollowup(prompt, false)
+    await dispatchOrFollowup(prompt, false)
     try {
       await surface.agent.whenIdle()
     } catch {
@@ -1658,7 +1663,7 @@ async function boot(
     if (isTty) {
       const { runInk } = await import('./render')
       const inkDone = runInk(store, {
-        submit: (text, steer) => { dispatchOrFollowup(text, steer) },
+        submit: (text, steer) => { void dispatchOrFollowup(text, steer).catch((error: unknown) => { fail(ctx, error) }) },
         cancel: () => { surface.agent.cancel({ kind: 'user' }) },
         exit: () => {
           // Cancel first so whenIdle in the teardown settles promptly even
@@ -1933,7 +1938,7 @@ async function boot(
       })
       // The startup prompt is a real user submission through the unified
       // dispatch path once Ink owns the terminal — never a simulated Enter.
-      if (intent.prompt !== undefined) dispatchOrFollowup(intent.prompt, false)
+      if (intent.prompt !== undefined) void dispatchOrFollowup(intent.prompt, false).catch((error: unknown) => { fail(ctx, error) })
       await inkDone
     } else {
       if (panel !== null) {
@@ -1961,7 +1966,7 @@ async function boot(
           }
         }
         const firstCount = store.getSnapshot().nodes.length
-        dispatchOrFollowup(text, false)
+        await dispatchOrFollowup(text, false)
         await surface.agent.whenIdle()
         const nodes = store.getSnapshot().nodes
         for (const node of nodes.slice(firstCount)) {

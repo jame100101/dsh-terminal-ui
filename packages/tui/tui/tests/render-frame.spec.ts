@@ -1520,16 +1520,17 @@ describe('Ink 7 full-screen render', () => {
       expect(chip).toContain('Shift+Tab 切换')
       expect(chip?.trimEnd().endsWith('$1.309')).toBe(true)
       expect(lines.some(line => line.includes('权限 workspace write') && line.includes('Σ'))).toBe(false)
-      // The mode colors are pure mappings: white / yellow / red.
+      // The mode colors are pure mappings: white / warning gold / muted red.
       expect(permissionLabel('read-only')).toBe('read only')
       expect(permissionLabel('workspace-write')).toBe('workspace write')
       expect(permissionLabel('danger-full-access')).toBe('full access')
       expect(permissionColor('read-only')).toBe('whiteBright')
-      expect(permissionColor('workspace-write')).toBe('yellowBright')
-      expect(permissionColor('danger-full-access')).toBe('redBright')
+      expect(permissionColor('workspace-write')).toBe('#C9B84A')
+      expect(permissionColor('danger-full-access')).toBe('#C75C67')
       expect(statusActivityColor(false)).toBe('#61D6D6')
       expect(statusActivityColor(true)).toBe('#61D6D6')
       expect(statusActivityColor(true, 'light')).toBe('#61D6D6')
+      expect(resolveTranscriptLineColor({}, 'dark')).toBeUndefined()
       expect(resolveTranscriptLineColor({ color: WELCOME_CARD_COLOR, exactColor: true }, 'dark')).toBe('#A99B45')
     } finally {
       unmount()

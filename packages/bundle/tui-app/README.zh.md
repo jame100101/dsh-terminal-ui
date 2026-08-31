@@ -4,7 +4,7 @@
 
 dsh 的终端表层 bundle。其 patch layer 叠加在 [`dsh-base`](../base/README.zh.md) 上，只挂载一行：进程内的 [`@deepseek-ai/dsh-tui`](../../tui/tui/README.zh.md) 表层。使用 `dsh --profile tui` 启动；随附模板会组合 `dsh-base` 与本 bundle。
 
-与 `dsh-web-app` 不同，本 bundle 不禁用 base 中的 agent-plane 行：TUI 是单会话表层，并在进程内组合 agent。
+与 `dsh-web-app` 一样，本 bundle 禁用由 agent preset 所属的 base 模型可见行，同时把共享注册表、provider、持久化、策略、token meter、`code-runtime` 和 `cordis-host-runner` 保留在宿主面。每个新 TUI 会话都会解析 roster 默认项或延续已记录的选择，挂载该 preset，并把实际 id 写入 session header。
 
 ## Model Experience
 

@@ -11,6 +11,7 @@ This directory contains TUI performance-evaluation tools, machine-readable resul
 | [`long-task-2h-20260830-summary.json`](./long-task-2h-20260830-summary.json) | Derived metrics and five-minute buckets from the two-hour real task on 2026-08-30 |
 | [`long-task-2h-20260830-memory.svg`](./long-task-2h-20260830-memory.svg) | Two-hour chart of TUI RSS, TUI private bytes, and full process-tree RSS |
 | [`long-task-2h-20260830-last60.svg`](./long-task-2h-20260830-last60.svg) | Enlarged view of the final 60-minute plateau |
+| [`issue-32-preset-evaluation.md`](./issue-32-preset-evaluation.md) | Web-parity and real-entry-path evaluation of blank-session preset switching |
 | [`conpty-soak-last.json`](./conpty-soak-last.json) | Complete result from the 30-minute automated Windows ConPTY/build campaign |
 | [`soak-last.json`](./soak-last.json) | Result from the fast cumulative session/fold/parser soak |
 

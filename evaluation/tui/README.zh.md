@@ -11,6 +11,7 @@
 | [`long-task-2h-20260830-summary.json`](./long-task-2h-20260830-summary.json) | 2026-08-30 两小时真实任务的派生指标和五分钟分块数据 |
 | [`long-task-2h-20260830-memory.svg`](./long-task-2h-20260830-memory.svg) | 两小时 TUI RSS、TUI Private Bytes 和完整进程树 RSS 图 |
 | [`long-task-2h-20260830-last60.svg`](./long-task-2h-20260830-last60.svg) | 后 60 分钟平台区放大图 |
+| [`issue-32-preset-evaluation.md`](./issue-32-preset-evaluation.md) | 空白会话 preset 切换的 Web 对齐与真实入口评估 |
 | [`conpty-soak-last.json`](./conpty-soak-last.json) | 30 分钟自动 Windows ConPTY/build campaign 的完整结果 |
 | [`soak-last.json`](./soak-last.json) | 快速累计 session/fold/parser soak 的结果 |
 

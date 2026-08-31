@@ -492,11 +492,22 @@ export function themed(color: string | undefined, theme: 'dark' | 'light', fallb
 export function resolveTranscriptLineColor(
   line: Pick<TranscriptLine, 'color' | 'exactColor'>,
   theme: 'dark' | 'light',
-): string {
-  return line.exactColor === true && line.color !== undefined
-    ? line.color
-    : themed(line.color, theme, 'white')
+): string | undefined {
+  if (line.color === undefined) return undefined
+  return line.exactColor === true ? line.color : themed(line.color, theme, 'white')
 }
+
+/** Exact TrueColor for a completed tool row. */
+const TOOL_SUCCESS_COLOR = '#7FB77E'
+
+/** Exact TrueColor shared by warning and selected-setting chrome. */
+const WARNING_COLOR = '#C9B84A'
+
+/** Exact TrueColor for the model and busy-enter header row. */
+const MODEL_MODE_COLOR = '#7F83C6'
+
+/** Exact TrueColor for unrestricted file-policy chrome. */
+const FULL_ACCESS_COLOR = '#C75C67'
 
 /** Half-width of the live-Thinking highlight window in cells. */
 const SHIMMER_WINDOW = 4
@@ -662,7 +673,7 @@ export interface TuiHost {
   rateMessage(messageId: string, rating: 'positive' | 'negative'): Promise<string | null>
   /** Resume one persisted session onto the surface (null on success). */
   resumeSession(sessionId: string): Promise<string | null>
-  /** Switch onto a NEW session composed from one agent preset (null on success). */
+  /** Recompose the blank live session from one agent preset (null on success). */
   switchPreset(presetId: string): Promise<string | null>
   /** Write one field of a plugin's settings namespace (null on success). */
   updatePluginConfig(ns: string, patch: Record<string, unknown>): Promise<string | null>
@@ -824,6 +835,7 @@ function nodeLines(
   type NodeLineDraft = {
     text: string
     color?: string
+    exactColor?: boolean
     dim?: boolean
     pulse?: boolean
     runs?: MdRun[]
@@ -900,7 +912,7 @@ function nodeLines(
     case 'think': {
       const durationLabel = `${(node.durationMs / 1000).toFixed(1)}s`
       const head = wrapText(marker + (expanded ? `✓ Thinking ${durationLabel} ▼` : `✓ Thinking ${durationLabel} ▶`), width).map(text => ({
-        text, color: 'magenta', dim: !expanded,
+        text, color: 'gray', dim: !expanded,
       }))
       // The `  │ ` prefix consumes 4 cells and is added AFTER wrapping, so
       // the wrap budget must reserve those 4 cells: wrapping the raw text at
@@ -910,7 +922,7 @@ function nodeLines(
       // moved to a bare row below it. With the prefix inside the budget,
       // every body row keeps its own bar and never overflows.
       const body = expanded
-        ? wrapTextWords(sanitizeTerminalText(node.text), width - 4).map(text => ({ text: `  │ ${text}`, color: 'magenta', dim: true }))
+        ? wrapTextWords(sanitizeTerminalText(node.text), width - 4).map(text => ({ text: `  │ ${text}`, dim: true }))
         : []
       return withKey([...head, ...body])
     }
@@ -920,7 +932,8 @@ function nodeLines(
       const title = `${indent}${glyph} ${sanitizeTerminalText(node.detail)}${node.status === 'running' ? ' …' : ` · ${node.status}`} ${expanded ? '▼' : '▶'}`
       const head = wrapText(marker + title, width).map(text => ({
         text,
-        color: node.status === 'error' ? 'red' : node.status === 'running' ? 'yellow' : 'green',
+        color: node.status === 'error' ? 'red' : node.status === 'running' ? 'yellow' : TOOL_SUCCESS_COLOR,
+        exactColor: node.status !== 'error' && node.status !== 'running',
       }))
       if (!expanded) return withKey(head)
       const card = node.status === 'running'
@@ -1117,7 +1130,7 @@ const Header = React.memo(function Header(props: {
   // Both sides budget against the PHYSICAL width: an overflowing side would
   // wrap onto the next row and corrupt the frame on narrow windows.
   const sessionRight = `session ${snapshot.sessionId}`
-  const rows: { left: { text: string; color?: string; bold?: boolean }; right: string }[] = [
+  const rows: { left: { text: string; color?: string; exactColor?: boolean; bold?: boolean }; right: string }[] = [
     {
       left: { text: brand, color: 'cyan', bold: true },
       right: fitDisplayText(sessionRight, Math.max(6, props.width - stringWidth(brand) - 2)),
@@ -1127,7 +1140,7 @@ const Header = React.memo(function Header(props: {
       right: `thinking ${thinking}`,
     },
     {
-      left: { text: shorten(`${snapshot.model} · busyEnter ${busyEnter}`, Math.max(4, props.width - stringWidth(`${snapshot.nodes.length} events`) - 2)), color: 'magenta' },
+      left: { text: shorten(`${snapshot.model} · busyEnter ${busyEnter}`, Math.max(4, props.width - stringWidth(`${snapshot.nodes.length} events`) - 2)), color: MODEL_MODE_COLOR, exactColor: true },
       right: `${snapshot.nodes.length} events`,
     },
   ]
@@ -1137,7 +1150,7 @@ const Header = React.memo(function Header(props: {
         const pad = Math.max(1, props.width - stringWidth(row.left.text) - stringWidth(row.right))
         return (
           <Text key={index}>
-            <Text color={themed(row.left.color, props.theme, 'white')} bold={row.left.bold === true}>
+            <Text color={row.left.exactColor === true && row.left.color !== undefined ? row.left.color : themed(row.left.color, props.theme, 'white')} bold={row.left.bold === true}>
               {row.left.text}
             </Text>
             <Text dimColor>{' '.repeat(pad)}{row.right}</Text>
@@ -1275,7 +1288,7 @@ const Transcript = React.memo(function Transcript(props: {
           const dim = line.pulse === true ? pulseOn : line.dim === true
           const body = span === null
             ? (
-              <Text wrap="truncate" color={color} bold={line.bold === true} dimColor={dim}>
+              <Text wrap="truncate" {...(color !== undefined ? { color } : {})} bold={line.bold === true} dimColor={dim}>
                 {painted.runs !== undefined && painted.runs.length > 0
                   ? painted.runs.map((run, runIndex) => (
                     <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
@@ -1295,7 +1308,7 @@ const Transcript = React.memo(function Transcript(props: {
                 text={painted.text || ' '}
                 startCol={span.start}
                 endCol={span.end}
-                color={color}
+                {...(color !== undefined ? { color } : {})}
                 bold={line.bold === true}
                 dim={dim}
                 lineWidth={Math.max(1, stringWidth(painted.text || ' '))}
@@ -1360,13 +1373,13 @@ function PanelView(props: {
         return (
           <Text key={index} wrap="truncate">
             <Text
-              {...(selected ? { color: themed('yellow', props.theme, 'yellow') } : {})}
+              {...(selected ? { color: WARNING_COLOR } : {})}
               bold={selected}
             >
               {line.text.slice(0, 2)}
             </Text>
             <Text
-              color={themed(line.dim ? 'gray' : selected ? 'yellow' : line.color, props.theme, 'white')}
+              color={selected && !line.dim ? WARNING_COLOR : themed(line.dim ? 'gray' : line.color, props.theme, 'white')}
               bold={selected && !line.dim}
               dimColor={line.dim === true}
             >
@@ -2010,9 +2023,9 @@ export function permissionLabel(mode: 'read-only' | 'workspace-write' | 'danger-
       : 'full access'
 }
 
-/** Permission-chip color by file-policy mode: bright white / yellow / red. */
-export function permissionColor(mode: 'read-only' | 'workspace-write' | 'danger-full-access'): 'whiteBright' | 'yellowBright' | 'redBright' {
-  return mode === 'read-only' ? 'whiteBright' : mode === 'workspace-write' ? 'yellowBright' : 'redBright'
+/** Permission-chip color by file-policy mode: bright white / warning gold / muted red. */
+export function permissionColor(mode: 'read-only' | 'workspace-write' | 'danger-full-access'): 'whiteBright' | '#C9B84A' | '#C75C67' {
+  return mode === 'read-only' ? 'whiteBright' : mode === 'workspace-write' ? WARNING_COLOR : FULL_ACCESS_COLOR
 }
 
 /**
@@ -2077,7 +2090,7 @@ function StatusBar(props: {
         <Text wrap="truncate" color={leftColor}>{shorten(left, leftBudget)}</Text>
         {showRight ? (
           <Box>
-            <Text bold color={themed('magenta', props.theme, 'magenta')}>{effortText}</Text>
+            <Text dimColor>{effortText}</Text>
             <Text dimColor>{rightRest}</Text>
           </Box>
         ) : null}
@@ -2108,7 +2121,7 @@ const PermissionBar = React.memo(function PermissionBar(props: {
   return (
     <Box paddingX={1} justifyContent="space-between">
       <Box>
-        <Text bold wrap="truncate" color={themed(permissionColor(props.sandbox), props.theme, 'whiteBright')}>
+        <Text bold wrap="truncate" color={permissionColor(props.sandbox)}>
           {chipText}
         </Text>
         {hintFits ? <Text dimColor wrap="truncate">{hint}</Text> : null}
@@ -2146,23 +2159,23 @@ function Takeover(props: {
     <Box flexDirection="column" paddingX={1} height={Math.max(1, props.height)} overflow="hidden">
       {approval !== null ? (
         <>
-          <Text wrap="truncate" color={themed('yellow', props.theme, 'yellow')} bold>{`${copy.approval}${approval.toolName}`}</Text>
+          <Text wrap="truncate" color={WARNING_COLOR} bold>{`${copy.approval}${approval.toolName}`}</Text>
           {approval.reason !== undefined && approval.reason !== '' && <Text wrap="truncate" dimColor>({sanitizeTerminalText(approval.reason)})</Text>}
-          <Text wrap="truncate" bold={props.approvalSel === 0} {...props.approvalSel === 0 ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
+          <Text wrap="truncate" bold={props.approvalSel === 0} {...props.approvalSel === 0 ? { color: WARNING_COLOR } : {}}>
             {props.approvalSel === 0 ? '▸' : ' '} {copy.allowOnce}
           </Text>
-          <Text wrap="truncate" bold={props.approvalSel === 1} {...props.approvalSel === 1 ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
+          <Text wrap="truncate" bold={props.approvalSel === 1} {...props.approvalSel === 1 ? { color: WARNING_COLOR } : {}}>
             {props.approvalSel === 1 ? '▸' : ' '} {copy.deny}
           </Text>
           <Text wrap="truncate" dimColor>{copy.approvalHint}</Text>
         </>
       ) : question !== undefined ? (
         <>
-          <Text wrap="truncate" color={themed('yellow', props.theme, 'yellow')} bold>? {sanitizeTerminalText(question.question)}</Text>
+          <Text wrap="truncate" color={WARNING_COLOR} bold>? {sanitizeTerminalText(question.question)}</Text>
           {question.detail !== undefined && <Text wrap="truncate" dimColor>{sanitizeTerminalText(question.detail)}</Text>}
           {(question.options ?? []).length > 0 && (question.multiSelect === true || props.questionText === '')
             ? (question.options ?? []).map((option, index) => (
-              <Text wrap="truncate" key={option.label} bold={index === props.questionSel} {...index === props.questionSel ? { color: themed('yellow', props.theme, 'yellow') } : {}}>
+              <Text wrap="truncate" key={option.label} bold={index === props.questionSel} {...index === props.questionSel ? { color: WARNING_COLOR } : {}}>
                 {index === props.questionSel ? '▸' : ' '} {question.multiSelect === true
                   ? `[${props.questionSelected.has(index) ? 'x' : ' '}]`
                   : '○'} {sanitizeTerminalText(option.label)}
@@ -2238,7 +2251,6 @@ const ChatTranscript = React.memo(function ChatTranscript(props: {
     : liveWrapRef.current.lines.map((text, index) => ({
       key: `live-text-${index}`,
       text,
-      color: 'white',
     }))
   const tailBlocks: TranscriptLine[][] = []
   if (liveThinkLines.length > 0) tailBlocks.push(liveThinkLines)

@@ -1,8 +1,8 @@
 # The dsh-tui-app bundle patch: the terminal surface over dsh-base.
-# Like headless, it mounts no Host, HTTP server, Web runtime, or browser
-# plugin. Unlike web-app, it leaves the base's agent-plane rows enabled —
-# the TUI is single-session and composes its agent process-wide, which is
-# exactly the composition the base keeps those rows for.
+# Like headless, it mounts no HTTP server, Web runtime, or browser plugin.
+# Like web-app, it keeps shared providers and registries on the host plane and
+# disables base model-facing rows; every TUI session obtains those rows from
+# its resolved agent preset.
 
 - id: system-prompt
   config:
@@ -63,14 +63,89 @@
     - id: session-reference
       name: '@deepseek-ai/dsh-session-reference'
 
+# ── the agent plane moves behind agent presets ─────────────────────────────
+# Keep this preset-owned list aligned with web-app. Shared registries,
+# providers, persistence, policy, token metering, and TUI runtimes stay on the
+# host plane; these rows contribute model-facing tools, prompt sections,
+# commands, or per-agent implementations and therefore come from one preset.
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: tool-str-replace-editor
+  disabled: true
+
+- id: skill-filesystem
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: plan-mode
+  disabled: true
+
+- id: compaction-basic
+  disabled: true
+
+- id: command-compact
+  disabled: true
+
+- id: tool-result-pruner
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: workflow-worker-thread
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: agent-instructions
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-web
+  disabled: true
+
+- insert:
     # The preset roster: the four shipped presets under `config/agent-presets/`
     # (code/cordis/minimal/standard) plus the writable `$DSH_HOME/.agent-presets`
     # user root (dsh-agent-presets' own default). The SHIPPED system root is an
     # assembly fact — `apps/cli`'s composeProfile resolves it beside this app's
     # own config and patches it in as an overlay, exactly like the web-app
-    # bundle. Mounting the service does NOT change existing sessions: an agent
-    # joins a preset only when the TUI's preset switch (or a continued/resumed
-    # session) names one.
+    # bundle. New sessions resolve this roster's current default unless they
+    # continue an explicit preset; resume rebuilds the newest logged selection.
     - id: agent-presets
       name: '@deepseek-ai/dsh-agent-presets'
       config:

@@ -4,7 +4,7 @@ English | [中文](README.zh.md)
 
 The dsh terminal-surface bundle. Its patch layer rides over [`dsh-base`](../base/README.md) and mounts exactly one row: the in-process [`@deepseek-ai/dsh-tui`](../../tui/tui/README.md) surface. Run with `dsh --profile tui` (the shipped template stacks `dsh-base` + this bundle).
 
-Unlike `dsh-web-app`, this bundle disables none of the base's agent-plane rows: the TUI is single-session and composes its agent process-wide.
+Like `dsh-web-app`, this bundle disables the base model-facing rows owned by agent presets while retaining shared registries, providers, persistence, policy, token metering, `code-runtime`, and `cordis-host-runner` on the host plane. Every new TUI session resolves the roster default or continues its recorded selection, mounts that preset, and records the actual id in its session header.
 
 ## Model Experience
 

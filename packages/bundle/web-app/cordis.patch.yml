@@ -297,9 +297,8 @@
 # ── the agent plane moves behind agent presets ─────────────────────────────
 #
 # Every row below composes what ONE agent contributes to the host registries:
-# its tools, its prompt sections, its delegation backends. The base keeps them
-# for the TUI, which is single-session and composes its agent process-wide; the
-# Web surface disables them here and lets each session mount a preset instead.
+# its tools, its prompt sections, its delegation backends. Interactive surfaces
+# disable them in their bundle overlays and let each session mount a preset.
 #
 # Disabling rather than deleting is deliberate: the base is shared, and a row
 # absent from a surface overlay would silently reappear the day someone reorders

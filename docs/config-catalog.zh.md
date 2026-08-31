@@ -3007,7 +3007,7 @@ export interface Config {
 }
 ```
 
-来源：[`packages/tui/tui/src/index.ts:124`](../packages/tui/tui/src/index.ts)
+来源：[`packages/tui/tui/src/index.ts:125`](../packages/tui/tui/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 
