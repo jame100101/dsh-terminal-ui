@@ -3002,10 +3002,16 @@ Requires: `agents` · `agentDefaultModel` · `tools` · `settings` · `credentia
 export interface Config {
   /** Maximum lifecycle observations in the TUI-owned session recency sidecar. */
   sessionRecencyMaxEntries?: number
+  /** Absolute live user profile patch path; omission keeps plugin rows read-only. */
+  profilePatchPath?: string
+  /** Loader entry ids whose enabled state belongs to the profile composition. */
+  pluginToggleProtectedIds?: string[]
+  /** Maximum wait for one plugin toggle's Loader lifecycle to settle. */
+  pluginToggleSettleTimeoutMs?: number
 }
 ```
 
-Source: [`packages/tui/tui/src/index.ts:125`](../packages/tui/tui/src/index.ts)
+Source: [`packages/tui/tui/src/index.ts:131`](../packages/tui/tui/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 

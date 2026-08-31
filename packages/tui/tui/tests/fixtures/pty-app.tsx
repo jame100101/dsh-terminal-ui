@@ -62,7 +62,9 @@ const initial = {
   settings: {
     general: { busyEnter: 'queue', thinking: 'collapsed', theme: 'dark', locale: 'en' },
     models: { providers: [], credentials: [] },
-    plugins: [],
+    plugins: process.env.TUI_PTY_PLUGINS === '1'
+      ? [{ id: 'fixture-plugin', name: 'fixture-plugin', enabled: true, loaded: true, toggleable: true }]
+      : [],
     configs: {},
     inventory: { namespaces: [], credentials: [], inspectProviders: 0 },
     presets: [],
@@ -117,6 +119,25 @@ const host: TuiHost = {
   unsetCredential: () => Promise.resolve(),
   refreshPanels: () => {},
   refreshSettings: () => {},
+  togglePlugin: (id) => {
+    const current = store.getSnapshot()
+    const plugin = current.settings?.plugins.find(entry => entry.id === id)
+    if (current.settings === null || plugin === undefined) {
+      return Promise.resolve({ ok: false, code: 'entry-unavailable' })
+    }
+    const enabled = !plugin.enabled
+    store.set({
+      ...current,
+      version: current.version + 1,
+      settings: {
+        ...current.settings,
+        plugins: current.settings.plugins.map(entry => entry.id === id
+          ? { ...entry, enabled, loaded: enabled }
+          : entry),
+      },
+    })
+    return Promise.resolve({ ok: true, enabled })
+  },
   killJob: () => {},
   rateMessage: () => Promise.resolve(null),
   resumeSession: () => Promise.resolve(null),

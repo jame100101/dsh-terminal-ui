@@ -135,36 +135,54 @@ describe('buildSettingsRows locale', () => {
 })
 
 describe('buildSettingsRows plugin inventory', () => {
-  it('renders every plugin row as read-only status', () => {
+  it('makes writable plugin rows actionable and dims disabled rows', () => {
     const fixture = modelsSettings()
     fixture.settings.plugins = [
-      { id: 'storage', name: 'storage', enabled: true, loaded: true, namespace: 'storage' },
-      { id: 'off', name: 'off', enabled: false, loaded: false },
+      { id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true, namespace: 'storage' },
+      { id: 'off', name: 'off', enabled: false, loaded: false, toggleable: true },
+      { id: 'pwsh', name: 'pwsh', enabled: false, loaded: false, toggleable: false, toggleBlockedReason: 'conditional' },
+      { id: 'session', name: 'session', enabled: true, loaded: true, toggleable: false, toggleBlockedReason: 'dependency' },
+      { id: 'tool-bash', name: 'tool-bash', enabled: false, loaded: false, toggleable: false, toggleBlockedReason: 'managed' },
     ]
     const rows = buildSettingsRows(fixture, 'plugins', 'zh')
     expect(rows[0]?.text).toBe('● storage · storage')
     const storage = rows.find(row => row.key === 'pl-storage')
-    expect(storage?.action).toBeUndefined()
-    expect(storage?.meta).toBeUndefined()
+    expect(storage?.action).toBe('toggle-plugin')
+    expect(storage?.meta).toEqual({ id: 'storage', enabled: true })
     expect(storage?.text).toBe('● storage · storage')
     const off = rows.find(row => row.key === 'pl-off')
-    expect(off?.action).toBeUndefined()
-    expect(off?.meta).toBeUndefined()
+    expect(off?.action).toBe('toggle-plugin')
+    expect(off?.meta).toEqual({ id: 'off', enabled: false })
     expect(off?.text).toBe('○ off · off · 未加载 · 已禁用')
     expect(off?.dim).toBe(true)
     expect(storage?.dim).toBeUndefined()
-    expect(rows.filter(row => row.key.startsWith('pl-') && row.key !== 'pl-head' && row.key !== 'pl-foot')
-      .every(row => row.action === undefined)).toBe(true)
-    expect(rows.at(-1)?.text).toContain('让 Agent 为你修改该配置文件')
+    const pwsh = rows.find(row => row.key === 'pl-pwsh')
+    expect(pwsh).toMatchObject({
+      action: 'toggle-plugin',
+      dim: true,
+      meta: { id: 'pwsh', enabled: false },
+      text: '○ pwsh · pwsh · 未加载 · 已禁用 · 条件控制',
+    })
+    expect(rows.find(row => row.key === 'pl-session')).toMatchObject({
+      action: 'toggle-plugin',
+      meta: { id: 'session', enabled: true },
+      text: '● session · session · 存在活跃依赖方',
+    })
+    expect(rows.find(row => row.key === 'pl-tool-bash')).toMatchObject({
+      action: 'toggle-plugin',
+      text: '○ tool-bash · tool-bash · 未加载 · 已禁用 · profile 管理',
+      dim: true,
+    })
+    expect(rows.at(-2)?.text).toContain('每个插件行都可选中')
   })
 
-  it('renders the read-only guidance in English', () => {
+  it('renders toggle guidance in English', () => {
     const fixture = modelsSettings()
-    fixture.settings.plugins = [{ id: 'storage', name: 'storage', enabled: true, loaded: true }]
+    fixture.settings.plugins = [{ id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true }]
     const rows = buildSettingsRows(fixture, 'plugins', 'en')
     expect(rows[0]?.text).toBe('● storage · storage')
-    expect(rows.some(row => row.key === 'pl-storage' && row.text === '● storage · storage')).toBe(true)
-    expect(rows.at(-1)?.text).toContain('ask the Agent to update that configuration file')
+    expect(rows.some(row => row.key === 'pl-storage' && row.action === 'toggle-plugin')).toBe(true)
+    expect(rows.at(-2)?.text).toContain('Every plugin row is selectable')
   })
 })
 
@@ -378,8 +396,8 @@ describe('en locale', () => {
     const fixture = modelsSettings()
     fixture.settings.general = { busyEnter: 'steer', thinking: 'expanded', theme: 'light', locale: 'en' }
     fixture.settings.plugins = [
-      { id: 'sessions', name: 'sessions', enabled: true, loaded: true },
-      { id: 'optional', name: 'optional', enabled: false, loaded: false },
+      { id: 'sessions', name: 'sessions', enabled: true, loaded: true, toggleable: true },
+      { id: 'optional', name: 'optional', enabled: false, loaded: false, toggleable: true },
     ]
     fixture.settings.inventory = {
       namespaces: [{ ns: 'tui', applies: 'live', revision: 1, secretSlots: 0, secretSet: 0 }],

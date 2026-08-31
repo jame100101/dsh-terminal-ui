@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, TurnEndReason } from '@deepseek-ai/dsh-session'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { renderAssistantResultPlain } from '../src/plain'
 import type { TuiNode } from '../src/types'
 import {
   EXIT_FAILURE, EXIT_INTERRUPT, EXIT_OK, EXIT_USAGE, forkCutPoint, lastTurnNumber, mapTurnEndToExitCode,
-  normalizeCwd, resolveContinueSession, resolveResumeTarget, turnEndReasonAfter,
+  normalizeCwd, resolveContinueSession, resolveResumeTarget, selectionFromRequestHistory, turnEndReasonAfter,
 } from '../src/startup'
 import type { ResumeQueryPort, SessionRecordLike } from '../src/startup'
 import type { SessionRecencyRecord } from '../src/session-recency'
@@ -115,6 +116,47 @@ describe('turn boundary helpers', () => {
     expect(turnEndReasonAfter(events, 1)?.kind).toBe('error')
     expect(turnEndReasonAfter(events, 2)).toBeUndefined()
     expect(turnEndReasonAfter([], -1)).toBeUndefined()
+  })
+})
+
+describe('selectionFromRequestHistory', () => {
+  const fallback = { provider: 'fallback-provider', model: 'fallback-model', reasoningEffort: ReasoningEffortId('low') }
+
+  it('uses the latest canonical request header from the target log', () => {
+    const events = [
+      { type: 'request/header', data: { header: { config: { provider: 'provider-a', model: 'model-a', reasoningEffort: ReasoningEffortId('high') } }, reason: 'initial' } },
+      { type: 'request/header', data: { header: { config: { provider: 'provider-b', model: 'model-b' } }, reason: 'change' } },
+    ] as unknown as SessionEvent[]
+    expect(selectionFromRequestHistory(events, fallback)).toEqual({ provider: 'provider-b', model: 'model-b' })
+  })
+
+  it('uses the deployment default for a legacy log without headers', () => {
+    expect(selectionFromRequestHistory([], fallback)).toEqual(fallback)
+    expect(selectionFromRequestHistory([], fallback)).not.toBe(fallback)
+  })
+
+  it('does not freeze an adapter-derived effort as an explicit selection', () => {
+    const events = [{
+      type: 'request/header',
+      data: {
+        header: {
+          config: { provider: 'provider-a', model: 'model-a', reasoningEffort: ReasoningEffortId('high') },
+          adapterDefaults: { reasoningEffort: true },
+        },
+        reason: 'initial',
+      },
+    }] as unknown as SessionEvent[]
+    expect(selectionFromRequestHistory(events, fallback)).toEqual({ provider: 'provider-a', model: 'model-a' })
+  })
+
+  it('reconstructs a fork route from the seed prefix rather than the parent tail', () => {
+    const events = [
+      { type: 'request/header', data: { header: { config: { provider: 'provider-a', model: 'model-a', reasoningEffort: ReasoningEffortId('high') } }, reason: 'initial' } },
+      { type: 'request/header', data: { header: { config: { provider: 'provider-b', model: 'model-b', reasoningEffort: ReasoningEffortId('low') } }, reason: 'change' } },
+    ] as unknown as SessionEvent[]
+    expect(selectionFromRequestHistory(events.slice(0, 1), fallback)).toEqual({
+      provider: 'provider-a', model: 'model-a', reasoningEffort: ReasoningEffortId('high'),
+    })
   })
 })
 

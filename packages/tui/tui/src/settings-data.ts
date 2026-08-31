@@ -22,7 +22,7 @@ export interface PanelRow {
   color?: string
   dim?: boolean
   /** Which renderer action Enter triggers; absent rows are inert. */
-  action?: 'toggle-busy-enter' | 'toggle-thinking' | 'toggle-locale' | 'select-model' | 'select-reasoning-effort' | 'edit-credential' | 'kill-job' | 'resume-session' | 'toggle-config-boolean' | 'edit-config-number' | 'edit-config-secret' | 'edit-config-string' | 'select-preset'
+  action?: 'toggle-busy-enter' | 'toggle-thinking' | 'toggle-locale' | 'select-model' | 'select-reasoning-effort' | 'edit-credential' | 'kill-job' | 'resume-session' | 'toggle-plugin' | 'toggle-config-boolean' | 'edit-config-number' | 'edit-config-secret' | 'edit-config-string' | 'select-preset'
   meta?: { provider?: string; model?: string; ref?: string; id?: string; effort?: string; ns?: string; field?: string; enabled?: boolean }
 }
 
@@ -130,24 +130,39 @@ export function buildSettingsRows(
         rows.push({ key: 'pl-empty', text: locale === 'en' ? '(no plugin entries)' : '（当前没有插件条目）', dim: true })
       }
       for (const plugin of data.plugins) {
+        const fixed = plugin.toggleBlockedReason === 'conditional'
+          ? (locale === 'en' ? ' · conditional' : ' · 条件控制')
+          : plugin.toggleBlockedReason === 'dependency'
+            ? (locale === 'en' ? ' · active dependents' : ' · 存在活跃依赖方')
+            : plugin.toggleBlockedReason === 'managed'
+              ? (locale === 'en' ? ' · profile managed' : ' · profile 管理')
+              : plugin.toggleBlockedReason === 'surface'
+                ? (locale === 'en' ? ' · current surface' : ' · 当前界面')
+                : plugin.toggleBlockedReason === 'unavailable'
+                  ? (locale === 'en' ? ' · read-only launch' : ' · 当前启动只读')
+                  : ''
         rows.push({
           key: `pl-${plugin.id}`,
-          text: `${plugin.enabled ? '●' : '○'} ${plugin.id} · ${plugin.name}${plugin.loaded ? '' : (locale === 'en' ? ' · not loaded' : ' · 未加载')}${plugin.enabled ? '' : (locale === 'en' ? ' · disabled' : ' · 已禁用')}`,
+          text: `${plugin.enabled ? '●' : '○'} ${plugin.id} · ${plugin.name}${plugin.loaded ? '' : (locale === 'en' ? ' · not loaded' : ' · 未加载')}${plugin.enabled ? '' : (locale === 'en' ? ' · disabled' : ' · 已禁用')}${fixed}`,
           ...(plugin.enabled ? {} : { dim: true }),
+          // Blocked rows remain selectable: Enter reports the current reason
+          // in the notice line, while the host re-checks live dependencies.
+          action: 'toggle-plugin',
+          meta: { id: plugin.id, enabled: plugin.enabled },
         })
       }
       rows.push({
         key: 'pl-foot',
         text: locale === 'en'
-          ? 'To enable or disable plugins, edit $DSH_HOME/profiles/<profile>/cordis.patch.yml'
-          : '启停插件请编辑 $DSH_HOME/profiles/<profile>/cordis.patch.yml',
+          ? 'Every plugin row is selectable; Enter toggles eligible root-profile rows and reports blocked reasons'
+          : '每个插件行都可选中；Enter 启停可改的根 profile 条目，其他行显示阻断原因',
         dim: true,
       })
       rows.push({
         key: 'pl-agent',
         text: locale === 'en'
-          ? 'Tip: ask the Agent to update that configuration file for you'
-          : '提示：也可以直接让 Agent 为你修改该配置文件',
+          ? 'Preset/conditional rows and the running TUI stay fixed; failed activation rolls back its owned write'
+          : 'preset 管理项、条件控制项与当前 TUI 保持固定；热应用失败会回滚本次独占写入',
         dim: true,
       })
       return rows

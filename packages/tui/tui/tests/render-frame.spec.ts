@@ -330,6 +330,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     unsetCredential: () => Promise.resolve(),
     refreshPanels: () => {},
     refreshSettings: () => {},
+    togglePlugin: () => Promise.resolve({ ok: true, enabled: true }),
     killJob: () => {},
     rateMessage: () => Promise.resolve(null),
     resumeSession: () => Promise.resolve(null),
@@ -1822,8 +1823,32 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 30_000)
 
-  it('keeps the complete plugins page read-only and points to the profile patch', async () => {
-    const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }])
+  it('toggles plugins with Enter and reflects enabled state without leaving the panel', async () => {
+    const liveStore: { current?: TuiStore } = {}
+    const toggled: string[] = []
+    const mounted = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
+      togglePlugin: async (id) => {
+        toggled.push(id)
+        const current = liveStore.current?.getSnapshot()
+        if (current?.settings === null || current?.settings === undefined) return { ok: false, code: 'entry-unavailable' }
+        const selected = current.settings.plugins.find(plugin => plugin.id === id)
+        if (selected === undefined) return { ok: false, code: 'entry-unavailable' }
+        const enabled = !selected.enabled
+        liveStore.current?.set({
+          ...current,
+          version: current.version + 1,
+          settings: {
+            ...current.settings,
+            plugins: current.settings.plugins.map(plugin => plugin.id === id
+              ? { ...plugin, enabled, loaded: enabled }
+              : plugin),
+          },
+        })
+        return { ok: true, enabled }
+      },
+    })
+    const { store, capture, unmount, type } = mounted
+    liveStore.current = store
     try {
       const snapshot = store.getSnapshot()
       store.set({
@@ -1832,8 +1857,8 @@ describe('Ink 7 full-screen render', () => {
         settings: snapshot.settings === null ? snapshot.settings : {
           ...snapshot.settings,
           plugins: [
-            { id: 'storage', name: 'storage', enabled: true, loaded: true, namespace: 'storage' },
-            { id: 'off', name: 'off', enabled: false, loaded: false },
+            { id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true, namespace: 'storage' },
+            { id: 'off', name: 'off', enabled: false, loaded: false, toggleable: true },
           ],
         },
       })
@@ -1844,13 +1869,92 @@ describe('Ink 7 full-screen render', () => {
       expect(lines.some(line => line.includes('插件'))).toBe(true)
       expect(lines.some(line => line.includes('● storage · storage'))).toBe(true)
       expect(lines.some(line => line.includes('○ off · off · 未加载 · 已禁用'))).toBe(true)
-      expect(lines.some(line => line.includes('让 Agent 为你修改该配置文件'))).toBe(true)
+      await type('\r')
+      await new Promise<void>(resolve => setTimeout(resolve, 50))
+      lines = lastFrameLines(capture)
+      expect(toggled).toEqual(['storage'])
+      expect(lines.some(line => line.includes('○ storage · storage · 未加载 · 已禁用'))).toBe(true)
+      expect(lines.some(line => line.includes('storage → 已关闭'))).toBe(true)
       await type('\x1b[B')
       await type('\r')
+      await new Promise<void>(resolve => setTimeout(resolve, 50))
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('插件'))).toBe(true)
-      expect(lines.some(line => line.includes('插件配置 · Enter 切换/编辑'))).toBe(false)
-      expect(lines.some(line => line.includes('storage →'))).toBe(false)
+      expect(toggled).toEqual(['storage', 'off'])
+      expect(lines.some(line => line.includes('● off · off'))).toBe(true)
+      expect(lines.some(line => line.includes('off → 已开启'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('coalesces Enter key-repeat while one plugin toggle is settling', async () => {
+    let finish: ((result: { ok: true; enabled: boolean }) => void) | undefined
+    let calls = 0
+    const { store, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
+      togglePlugin: () => {
+        calls += 1
+        return new Promise((resolve) => { finish = resolve })
+      },
+    })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        settings: snapshot.settings === null ? snapshot.settings : {
+          ...snapshot.settings,
+          plugins: [{ id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true }],
+        },
+      })
+      await type('/settings plugins')
+      await type('\r')
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      await type('\r\r')
+      expect(calls).toBe(1)
+      finish?.({ ok: true, enabled: false })
+      await new Promise<void>(resolve => setTimeout(resolve, 50))
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('selects a dependency-blocked plugin and reports the reason on Enter', async () => {
+    const toggled: string[] = []
+    const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
+      togglePlugin: async (id) => {
+        toggled.push(id)
+        return { ok: false, code: 'dependency-blocked', blockers: ['session-title'] }
+      },
+    })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({
+        ...snapshot,
+        version: snapshot.version + 1,
+        settings: snapshot.settings === null ? snapshot.settings : {
+          ...snapshot.settings,
+          plugins: [
+            { id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true },
+            {
+              id: 'session',
+              name: 'session',
+              enabled: true,
+              loaded: true,
+              toggleable: false,
+              toggleBlockedReason: 'dependency',
+            },
+          ],
+        },
+      })
+      await type('/settings plugins')
+      await type('\r')
+      await new Promise<void>(resolve => setTimeout(resolve, 320))
+      await type('\x1b[B')
+      await type('\r')
+      await new Promise<void>(resolve => setTimeout(resolve, 50))
+      const lines = lastFrameLines(capture)
+      expect(toggled).toEqual(['session'])
+      expect(lines.some(line => line.includes('存在活跃依赖方，无法操作：session ← session-title'))).toBe(true)
     } finally {
       unmount()
     }
@@ -1871,8 +1975,8 @@ describe('Ink 7 full-screen render', () => {
           ...snapshot.settings,
           general: { ...snapshot.settings.general, locale: 'en' },
           plugins: [
-            { id: 'sessions', name: 'sessions', enabled: true, loaded: true },
-            { id: 'optional', name: 'optional', enabled: false, loaded: false },
+            { id: 'sessions', name: 'sessions', enabled: true, loaded: true, toggleable: true },
+            { id: 'optional', name: 'optional', enabled: false, loaded: false, toggleable: true },
           ],
         },
       })
@@ -1890,7 +1994,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\r')
       screen = capture.screenLines().join('\n')
       expect(screen).toContain('Plugins')
-      expect(screen).toContain('ask the Agent to update that configuration file')
+      expect(screen).toContain('Every plugin row is selectable')
       expect(screen).not.toMatch(/\p{Script=Han}/u)
     } finally {
       unmount()

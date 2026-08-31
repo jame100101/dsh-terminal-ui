@@ -269,4 +269,23 @@ describe('production TUI through a real PTY', () => {
     harness.pty.kill()
     await harness.waitForExit()
   }, 30_000)
+
+  it('toggles a plugin with Enter and keeps the settings panel interactive', async () => {
+    const harness = spawnFixture(80, 24, { TUI_PTY_PLUGINS: '1' })
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await harness.send('/settings plugins')
+    await harness.send('\r')
+    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('● fixture-plugin')), 3_000)
+
+    await harness.send('\r')
+    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('○ fixture-plugin')), 3_000)
+    expect(screenLines(harness.terminal).some(line => line.includes('fixture-plugin → disabled'))).toBe(true)
+
+    await harness.send('\r')
+    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('● fixture-plugin')), 3_000)
+    expect(screenLines(harness.terminal).some(line => line.includes('fixture-plugin → enabled'))).toBe(true)
+
+    harness.pty.kill()
+    await harness.waitForExit()
+  }, 30_000)
 })

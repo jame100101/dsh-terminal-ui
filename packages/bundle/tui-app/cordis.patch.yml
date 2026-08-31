@@ -19,6 +19,34 @@
 - insert:
     - id: tui
       name: '@deepseek-ai/dsh-tui'
+      config:
+        profilePatchPath: !!js dshHomePath('profiles', 'tui', 'cordis.patch.yml')
+        # These rows move behind agent presets below. Enabling one on the host
+        # would bypass per-session composition rather than toggle an extension.
+        pluginToggleProtectedIds:
+          - tool-bash
+          - tool-pwsh
+          - tool-jobs
+          - tool-fs
+          - tool-fs-search
+          - tool-str-replace-editor
+          - skill-filesystem
+          - tool-skill
+          - tool-goal
+          - plan-mode
+          - compaction-basic
+          - command-compact
+          - tool-result-pruner
+          - tool-subagent-control
+          - tool-subagent-list-agents
+          - tool-subagent
+          - tool-subagent-fork
+          - workflow-worker-thread
+          - tool-workflow
+          - tool-ralph
+          - agent-instructions
+          - tool-todo
+          - tool-web
 
     # Code Mode is a core execution capability, not a Web component (the
     # headless and web-app bundles mount the same row). The `code` agent

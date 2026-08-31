@@ -23,6 +23,22 @@ export type TuiPresetResolution =
   | { kind: 'none' }
   | { kind: 'preset'; id: string; service: AgentPresets }
 
+/**
+ * Resolve the effective preset recorded by one session prefix. A later
+ * `agent-preset/selected` event supersedes the immutable creation metadata;
+ * otherwise the header's preset remains the fallback.
+ * @param header - session creation metadata.
+ * @param events - oldest-first session events or a fork seed prefix.
+ * @returns the effective preset id, or undefined for a rosterless session.
+ */
+export function recordedPreset(header: { agentPreset?: string }, events: readonly SessionEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event !== undefined && event.type === 'agent-preset/selected') return event.data.agentPreset
+  }
+  return header.agentPreset
+}
+
 /** The live agent and model-selection state created for one TUI session. */
 export interface CreatedTuiAgent {
   /** The registered live agent. */

@@ -120,6 +120,10 @@ export interface SettingsPluginRow {
   name: string
   enabled: boolean
   loaded: boolean
+  /** Whether Enter may persistently flip this row through the profile patch. */
+  toggleable: boolean
+  /** Why Enter reports a blocked result instead of changing this row. */
+  toggleBlockedReason?: 'conditional' | 'dependency' | 'managed' | 'surface' | 'unavailable'
   /** The plugin's own settings namespace, when one matches the entry id. */
   namespace?: string
 }

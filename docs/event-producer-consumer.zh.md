@@ -63,11 +63,11 @@
 | `tools/result` | `emit` | [`packages/core/tools/src/index.ts:197`](../packages/core/tools/src/index.ts) | [`tools`](../packages/core/tools) (`events.dispatch`) | [`agent-instructions`](../packages/context/agent-instructions), [`subagent-in-process-driver`](../packages/subagent/subagent-in-process-driver) |
 | `webserver/index-inject` | `emit` | [`packages/host/webserver/src/index.ts:34`](../packages/host/webserver/src/index.ts) | `webserver` (`emit`) | - |
 | `workflow/agent-end` | `emit` | [`packages/workflow/workflow/src/index.ts:79`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tool-workflow`](../packages/workflow/tool-workflow), [`workflow`](../packages/workflow/workflow) |
-| `workflow/agent-start` | `emit` | [`packages/workflow/workflow/src/index.ts:68`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tool-workflow`](../packages/workflow/tool-workflow), [`tui`](../packages/tui/tui), [`workflow`](../packages/workflow/workflow) |
-| `workflow/end` | `emit` | [`packages/workflow/workflow/src/index.ts:89`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tui`](../packages/tui/tui), [`workflow`](../packages/workflow/workflow) |
+| `workflow/agent-start` | `emit` | [`packages/workflow/workflow/src/index.ts:68`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tool-workflow`](../packages/workflow/tool-workflow), [`workflow`](../packages/workflow/workflow) |
+| `workflow/end` | `emit` | [`packages/workflow/workflow/src/index.ts:89`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`workflow`](../packages/workflow/workflow) |
 | `workflow/log` | `emit` | [`packages/workflow/workflow/src/index.ts:58`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tui`](../packages/tui/tui) |
 | `workflow/phase` | `emit` | [`packages/workflow/workflow/src/index.ts:51`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tui`](../packages/tui/tui) |
-| `workflow/start` | `emit` | [`packages/workflow/workflow/src/index.ts:43`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`tui`](../packages/tui/tui), [`workflow`](../packages/workflow/workflow) |
+| `workflow/start` | `emit` | [`packages/workflow/workflow/src/index.ts:43`](../packages/workflow/workflow/src/index.ts) | [`workflow`](../packages/workflow/workflow) (`events.dispatch`) | [`workflow`](../packages/workflow/workflow) |
 
 ## 包源码中出现的非 harness 或未声明事件字符串
 

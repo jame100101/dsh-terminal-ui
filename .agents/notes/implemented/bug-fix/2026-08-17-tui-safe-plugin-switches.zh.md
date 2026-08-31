@@ -4,6 +4,8 @@ Status: implemented
 
 [English](2026-08-17-tui-safe-plugin-switches.md) | 中文
 
+下文的插件清单决定已由 [TUI profile 插件事务式切换](../feature/2026-08-31-tui-profile-plugin-toggles.zh.md)部分取代。拒绝无保护全条目开关的结论继续有效；Thinking、命令选项与 locale 决定仍全部有效。
+
 ## 问题
 
 TUI 插件页把 Loader 条目暴露成即时开关，但 surface 不能证明所有组合依赖，也不能保留每个条件 patch 表达式。一次写入可能使必要消费方进入 pending 状态，导致下一次严格启动拒绝该 profile。把页面过滤为少量看似独立的叶级条目还会隐藏大部分组合，同时继续暗示进程内插件变更是可靠操作。与此同时，`/effort` 虽然出现在 slash palette 中，仍要求用户记忆并输入自由文本参数。

@@ -4,7 +4,11 @@ import {
   enableEntryText,
   hasConditionalDisabledState,
   isPluginInventoryEntry,
+  isProfilePatchEntry,
   pluginDisableBlockers,
+  pluginInventoryEntries,
+  pluginInventoryEntry,
+  profilePatchEntry,
 } from '../src/patch-toggle'
 
 const TEMPLATE = `# Your patch layer for this dsh profile, applied after every bundle layer:
@@ -28,6 +32,11 @@ describe('disableEntryText', () => {
   it('flips an existing disabled: false to true', () => {
     const next = disableEntryText('- id: storage\n  disabled: false\n', 'storage')
     expect(next).toBe('- id: storage\n  disabled: true\n')
+  })
+
+  it('updates the entry-level disabled field after config without adding a duplicate', () => {
+    const next = disableEntryText('- id: storage\n  config:\n    disabled: nested\n  disabled: false\n- id: next\n', 'storage')
+    expect(next).toBe('- id: storage\n  config:\n    disabled: nested\n  disabled: true\n- id: next\n')
   })
 
   it('appends a fresh entry when no [] bracket exists', () => {
@@ -72,6 +81,19 @@ describe('plugin toggle topology', () => {
     expect(isPluginInventoryEntry(entry('include:session', { subtree: {} }))).toBe(false)
     expect(isPluginInventoryEntry(entry('group', { subgroup: {}, options: { id: 'group', name: 'group', group: true } }))).toBe(false)
     expect(isPluginInventoryEntry(entry('0c4a12fe'))).toBe(false)
+    expect(isPluginInventoryEntry(entry('../outside'))).toBe(false)
+  })
+
+  it('deduplicates host and preset rows while preferring the profile patch target', () => {
+    const storage = entry('storage', { disabled: true, fiber: undefined })
+    const presetStorage = entry('storage', { id: 'include:agent-presets:storage' })
+    expect(isProfilePatchEntry(storage)).toBe(true)
+    expect(isProfilePatchEntry(presetStorage)).toBe(false)
+    expect(pluginInventoryEntries([presetStorage, storage])).toEqual([storage])
+    expect(pluginInventoryEntry([presetStorage, storage], 'storage')).toBe(storage)
+    expect(profilePatchEntry([presetStorage, storage], 'storage')).toBe(storage)
+    expect(profilePatchEntry([presetStorage], 'storage')).toBeUndefined()
+    expect(pluginInventoryEntry([entry('include:storage', { subtree: {} })], 'storage')).toBeUndefined()
   })
 
   it('blocks a service provider while another enabled entry requires it', () => {

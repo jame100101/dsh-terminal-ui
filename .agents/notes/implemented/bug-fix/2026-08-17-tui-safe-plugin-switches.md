@@ -4,6 +4,8 @@ Status: implemented
 
 English | [中文](2026-08-17-tui-safe-plugin-switches.zh.md)
 
+The plugin-inventory decision below is partially superseded by [transactional TUI profile plugin toggles](../feature/2026-08-31-tui-profile-plugin-toggles.md). Its rejection of unguarded all-entry switches remains current; the Thinking, command-choice, and locale decisions remain current in full.
+
 ## Problem
 
 The TUI plugin page exposed Loader entries as live switches even though the surface could not prove every composition dependency or preserve every conditional patch expression. A write could therefore leave required consumers pending and make the next strict startup reject the profile. Filtering the page down to a small set of apparently independent leaves also hid most of the composition and still presented plugin mutation as a reliable in-process operation. Separately, `/effort` appeared in the slash palette but still required a memorized free-text argument.

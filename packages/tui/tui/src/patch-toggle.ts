@@ -7,11 +7,12 @@
  * @module @deepseek-ai/dsh-tui/src/patch-toggle
  */
 
-interface LoaderEntryView {
+export interface LoaderEntryView {
   id: string
   disabled: boolean
   options: { id: string; name: string; group?: boolean | null; disabled?: unknown }
   fiber?: {
+    state?: number
     inject: Record<string, unknown>
     store?: Record<string, unknown> | undefined
   } | undefined
@@ -20,6 +21,7 @@ interface LoaderEntryView {
 }
 
 const GENERATED_LOADER_ID = /^[0-9a-f]{8}$/
+const PATCHABLE_LOADER_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/
 
 /**
  * Decide whether one Loader entry represents a leaf plugin suitable for the
@@ -34,9 +36,78 @@ export function isPluginInventoryEntry(entry: LoaderEntryView): boolean {
     && entry.subgroup === undefined
     && entry.subtree === undefined
     && !entry.options.id.includes(':')
+    && PATCHABLE_LOADER_ID.test(entry.options.id)
     // EntryTree.ensureId() assigns this form to dynamically mounted rows that
     // omitted an id. They have no stable patch target across launches.
     && !GENERATED_LOADER_ID.test(entry.options.id)
+}
+
+/**
+ * Whether one inventory leaf belongs to the boot Include that the profile
+ * patch layers recompose. Preset Includes inherit another Loader entry id, so
+ * their runtime ids contain an additional `:` segment and a profile patch
+ * with the same bare id would never reach them.
+ * @param entry - Loader leaf to classify.
+ * @returns whether the profile patch can address this exact runtime entry.
+ */
+export function isProfilePatchEntry(entry: LoaderEntryView): boolean {
+  return isPluginInventoryEntry(entry) && entry.id === `include:${entry.options.id}`
+}
+
+function preferredInventoryEntry(left: LoaderEntryView, right: LoaderEntryView): LoaderEntryView {
+  const leftPatchable = isProfilePatchEntry(left)
+  const rightPatchable = isProfilePatchEntry(right)
+  if (leftPatchable !== rightPatchable) return rightPatchable ? right : left
+  const leftActive = !left.disabled && left.fiber !== undefined
+  const rightActive = !right.disabled && right.fiber !== undefined
+  if (leftActive !== rightActive) return rightActive ? right : left
+  return right.id.localeCompare(left.id) < 0 ? right : left
+}
+
+/**
+ * Collapse Loader leaves by bare id for the settings list. Host composition
+ * and Agent preset trees may both contain rows such as `tool-fs`; one stable
+ * list row avoids duplicate React keys and prefers the profile-addressable
+ * host row when one exists.
+ * @param entries - the settled Loader tree.
+ * @returns one deterministic inventory entry per bare id.
+ */
+export function pluginInventoryEntries(entries: readonly LoaderEntryView[]): LoaderEntryView[] {
+  const selected = new Map<string, LoaderEntryView>()
+  for (const entry of entries) {
+    if (!isPluginInventoryEntry(entry)) continue
+    const previous = selected.get(entry.options.id)
+    if (previous === undefined) selected.set(entry.options.id, entry)
+    else selected.set(entry.options.id, preferredInventoryEntry(previous, entry))
+  }
+  return [...selected.values()]
+}
+
+/**
+ * Resolve the deterministic inventory row for one bare Loader id.
+ * @param entries - the settled host Loader tree.
+ * @param id - the bare id written by a profile patch row.
+ * @returns the displayed matching entry, or undefined when it is absent.
+ */
+export function pluginInventoryEntry(
+  entries: readonly LoaderEntryView[],
+  id: string,
+): LoaderEntryView | undefined {
+  return pluginInventoryEntries(entries).find(entry => entry.options.id === id)
+}
+
+/**
+ * Resolve the unique root-composition entry addressed by the profile patch.
+ * @param entries - the settled Loader tree, including Agent preset subtrees.
+ * @param id - bare Loader id selected in settings.
+ * @returns the exact root Include row, or undefined for preset-only/ambiguous ids.
+ */
+export function profilePatchEntry(
+  entries: readonly LoaderEntryView[],
+  id: string,
+): LoaderEntryView | undefined {
+  const matches = entries.filter(entry => isProfilePatchEntry(entry) && entry.options.id === id)
+  return matches.length === 1 ? matches[0] : undefined
 }
 
 /**
@@ -109,33 +180,32 @@ export function enableEntryText(content: string, id: string): string {
 
 function setEntryDisabledText(content: string, id: string, disabled: boolean): string {
   const lines = content.split('\n')
-  const out: string[] = []
-  let found = false
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index] ?? ''
-    if (line.trim() === `- id: ${id}`) {
-      found = true
-      out.push(line)
-      const next = lines[index + 1] ?? ''
-      if (/^[ \t]*disabled:/.test(next)) {
-        out.push(`  disabled: ${disabled}`)
-        index += 1
-      } else {
-        out.push(`  disabled: ${disabled}`)
+  const entryStart = lines.findIndex(line => line.trim() === `- id: ${id}`)
+  if (entryStart !== -1) {
+    const indent = lines[entryStart]?.match(/^[ \t]*/u)?.[0] ?? ''
+    let entryEnd = lines.length
+    for (let index = entryStart + 1; index < lines.length; index += 1) {
+      const line = lines[index] ?? ''
+      if (line.startsWith(`${indent}- `)) {
+        entryEnd = index
+        break
       }
-      continue
     }
-    out.push(line)
+    const disabledPrefix = `${indent}  disabled:`
+    const disabledLine = lines.findIndex((line, index) =>
+      index > entryStart && index < entryEnd && line.startsWith(disabledPrefix))
+    if (disabledLine === -1) lines.splice(entryStart + 1, 0, `${indent}  disabled: ${disabled}`)
+    else lines[disabledLine] = `${indent}  disabled: ${disabled}`
+    return lines.join('\n')
   }
-  if (found) return out.join('\n')
-  const bracket = out.findIndex(line => line.trim() === '[]')
+  const bracket = lines.findIndex(line => line.trim() === '[]')
   const entry = [`- id: ${id}`, `  disabled: ${disabled}`]
-  if (bracket !== -1) out.splice(bracket, 1, ...entry)
+  if (bracket !== -1) lines.splice(bracket, 1, ...entry)
   else {
     // Insert before the trailing newline marker so the file keeps it.
-    let insertAt = out.length
-    while (insertAt > 0 && out[insertAt - 1]?.trim() === '') insertAt -= 1
-    out.splice(insertAt, 0, ...entry)
+    let insertAt = lines.length
+    while (insertAt > 0 && lines[insertAt - 1]?.trim() === '') insertAt -= 1
+    lines.splice(insertAt, 0, ...entry)
   }
-  return out.join('\n')
+  return lines.join('\n')
 }

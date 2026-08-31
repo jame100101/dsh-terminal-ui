@@ -12,8 +12,10 @@
  */
 
 import { resolve, sep } from 'node:path'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { foldRequestHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent, SessionHeader, TurnEndReason } from '@deepseek-ai/dsh-session'
+import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import type { ModelSelection } from '@deepseek-ai/dsh-agent'
 import { sessionTitlesById } from './settings-data'
 import type { TitleObservationResult } from './settings-data'
 import type { SessionRecencyRecord } from './session-recency'
@@ -26,6 +28,30 @@ export const EXIT_FAILURE = 1
 export const EXIT_USAGE = 2
 /** Exit code for a user interrupt (SIGINT convention; the launcher owns the signal path). */
 export const EXIT_INTERRUPT = 130
+
+/**
+ * Reconstruct the model route that applies to one persisted log prefix.
+ * Request headers are the canonical durable snapshots; when a legacy or empty
+ * prefix has none, the caller-provided deployment default remains authoritative.
+ * @param events - session events in log order, optionally a fork seed prefix.
+ * @param fallback - deployment selection used when no request header exists.
+ * @returns a detached selection for the target log.
+ */
+export function selectionFromRequestHistory(
+  events: readonly SessionEvent[],
+  fallback: ModelSelection,
+): ModelSelection {
+  const header = foldRequestHeader(events)
+  if (header === undefined) return { ...fallback }
+  const config = header.config
+  return {
+    provider: config.provider,
+    model: config.model,
+    ...(config.reasoningEffort === undefined || header.adapterDefaults?.reasoningEffort === true
+      ? {}
+      : { reasoningEffort: ReasoningEffortId(String(config.reasoningEffort)) }),
+  }
+}
 
 /** The session-query surface the resolvers need — a structural port over the real engine for test fakes. */
 export interface ResumeQueryPort {

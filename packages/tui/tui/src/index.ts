@@ -15,13 +15,11 @@
  * @module @deepseek-ai/dsh-tui
  */
 
-import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { basename, extname, resolve } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { installModelSelection } from '@deepseek-ai/dsh-agent'
-import type { Agent, AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
+import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-settings'
 import { settingsNamespace } from '@deepseek-ai/dsh-settings'
@@ -39,7 +37,6 @@ import type {} from '@deepseek-ai/dsh-user-questions'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-llm'
 import type { ToolResult } from '@deepseek-ai/dsh-tools'
-import type { JobSnapshot } from '@deepseek-ai/dsh-jobs'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import type { SubagentDescendantListEntry } from '@deepseek-ai/dsh-subagent'
 // Empty import carries the workflow event-vocabulary merge the run listeners
@@ -96,7 +93,6 @@ import {
   EXIT_FAILURE,
   EXIT_OK,
   EXIT_USAGE,
-  forkCutPoint,
   lastTurnNumber,
   mapTurnEndToExitCode,
   resolveContinueSession,
@@ -106,7 +102,20 @@ import {
 import type { ResumeCandidate, ResumeResolution } from './startup'
 import { SessionRecencyStore } from './session-recency'
 import { ProjectionSidecarStore, foldIsIdle, projectionCheckpointIsComplete } from './projection-sidecar'
-import { createTuiAgent, resolveTuiPreset, SessionPresetQueue } from './preset-lifecycle'
+import { createForkArtifact } from './fork-lifecycle'
+import { createTuiAgent, recordedPreset, SessionPresetQueue } from './preset-lifecycle'
+import { prepareTuiResume, replayTuiResumeOrDispose, resolveTuiReasoning } from './resume-lifecycle'
+import {
+  hasConditionalDisabledState,
+  isProfilePatchEntry,
+  pluginDisableBlockers,
+  pluginInventoryEntries,
+} from './patch-toggle'
+import { toggleProfilePlugin } from './plugin-toggle-runtime'
+import {
+  createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowOverlay, projectWorkflowSessionDelivery,
+} from './workflow-projection'
+import { projectJobsRows, subscribeVisibleJobs } from './jobs-projection'
 import type {
   CommandEntry, CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry,
   SettingsData, SkillEntry, SubagentRow, TuiStore, WorkflowRow,
@@ -120,16 +129,27 @@ export const inject = ['agents', 'agentDefaultModel', 'tools', 'settings', 'cred
 
 /** Default maximum number of foreground-session observations retained by the TUI. */
 export const DEFAULT_SESSION_RECENCY_MAX_ENTRIES = 1_000
+/** Default time allowed for a profile-patch plugin toggle to hot-apply. */
+export const DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS = 60_000
 
 /** TUI plugin configuration. */
 export interface Config {
   /** Maximum lifecycle observations in the TUI-owned session recency sidecar. */
   sessionRecencyMaxEntries?: number
+  /** Absolute live user profile patch path; omission keeps plugin rows read-only. */
+  profilePatchPath?: string
+  /** Loader entry ids whose enabled state belongs to the profile composition. */
+  pluginToggleProtectedIds?: string[]
+  /** Maximum wait for one plugin toggle's Loader lifecycle to settle. */
+  pluginToggleSettleTimeoutMs?: number
 }
 
 /** Validated TUI plugin configuration schema. */
 export const Config: z<Config> = z.object({
   sessionRecencyMaxEntries: z.number().step(1).min(1).default(DEFAULT_SESSION_RECENCY_MAX_ENTRIES),
+  profilePatchPath: z.string().required(false),
+  pluginToggleProtectedIds: z.array(z.string()).default([]),
+  pluginToggleSettleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS),
 })
 
 /** Localized copy for a rejected feedback mutation. */
@@ -197,6 +217,8 @@ interface Surface {
   subagents: SubagentRow[]
   /** /workflows panel rows, keyed by run id (event-driven). */
   workflows: Map<string, WorkflowRow>
+  /** Cosmetic phase/log updates are accepted only after durable membership. */
+  workflowOverlays: Map<string, { phase?: string; lastLog?: string }>
   /** Per-message feedback by message id; replaced on every mutation. */
   feedback: Map<string, MessageFeedbackItem>
   /** Reasoning-effort selection and the current route's exposed levels. */
@@ -209,6 +231,11 @@ interface Surface {
   resumeProgress: { done: number; total: number } | null
 }
 
+/** Whether one asynchronous resume generation lost ownership before commit. */
+function resumeWasCancelled(signal: AbortSignal, generation: number, currentGeneration: number): boolean {
+  return signal.aborted || generation !== currentGeneration
+}
+
 /** Resolve the current agent scope's human-invocable skill catalog. */
 async function loadSkillEntries(ctx: Context, surface: Surface): Promise<SkillEntry[]> {
   const skills = ctx.get('skills')
@@ -219,23 +246,6 @@ async function loadSkillEntries(ctx: Context, surface: Surface): Promise<SkillEn
     description: skill.description,
     modelInvocable: skill.invocation.modelInvocable,
   }))
-}
-
-/** Read the adapter-exposed reasoning levels for one exact route. */
-async function resolveReasoning(ctx: Context, provider: string, model: string): Promise<{ effort: string | undefined; levels: string[] }> {
-  const llm = ctx.get('llm')
-  if (llm === undefined) return { effort: undefined, levels: [] }
-  try {
-    const resolved = await llm.resolveModelInfo(provider, model)
-    const reasoning = resolved.reasoning
-    return {
-      effort: reasoning?.defaultEffort === undefined ? undefined : String(reasoning.defaultEffort),
-      levels: reasoning?.efforts.map(info => String(info.id)) ?? [],
-    }
-  } catch {
-    // A route the adapter cannot resolve exposes no effort control.
-    return { effort: undefined, levels: [] }
-  }
 }
 
 /**
@@ -388,8 +398,15 @@ function queuedEntries(agent: Agent): { text: string; steer: boolean }[] {
  * @param tuiScope - the registered `tui` settings scope.
  * @returns the complete settings page data.
  */
-async function loadSettingsData(ctx: Context, surface: Surface, tuiScope: SettingsScope<{ busyEnter: 'queue' | 'steer'; thinking: 'collapsed' | 'expanded' }>): Promise<SettingsData> {
+async function loadSettingsData(
+  ctx: Context,
+  surface: Surface,
+  tuiScope: SettingsScope<{ busyEnter: 'queue' | 'steer'; thinking: 'collapsed' | 'expanded' }>,
+  config: Config,
+): Promise<SettingsData> {
   const descriptors = ctx.settings.describe({ redactSecrets: true })
+  const loaderEntries = [...ctx.loader.entries()]
+  const protectedPluginIds = new Set(config.pluginToggleProtectedIds ?? [])
   const refs = new Map<string, string[]>()
   for (const descriptor of descriptors) {
     for (const slot of collectCredentialRefs(descriptor.schema, descriptor.value)) {
@@ -438,12 +455,21 @@ async function loadSettingsData(ctx: Context, surface: Surface, tuiScope: Settin
       providers: groupProviders(surface.models),
       credentials: credentialRows,
     },
-    plugins: [...ctx.loader.entries()]
-      // Groups and tree roots are composition structure rather than plugin
-      // rows. The remaining Loader entries form the complete read-only list.
-      .filter(entry => entry.options.group !== true && entry.id !== entry.options.id)
+    plugins: pluginInventoryEntries(loaderEntries)
+      // The Loader can expose the same bare id from the host composition and
+      // one or more Agent preset trees. The settings list is unique by id;
+      // only the root boot Include is writable through this profile patch.
       .map((entry) => {
         const descriptor = descriptors.find(candidate => candidate.ns === entry.options.id)
+        let toggleBlockedReason: 'conditional' | 'dependency' | 'managed' | 'surface' | 'unavailable' | undefined
+        if (config.profilePatchPath === undefined) toggleBlockedReason = 'unavailable'
+        else if (entry.options.id === name) toggleBlockedReason = 'surface'
+        else if (!isProfilePatchEntry(entry)) toggleBlockedReason = 'managed'
+        else if (protectedPluginIds.has(entry.options.id)) toggleBlockedReason = 'managed'
+        else if (hasConditionalDisabledState(entry)) toggleBlockedReason = 'conditional'
+        else if (!entry.disabled && pluginDisableBlockers(loaderEntries, entry).length > 0) {
+          toggleBlockedReason = 'dependency'
+        }
         return {
           // The BARE id is what the profile patch layer targets; the runtime
           // `entry.id` carries the include tree's prefix.
@@ -451,6 +477,8 @@ async function loadSettingsData(ctx: Context, surface: Surface, tuiScope: Settin
           name: entry.options.name,
           enabled: !entry.disabled,
           loaded: entry.fiber !== undefined,
+          toggleable: toggleBlockedReason === undefined,
+          ...(toggleBlockedReason === undefined ? {} : { toggleBlockedReason }),
           ...(descriptor === undefined ? {} : { namespace: descriptor.ns }),
         }
       }),
@@ -479,17 +507,10 @@ async function loadSettingsData(ctx: Context, surface: Surface, tuiScope: Settin
  * @param now - current epoch ms.
  * @returns one row per registered job.
  */
-function jobsRows(ctx: Context, now: number): JobRow[] {
-  const jobs = ctx.get('jobs') as { list(): readonly JobSnapshot[] } | undefined
+function jobsRows(ctx: Context, agent: Agent, now: number): JobRow[] {
+  const jobs = ctx.get('jobs')
   if (jobs === undefined) return []
-  return jobs.list().map((snapshot): JobRow => ({
-    id: snapshot.id,
-    kind: snapshot.kind,
-    label: snapshot.label,
-    status: snapshot.status,
-    ...(snapshot.detail === undefined ? {} : { detail: snapshot.detail }),
-    elapsedMs: (snapshot.finishedAt ?? now) - snapshot.startedAt,
-  }))
+  return projectJobsRows(jobs, agent, now)
 }
 
 /**
@@ -524,8 +545,8 @@ async function subagentRows(ctx: Context, rootSessionId: SessionId): Promise<Sub
 /**
  * Subscribe the fold and busy status to the Cordis event world through the
  * same raw `internal/dispatch` global channel the invariant companions use,
- * refresh the settings pages on settings/credential commits, and fold the
- * workflow run events into /workflows rows.
+ * refresh the settings pages on settings/credential commits, and fold durable
+ * workflow session events into /workflows rows.
  * @param ctx - plugin context.
  * @param store - the UI store to publish into.
  * @param surface - mutable surface facts.
@@ -554,7 +575,7 @@ function subscribe(
       })),
       queued: queuedEntries(surface.agent),
       settings: surface.settings,
-      jobs: jobsRows(ctx, Date.now()),
+      jobs: jobsRows(ctx, surface.agent, Date.now()),
       subagents: surface.subagents,
       workflows: [...surface.workflows.values()],
       feedback: surface.feedback,
@@ -602,6 +623,19 @@ function subscribe(
       if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
         enrichToolCards(ctx, event, surface.fold)
       }
+      // Workflow rows are owned by the durable event stream of this exact
+      // Session, not by the process-global workflow lifecycle channel.
+      const workflowUpdate = projectWorkflowSessionDelivery(
+        surface.agent.session,
+        session,
+        surface.workflows,
+        surface.workflowOverlays,
+        event,
+      )
+      if (workflowUpdate !== null) {
+        surface.workflows = workflowUpdate.workflows
+        surface.workflowOverlays = workflowUpdate.overlays
+      }
       const previousFold = surface.fold
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
       if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
@@ -645,40 +679,26 @@ function subscribe(
   const offSettings = ctx.on('settings/updated', refreshSettings)
   const offCredentialReference = ctx.on('credentials/reference-updated', refreshSettings)
   const offCredentialRecord = ctx.on('credentials/record-updated', refreshSettings)
-  // Workflow runs are event-driven: each event folds its facts onto one row.
-  const offWorkflowStart = ctx.on('workflow/start', (info) => {
-    surface.workflows.set(info.id, { id: info.id, name: info.meta.name, status: 'running', agentsStarted: 0 })
+  // Process-global workflow lifecycle events have no parent-session identity.
+  // They are cosmetic only and are accepted after durable membership exists.
+  const offWorkflowPhase = ctx.on('workflow/phase', (info, title) => {
+    const update = projectWorkflowOverlay(surface.workflows, surface.workflowOverlays, info.id, { phase: title })
+    if (update === null) return
+    surface.workflows = update.workflows
+    surface.workflowOverlays = update.overlays
     publish()
   })
-  const offWorkflowPhase = ctx.on('workflow/phase', (info, title) => {
-    const row = surface.workflows.get(info.id)
-    if (row !== undefined) {
-      row.phase = title
-      publish()
-    }
-  })
   const offWorkflowLog = ctx.on('workflow/log', (info, message) => {
-    const row = surface.workflows.get(info.id)
-    if (row !== undefined) {
-      row.lastLog = message.slice(0, 200)
-      publish()
-    }
+    const update = projectWorkflowOverlay(surface.workflows, surface.workflowOverlays, info.id, { lastLog: message })
+    if (update === null) return
+    surface.workflows = update.workflows
+    surface.workflowOverlays = update.overlays
+    publish()
   })
-  const offWorkflowAgentStart = ctx.on('workflow/agent-start', (info) => {
-    const row = surface.workflows.get(info.id)
-    if (row !== undefined) {
-      row.agentsStarted += 1
-      publish()
-    }
-  })
-  const offWorkflowEnd = ctx.on('workflow/end', (info, result) => {
-    const row = surface.workflows.get(info.id)
-    if (row !== undefined) {
-      row.status = result.stopReason === 'completed' ? 'completed' : result.stopReason === 'cancelled' ? 'cancelled' : 'error'
-      if (result.error !== undefined) row.error = result.error.slice(0, 200)
-      publish()
-    }
-  })
+  const jobs = ctx.get('jobs')
+  const offJobsChanged = jobs === undefined
+    ? (): void => {}
+    : subscribeVisibleJobs(jobs, () => surface.agent, publish)
   publish()
   return () => {
     uiPublish.flush()
@@ -688,11 +708,9 @@ function subscribe(
     offCredentialReference()
     offCredentialRecord()
     offOccupancy()
-    offWorkflowStart()
     offWorkflowPhase()
     offWorkflowLog()
-    offWorkflowAgentStart()
-    offWorkflowEnd()
+    offJobsChanged()
   }
 }
 
@@ -789,71 +807,6 @@ async function loadModels(ctx: Context, current: { provider: string; model: stri
     entries.push({ provider: current.provider, model: current.model, label: `${current.provider}/${current.model}` })
   }
   return entries
-}
-
-/**
- * The preset one session's log records, newest selection winning.
- *
- * The creation header names the preset a session STARTED with; a later
- * `agent-preset/selected` event (a blank-session switch) supersedes it. The
- * same fold the agent-presets package exports, inlined to keep the TUI free
- * of a runtime dependency on that package.
- * @param header - the session's creation header.
- * @param events - the session's event log, oldest first.
- * @returns the preset id, or undefined when the session composes none.
- */
-function recordedPreset(header: { agentPreset?: string }, events: readonly SessionEvent[]): string | undefined {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-    if (event !== undefined && event.type === 'agent-preset/selected') return event.data.agentPreset
-  }
-  return header.agentPreset
-}
-
-/**
- * Fork the CURRENT surface session at its last completed turn (or the turn
- * containing atSeq) into a new persisted artifact: created with the cut seed
- * and lineage metadata (`parentSession`, `seedLength`), then disposed right
- * away so exactly one agent — the surface's — stays live. Returns the fork's
- * id; null when no completed turn exists to fork from.
- * @param ctx - plugin context carrying the agent registry.
- * @param surface - the surface whose session is forked.
- * @param atSeq - anchor the cut to the turn containing this event seq.
- * @returns the fork's session id, or null when there is no completed turn.
- */
-async function createForkArtifact(ctx: Context, surface: Surface, atSeq?: number): Promise<SessionId | null> {
-  const events = surface.agent.session.events
-  const cut = forkCutPoint(events, atSeq)
-  if (cut === null) return null
-  const selection: ModelSelection = surface.selection.current ?? ctx.agentDefaultModel.currentSelection()
-  const ref: ModelSelectionRef = { current: selection, assembled: undefined }
-  const recorded = recordedPreset(surface.agent.session.header, events)
-  const preset = await resolveTuiPreset(ctx, recorded)
-  const fork = await ctx.agents.create({
-    sessionId: SessionId(`session-${randomUUID()}`),
-    seed: events.slice(0, cut),
-    meta: {
-      cwd: surface.cwd,
-      parentSession: surface.agent.id,
-      seedLength: cut,
-      ...(preset.kind === 'preset' ? { agentPreset: preset.id } : {}),
-    },
-    agentOptions: {
-      provider: selection.provider,
-      model: selection.model,
-      ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
-    },
-    setup: async (agentCtx) => {
-      installModelSelection(agentCtx, ref)
-      if (preset.kind === 'preset') await preset.service.mount(agentCtx, preset.id)
-    },
-  })
-  const forkId = fork.agent.id
-  // A fork is a persisted artifact to resume from /sessions, not a second
-  // live surface: dispose its handle right away so exactly ONE agent (the
-  // surface's) stays live at any time.
-  await fork.dispose()
-  return forkId
 }
 
 /**
@@ -988,6 +941,7 @@ async function boot(
     jobs: [],
     subagents: [],
     workflows: new Map(),
+    workflowOverlays: new Map(),
     feedback: new Map(),
     reasoning: {
       effort: created.selection.reasoningEffort === undefined ? undefined : String(created.selection.reasoningEffort),
@@ -997,6 +951,16 @@ async function boot(
     cwd: process.cwd(),
     resumeProgress: null,
   }
+  let settingsGeneration = 0
+  /** Reload and publish the settings projection; only the newest read commits. */
+  const reloadSettings = async (): Promise<void> => {
+    const generation = ++settingsGeneration
+    const data = await loadSettingsData(ctx, surface, tuiScope, config)
+    if (generation !== settingsGeneration) return
+    surface.settings = data
+    surface.version += 1
+    store.set({ ...store.getSnapshot(), settings: data, version: surface.version })
+  }
   /** Load the model catalog, then the settings pages it feeds (parallel). */
   const loadPanels = (): void => {
     void loadModels(ctx, created.selection).then((models) => {
@@ -1004,11 +968,7 @@ async function boot(
       surface.version += 1
       store.set({ ...store.getSnapshot(), models, version: surface.version })
     }).catch(() => {}).then(() => {
-      void loadSettingsData(ctx, surface, tuiScope).then((data) => {
-        surface.settings = data
-        surface.version += 1
-        store.set({ ...store.getSnapshot(), settings: data, version: surface.version })
-      }).catch(() => {})
+      void reloadSettings().catch(() => {})
     })
   }
   let catalogGeneration = 0
@@ -1052,12 +1012,8 @@ async function boot(
     }
   }
   const loadReasoning = (): void => {
-    void resolveReasoning(ctx, created.selection.provider, created.selection.model).then((reasoning) => {
-      // The persisted selection's own effort wins over the adapter default.
-      surface.reasoning = {
-        effort: created.selection.reasoningEffort === undefined ? reasoning.effort : String(created.selection.reasoningEffort),
-        levels: reasoning.levels,
-      }
+    void resolveTuiReasoning(ctx, created.selection).then((reasoning) => {
+      surface.reasoning = reasoning
       surface.version += 1
       store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
     }).catch(() => {})
@@ -1077,11 +1033,7 @@ async function boot(
   // rows on demand after the first terminal frame is interactive.
   /** Reload the /settings pages after any settings or credential commit. */
   const refreshSettings = (): void => {
-    void loadSettingsData(ctx, surface, tuiScope).then((data) => {
-      surface.settings = data
-      surface.version += 1
-      store.set({ ...store.getSnapshot(), settings: data, version: surface.version })
-    }).catch(() => {
+    void reloadSettings().catch(() => {
       // A refresh racing service teardown must not disturb the exit path.
     })
   }
@@ -1089,6 +1041,32 @@ async function boot(
   const uiLocale = (): 'zh' | 'en' => surface.settings?.general.locale ?? (tuiScope.get() as GeneralSettings).locale
   /** Select copy without passing display language into Harness services. */
   const uiText = (zh: string, en: string): string => uiLocale() === 'en' ? en : zh
+  let pluginToggleTail: Promise<void> = Promise.resolve()
+  /** Serialize profile writes and Loader recompositions across rapid Enter presses. */
+  const togglePlugin = (id: string): ReturnType<typeof toggleProfilePlugin> => {
+    const run = pluginToggleTail.then(async () => {
+      if (config.profilePatchPath === undefined) return { ok: false as const, code: 'entry-unavailable' as const }
+      const result = await toggleProfilePlugin({
+        ctx,
+        patchPath: config.profilePatchPath,
+        id,
+        surfacePluginId: name,
+        protectedIds: config.pluginToggleProtectedIds ?? [],
+        settleTimeoutMs: config.pluginToggleSettleTimeoutMs ?? DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS,
+      })
+      if (result.ok) {
+        try {
+          await reloadSettings()
+        } catch {
+          // Loader already settled the toggle; the settings event or next
+          // panel refresh supplies the same inventory after teardown races.
+        }
+      }
+      return result
+    })
+    pluginToggleTail = run.then(() => {}, () => {})
+    return run
+  }
   let unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
   const offSkillsChange = ctx.on('skills/change', () => { refreshCatalogs() }, { global: true })
   const isTty = process.stdin.isTTY === true && process.stdout.isTTY === true
@@ -1280,6 +1258,14 @@ async function boot(
     surface.resumeProgress = null
     publishSurfaceFold()
   }
+  /** Dispose a prepared replacement without letting rollback hide the primary outcome. */
+  const disposePrepared = async (handle: AgentHandle): Promise<void> => {
+    try {
+      await handle.dispose()
+    } catch (error) {
+      fail(ctx, error)
+    }
+  }
   /** Swap the surface onto a freshly created agent (/new). */
   const newSession = async (): Promise<void> => {
     try {
@@ -1294,6 +1280,7 @@ async function boot(
       // metadata-free session resolves the roster default instead.
       const previousSessionId = surface.agent.id
       const next = await createTuiAgent(ctx, surface.cwd, recordedPreset(surface.agent.session.header, surface.agent.session.events))
+      const nextReasoning = await resolveTuiReasoning(ctx, next.selection)
       unsubscribe()
       await currentHandle.dispose()
       presetQueue.forget(previousSessionId)
@@ -1308,6 +1295,13 @@ async function boot(
       surface.pendingQuestion = null
       surface.feedback = new Map()
       surface.pendingAttachments = []
+      surface.commands = []
+      surface.skills = []
+      surface.jobs = []
+      surface.subagents = []
+      surface.workflows = createWorkflowProjection()
+      surface.workflowOverlays = new Map()
+      surface.reasoning = nextReasoning
       unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
       refreshCatalogs()
       void loadFeedback()
@@ -1325,57 +1319,21 @@ async function boot(
     // the user needs visible progress and a working Escape key during phase 0.
     surface.resumeProgress = { done: 0, total: 1 }
     publishSurfaceFold()
-    const selected = surface.selection.current ?? ctx.agentDefaultModel.currentSelection()
-    const selection: ModelSelection = {
-      provider: selected.provider,
-      model: selected.model,
-      ...(selected.reasoningEffort === undefined ? {} : { reasoningEffort: selected.reasoningEffort }),
-    }
-    const ref: ModelSelectionRef = { current: selection, assembled: undefined }
+    const fallback = ctx.agentDefaultModel.currentSelection()
     // Phase 0 — read the persisted log once (replay-validated): its header
     // and events resolve the session's recorded preset (mounted in setup
     // below) AND rebuild the fold after the swap, with no second read.
-    let snapshot: { header: { agentPreset?: string }; events: readonly SessionEvent[] } | undefined
+    let snapshot
     const query = ctx.get('sessionQuery')
-    if (query !== undefined) {
-      try {
-        const read = await query.readSession(SessionId(id))
-        snapshot = { header: read.session, events: read.events }
-      } catch {
-        // The in-memory log remains the best available surface.
-      }
+    if (query === undefined) {
+      resumeAbort = null
+      surface.resumeProgress = null
+      publishSurfaceFold()
+      return `${uiText('恢复失败', 'Resume failed')}: session query service is not loaded`
     }
-    if (controller.signal.aborted || gen !== resumeGeneration) {
-      return uiText('已取消恢复', 'Resume cancelled')
-    }
-    surface.resumeProgress = { done: 0, total: Math.max(1, snapshot?.events.length ?? 1) }
-    publishSurfaceFold()
-    const presetId = snapshot === undefined ? undefined : recordedPreset(snapshot.header, snapshot.events)
-    const missingPresetMetadata = snapshot !== undefined && presetId === undefined
-    // Phase 1 — prepare the next agent. A failure here leaves the current
-    // surface (agent and subscription) untouched: report it as a notice.
-    let next: AgentHandle
     try {
-      // Old metadata-free sessions adopt the current roster default. Passing
-      // its resolved id to mount keeps marker, log, and composition identical.
-      const preset = await resolveTuiPreset(ctx, presetId)
-      next = await ctx.agents.resume({
-        resumeSessionId: SessionId(id),
-        agentOptions: {
-          provider: selection.provider,
-          model: selection.model,
-          ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
-        },
-        setup: async (agentCtx) => {
-          installModelSelection(agentCtx, ref)
-          if (preset.kind === 'preset') await preset.service.mount(agentCtx, preset.id)
-        },
-      })
-      if (missingPresetMetadata && preset.kind === 'preset') {
-        // Persist the fallback so a later default change cannot silently
-        // recompose this migrated session under different model-visible rows.
-        next.agent.session.append('agent-preset/selected', { agentPreset: preset.id })
-      }
+      const read = await query.readSession(SessionId(id))
+      snapshot = { header: read.session, events: read.events }
     } catch (error) {
       if (gen === resumeGeneration) {
         resumeAbort = null
@@ -1384,100 +1342,86 @@ async function boot(
       }
       return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
     }
-    const events: readonly SessionEvent[] = next.agent.session.events
-    if (gen !== resumeGeneration) {
-      try { await next.dispose() } catch { /* cancelled before swap */ }
+    if (resumeWasCancelled(controller.signal, gen, resumeGeneration)) {
+      return uiText('已取消恢复', 'Resume cancelled')
+    }
+    surface.resumeProgress = { done: 0, total: Math.max(1, snapshot.events.length) }
+    publishSurfaceFold()
+    // Phase 1 — prepare the next agent. A failure here leaves the current
+    // surface (agent and subscription) untouched: report it as a notice.
+    let prepared
+    try {
+      prepared = await prepareTuiResume(ctx, SessionId(id), snapshot, fallback, controller.signal)
+    } catch (error) {
+      if (gen === resumeGeneration) {
+        resumeAbort = null
+        surface.resumeProgress = null
+        publishSurfaceFold()
+      }
+      if (resumeWasCancelled(controller.signal, gen, resumeGeneration)) {
+        return uiText('已取消恢复', 'Resume cancelled')
+      }
+      return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
+    }
+    const next = prepared.handle
+    const selection = prepared.selection
+    const ref = prepared.ref
+    const nextReasoning = prepared.reasoning
+    const events = prepared.events
+    if (resumeWasCancelled(controller.signal, gen, resumeGeneration)) {
+      await disposePrepared(next)
       return uiText('已取消恢复', 'Resume cancelled')
     }
     // Phase 2 — fold while the current agent and subscription remain owned by
     // the surface. Cancellation therefore discards only the prepared handle;
     // the visible session never observes a partial projection.
+    const lastSeq = events.at(-1)?.seq ?? 0
+    let fold: FoldState
+    let scratch: FoldScratch
+    let nextWorkflows: Map<string, WorkflowRow>
     try {
-      const lastSeq = events.at(-1)?.seq ?? 0
-      const sidecar = await projections.read(String(next.agent.session.header.id), next.agent.session.header.createdAt)
-      let fold
-      let scratch
-      if (sidecar !== null && sidecar.lastSeq <= lastSeq) {
-        const suffix = events.filter(event => event.seq > sidecar.lastSeq)
-        surface.resumeProgress = { done: 0, total: Math.max(1, suffix.length) }
-        publishSurfaceFold()
-        const replayed = await foldFromLogYielding(suffix, foldHooks, {
-          seed: { fold: sidecar.fold, scratch: createScratch() },
-          signal: controller.signal,
-          onProgress: (done, total) => {
-            if (gen !== resumeGeneration) return
-            surface.resumeProgress = { done, total }
-            surface.version += 1
-            store.set({ ...store.getSnapshot(), resumeProgress: surface.resumeProgress, version: surface.version })
-          },
-        })
-        fold = replayed.fold
-        scratch = replayed.scratch
-      } else {
-        const replayed = await foldFromLogYielding(events, foldHooks, {
-          signal: controller.signal,
-          onProgress: (done, total) => {
-            if (gen !== resumeGeneration) return
-            surface.resumeProgress = { done, total }
-            surface.version += 1
-            store.set({ ...store.getSnapshot(), resumeProgress: surface.resumeProgress, version: surface.version })
-          },
-        })
-        fold = replayed.fold
-        scratch = replayed.scratch
-      }
-      if (controller.signal.aborted || gen !== resumeGeneration) {
-        try { await next.dispose() } catch { /* the prepared handle is already detached */ }
-        return uiText('已取消恢复', 'Resume cancelled')
-      }
-      // The replay is complete. Clear the abort handle before crossing the
-      // swap's point of no return so a late Escape cannot invalidate the
-      // generation after the old handle starts disposing. Keep replay
-      // progress published until the new subscription owns the surface; this
-      // also keeps composer submits local during old-handle teardown.
-      resumeAbort = null
-      const replayTotal = surface.resumeProgress.total
-      surface.resumeProgress = {
-        done: replayTotal,
-        total: replayTotal,
-      }
-      publishSurfaceFold()
-      if (projectionCheckpointIsComplete(surface.agent.session.events)) {
-        projections.write(
-          surface.agent.session.header,
-          surface.agent.session.events.at(-1)?.seq ?? 0,
-          surface.fold,
-        )
-      }
-      const previousSessionId = surface.agent.id
-      unsubscribe()
-      await currentHandle.dispose()
-      presetQueue.forget(previousSessionId)
-      // `resume` returns the AgentHandle itself (agent + dispose); the
-      // freshly resumed handle becomes the surface's current handle.
-      currentHandle = next
-      surface.fold = fold
-      surface.scratch = scratch
-      surface.agent = next.agent
-      surface.selection = ref
-      surface.currentModel = next.agent.options.model ?? surface.currentModel
-      surface.busy = false
-      surface.pendingApproval = null
-      surface.pendingQuestion = null
-      surface.feedback = new Map()
-      surface.pendingAttachments = []
-      surface.resumeProgress = null
-      unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
-      // The presets page marks the CURRENT preset: republish settings so the
-      // marker follows the resumed session.
-      refreshSettings()
-      refreshCatalogs()
-      void loadFeedback()
-      recency.touch(next.agent.session.header)
-      if (projectionCheckpointIsComplete(events)) {
-        projections.write(next.agent.session.header, lastSeq, surface.fold)
-      }
-      return null
+      const replayed = await replayTuiResumeOrDispose(next, async () => {
+        const sidecar = await projections.read(String(next.agent.session.header.id), next.agent.session.header.createdAt)
+        let targetFold: FoldState
+        let targetScratch: FoldScratch
+        if (sidecar !== null && sidecar.lastSeq <= lastSeq) {
+          const suffix = events.filter(event => event.seq > sidecar.lastSeq)
+          surface.resumeProgress = { done: 0, total: Math.max(1, suffix.length) }
+          publishSurfaceFold()
+          const folded = await foldFromLogYielding(suffix, foldHooks, {
+            seed: { fold: sidecar.fold, scratch: createScratch() },
+            signal: controller.signal,
+            onProgress: (done, total) => {
+              if (gen !== resumeGeneration) return
+              surface.resumeProgress = { done, total }
+              surface.version += 1
+              store.set({ ...store.getSnapshot(), resumeProgress: surface.resumeProgress, version: surface.version })
+            },
+          })
+          targetFold = folded.fold
+          targetScratch = folded.scratch
+        } else {
+          const folded = await foldFromLogYielding(events, foldHooks, {
+            signal: controller.signal,
+            onProgress: (done, total) => {
+              if (gen !== resumeGeneration) return
+              surface.resumeProgress = { done, total }
+              surface.version += 1
+              store.set({ ...store.getSnapshot(), resumeProgress: surface.resumeProgress, version: surface.version })
+            },
+          })
+          targetFold = folded.fold
+          targetScratch = folded.scratch
+        }
+        return {
+          fold: targetFold,
+          scratch: targetScratch,
+          workflows: foldWorkflowSessionEvents(events),
+        }
+      })
+      fold = replayed.fold
+      scratch = replayed.scratch
+      nextWorkflows = replayed.workflows
     } catch (error) {
       if (gen === resumeGeneration) {
         resumeAbort = null
@@ -1487,6 +1431,77 @@ async function boot(
       fail(ctx, error)
       return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
     }
+    if (resumeWasCancelled(controller.signal, gen, resumeGeneration)) {
+      await disposePrepared(next)
+      return uiText('已取消恢复', 'Resume cancelled')
+    }
+
+    // Preparation is complete. Clear the abort handle before crossing the
+    // swap's point of no return so a late Escape cannot invalidate the
+    // generation after old-handle teardown starts. Keep replay progress
+    // visible until the new subscription publishes the replacement surface.
+    resumeAbort = null
+    const replayTotal = surface.resumeProgress.total
+    surface.resumeProgress = { done: replayTotal, total: replayTotal }
+    publishSurfaceFold()
+    if (projectionCheckpointIsComplete(surface.agent.session.events)) {
+      projections.write(
+        surface.agent.session.header,
+        surface.agent.session.events.at(-1)?.seq ?? 0,
+        surface.fold,
+      )
+    }
+    const previousAgent = surface.agent
+    const previousSessionId = previousAgent.id
+    unsubscribe()
+    try {
+      await currentHandle.dispose()
+    } catch (error) {
+      // A disposer that rejected before unregistering leaves the old surface
+      // adoptable. Restore its subscription and discard the prepared target.
+      if (ctx.agents.get(previousSessionId) === previousAgent) {
+        unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
+        await disposePrepared(next)
+        surface.resumeProgress = null
+        publishSurfaceFold()
+        fail(ctx, error)
+        return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
+      }
+      // The old Agent reached registry quiescence despite a contained teardown
+      // callback failure. Adopt the prepared target rather than strand the UI.
+      fail(ctx, error)
+    }
+    presetQueue.forget(previousSessionId)
+    currentHandle = next
+    surface.fold = fold
+    surface.scratch = scratch
+    surface.agent = next.agent
+    surface.selection = ref
+    surface.currentModel = selection.model
+    surface.busy = false
+    surface.pendingApproval = null
+    surface.pendingQuestion = null
+    surface.feedback = new Map()
+    surface.pendingAttachments = []
+    surface.commands = []
+    surface.skills = []
+    surface.jobs = []
+    surface.subagents = []
+    surface.workflows = nextWorkflows
+    surface.workflowOverlays = new Map()
+    surface.reasoning = nextReasoning
+    surface.resumeProgress = null
+    unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
+    // The presets page marks the CURRENT preset: republish settings so the
+    // marker follows the resumed session.
+    refreshSettings()
+    refreshCatalogs()
+    void loadFeedback()
+    recency.touch(next.agent.session.header)
+    if (projectionCheckpointIsComplete(events)) {
+      projections.write(next.agent.session.header, lastSeq, surface.fold)
+    }
+    return null
   }
   /**
    * Switch the CURRENT session onto one agent preset, in place — the exact
@@ -1641,7 +1656,7 @@ async function boot(
     if (intent.fork) {
       let forkId: SessionId | null
       try {
-        forkId = await createForkArtifact(ctx, surface)
+        forkId = await createForkArtifact(ctx, { source: surface.agent, cwd: surface.cwd })
       } catch (error) {
         fail(ctx, error)
         return
@@ -1752,7 +1767,11 @@ async function boot(
         },
         forkSession: async (atSeq) => {
           try {
-            const forkId = await createForkArtifact(ctx, surface, atSeq)
+            const forkId = await createForkArtifact(ctx, {
+              source: surface.agent,
+              cwd: surface.cwd,
+              ...(atSeq === undefined ? {} : { atSeq }),
+            })
             return forkId === null ? uiText('没有已完成回合可分叉', 'There is no completed turn to fork') : null
           } catch (error) {
             return `${uiText('分叉失败', 'Fork failed')}: ${error instanceof Error ? error.message : String(error)}`
@@ -1779,11 +1798,13 @@ async function boot(
             reasoning: surface.reasoning,
             version: surface.version,
           })
-          void resolveReasoning(ctx, provider, model).then((reasoning) => {
-            surface.reasoning = {
-              effort: effort === undefined ? reasoning.effort : String(effort),
-              levels: reasoning.levels,
-            }
+          const nextSelection = {
+            provider,
+            model,
+            ...(effort === undefined ? {} : { reasoningEffort: effort }),
+          }
+          void resolveTuiReasoning(ctx, nextSelection).then((reasoning) => {
+            surface.reasoning = reasoning
             surface.version += 1
             store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
           }).catch(() => {})
@@ -1834,6 +1855,7 @@ async function boot(
           resolve?.([...answers])
         },
         updateSetting: patch => ctx.settings.update(settingsNamespace('tui'), patch as object),
+        togglePlugin,
         updatePluginConfig: async (ns, patch) => {
           try {
             await ctx.settings.update(settingsNamespace(ns), patch as object)
@@ -1847,7 +1869,7 @@ async function boot(
         refreshSettings: refreshSettings,
         refreshPanels: (kind) => {
           if (kind === 'jobs') {
-            surface.jobs = jobsRows(ctx, Date.now())
+            surface.jobs = jobsRows(ctx, surface.agent, Date.now())
             surface.version += 1
             store.set({ ...store.getSnapshot(), jobs: surface.jobs, version: surface.version })
             return
@@ -1871,9 +1893,9 @@ async function boot(
           }).catch(() => {})
         },
         killJob: (id) => {
-          const jobs = ctx.get('jobs') as { kill(jobId: JobId, caller?: Agent, reason?: string): string } | undefined
+          const jobs = ctx.get('jobs')
           try { jobs?.kill(JobId(id), surface.agent) } catch {}
-          surface.jobs = jobsRows(ctx, Date.now())
+          surface.jobs = jobsRows(ctx, surface.agent, Date.now())
           surface.version += 1
           store.set({ ...store.getSnapshot(), jobs: surface.jobs, version: surface.version })
         },

@@ -27,6 +27,7 @@ import {
 import { busyStarFrame, BUSY_STAR_INTERVAL_MS, QUIET_BUSY_STAR_INTERVAL_MS } from './busy-star'
 import { RESTORE_CURSOR_STYLE, cursorStyleForBusy } from './cursor-style'
 import { fitDockLine, goalDockLine, todoDockLine } from './status-color'
+import type { PluginToggleResult } from './plugin-toggle-runtime'
 import { formatStats, helpText, localizeFoldStatus, markdownLines, retryCountdownSeconds, welcomeBlock, wrapRuns, fitStatsStrip } from './plain'
 import { welcomeBanner } from './welcome-banner'
 import type { MdRun } from './plain'
@@ -87,6 +88,10 @@ const DISPLAY_SEGMENTER = new Intl.Segmenter(undefined, { granularity: 'grapheme
 
 /** UI chrome language. */
 type Locale = 'zh' | 'en'
+
+function assertNever(value: never): never {
+  throw new Error(`unreachable variant: ${String(value)}`)
+}
 
 /** Chrome copy keys (transcript content stays model/user-owned). */
 interface Copy {
@@ -173,6 +178,10 @@ interface Copy {
   killJobRequested: (id: string) => string
   resumeDone: (id: string) => string
   presetSwitched: (id: string) => string
+  pluginTogglePending: (id: string) => string
+  pluginToggleBusy: (id: string) => string
+  pluginToggled: (id: string, enabled: boolean) => string
+  pluginToggleFailed: (id: string, result: Exclude<PluginToggleResult, { ok: true }>) => string
   invalidNumber: string
   fieldUpdated: (field: string) => string
   cancelRequested: string
@@ -279,6 +288,30 @@ const COPY: Record<Locale, Copy> = {
     killJobRequested: id => `已请求杀掉任务 ${id}`,
     resumeDone: id => `已恢复会话 ${id}`,
     presetSwitched: id => `已切换当前会话到预设 ${id}`,
+    pluginTogglePending: id => `正在热应用插件 ${id}…`,
+    pluginToggleBusy: id => `插件 ${id} 正在热应用，请等待完成`,
+    pluginToggled: (id, enabled) => `${id} → ${enabled ? '已开启' : '已关闭'}`,
+    pluginToggleFailed: (id, result) => {
+      const code = result.code
+      switch (code) {
+        case 'entry-unavailable': return `${id} 不是当前 profile 中唯一且可写的插件条目`
+        case 'surface-owned': return 'TUI 插件承载当前界面，请退出后编辑 profile patch'
+        case 'profile-managed': return `${id} 的状态由当前 profile 组合管理`
+        case 'conditional': return `${id} 的状态由平台条件表达式控制`
+        case 'dependency-blocked': return `存在活跃依赖方，无法操作：${id}${result.blockers?.length === 0 ? '' : ` ← ${result.blockers?.join(', ')}`}`
+        case 'apply-failed': {
+          const rollback = result.rollback === 'restored'
+            ? '；profile patch 已回滚'
+            : result.rollback === 'preserved-concurrent-edit'
+              ? '；检测到后续文件编辑，已保留该版本'
+              : result.rollback === 'failed'
+                ? '；profile patch 回滚失败'
+                : ''
+          return `${id} 热应用失败${rollback}：${result.detail ?? 'Loader 未达到目标状态'}`
+        }
+        default: return assertNever(code)
+      }
+    },
     invalidNumber: '请输入有效的数字',
     fieldUpdated: field => `${field} 已更新`,
     cancelRequested: '已请求取消 · 2 秒内再按 Ctrl+C 退出',
@@ -382,6 +415,30 @@ const COPY: Record<Locale, Copy> = {
     killJobRequested: id => `kill requested for job ${id}`,
     resumeDone: id => `resumed session ${id}`,
     presetSwitched: id => `switched the current session to preset ${id}`,
+    pluginTogglePending: id => `Hot-applying plugin ${id}…`,
+    pluginToggleBusy: id => `Plugin ${id} is still hot-applying; wait for it to finish`,
+    pluginToggled: (id, enabled) => `${id} → ${enabled ? 'enabled' : 'disabled'}`,
+    pluginToggleFailed: (id, result) => {
+      const code = result.code
+      switch (code) {
+        case 'entry-unavailable': return `${id} is not one unique writable entry in this profile`
+        case 'surface-owned': return 'The TUI plugin owns this screen; exit before editing the profile patch'
+        case 'profile-managed': return `${id} is managed by the current profile composition`
+        case 'conditional': return `${id} is controlled by a platform condition`
+        case 'dependency-blocked': return `Active dependents block this operation: ${id}${result.blockers?.length === 0 ? '' : ` ← ${result.blockers?.join(', ')}`}`
+        case 'apply-failed': {
+          const rollback = result.rollback === 'restored'
+            ? '; the profile patch was rolled back'
+            : result.rollback === 'preserved-concurrent-edit'
+              ? '; a later file edit was preserved'
+              : result.rollback === 'failed'
+                ? '; profile patch rollback failed'
+                : ''
+          return `${id} hot-apply failed${rollback}: ${result.detail ?? 'Loader did not reach the requested state'}`
+        }
+        default: return assertNever(code)
+      }
+    },
     invalidNumber: 'Please enter a valid number',
     fieldUpdated: field => `${field} updated`,
     cancelRequested: 'cancel requested · press Ctrl+C again within 2s to exit',
@@ -667,6 +724,8 @@ export interface TuiHost {
   refreshPanels(kind: TuiPanelRefreshKind): void
   /** Reload the /settings page data (settings panel open). */
   refreshSettings(): void
+  /** Persist and hot-apply one host plugin's enabled state. */
+  togglePlugin(id: string): Promise<PluginToggleResult>
   /** Request one running job to stop. */
   killJob(id: string): void
   /** Create/replace/remove feedback for one assistant message (toggle on re-rate). */
@@ -2385,6 +2444,9 @@ export function App(props: {
   const [settingsConfirm, setSettingsConfirm] = useState<string | null>(null)
   const [pluginEdit, setPluginEdit] = useState<{ ns: string; field: string; kind: 'string' | 'number' | 'secret' } | null>(null)
   const [pluginEditText, setPluginEditText] = useState('')
+  // The in-flight id is interaction state rather than display state. Keeping
+  // it in a ref rejects key-repeat synchronously without an extra full frame.
+  const pluginTogglePendingRef = useRef<string | null>(null)
   const [settingsFilter, setSettingsFilter] = useState('')
   const lastCtrlCAt = useRef(0)
   // Whether a left-button press on the right-edge scrollbar column is being
@@ -3453,6 +3515,28 @@ export function App(props: {
             // open so the ● marker can move to the new preset.
             setNotice(copy.presetSwitched(row.meta?.id ?? ''))
           }
+        })
+        return
+      }
+      case 'toggle-plugin': {
+        const id = row.meta?.id
+        if (id === undefined) return
+        if (pluginTogglePendingRef.current !== null) {
+          setNotice(copy.pluginToggleBusy(pluginTogglePendingRef.current))
+          return
+        }
+        pluginTogglePendingRef.current = id
+        setNotice(copy.pluginTogglePending(id))
+        void props.host.togglePlugin(id).then((result) => {
+          setNotice(result.ok ? copy.pluginToggled(id, result.enabled) : copy.pluginToggleFailed(id, result))
+        }).catch((error: unknown) => {
+          setNotice(copy.pluginToggleFailed(id, {
+            ok: false,
+            code: 'apply-failed',
+            detail: error instanceof Error ? error.message : String(error),
+          }))
+        }).finally(() => {
+          if (pluginTogglePendingRef.current === id) pluginTogglePendingRef.current = null
         })
         return
       }
