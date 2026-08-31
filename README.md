@@ -6,7 +6,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0-rc.12"><img alt="npm 0.1.0-rc.12" src="https://img.shields.io/badge/NPM-0.1.0--rc.12-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0-rc.13"><img alt="npm 0.1.0-rc.13" src="https://img.shields.io/badge/NPM-0.1.0--rc.13-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#architecture"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#architecture"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#architecture"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Local-first · Session persistence · Tool runtime</p>
 
-> 🚀 **Release Candidate `0.1.0-rc.12`** — this is a pre-release and is not stable yet. This RC focuses on bounded long-task memory, responsive input and history navigation during tool work, reliable live Thinking paint, deterministic permission cycling, and most-recently-used `-c` resume. See [Quick Start](#quick-start).
+> 🚀 **Release Candidate `0.1.0-rc.13`** — this is a pre-release and is not stable yet. This RC adds effective per-session preset switching, DeepSeek session-cost estimates, a quieter terminal palette, and the latest long-session rendering and evaluation updates. See [Quick Start](#quick-start).
 
 <p align="center">
   <img src="assets/tui-session-panel.png" alt="dsh-tui Windows startup screenshot" width="46%">
@@ -125,14 +125,14 @@ Use `source ~/.zshrc` instead when the login shell is zsh. If the host already h
 
 ### 2. Install dsh-tui
 
-The current published RC is `0.1.0-rc.12`. Install the RC channel rather than the stable `latest` channel:
+The current published RC is `0.1.0-rc.13`. Install the RC channel rather than the stable `latest` channel:
 
 ```sh
 npm install -g @jame100101/dsh-tui@rc
 dsh-tui --version
 ```
 
-The version command should report `0.1.0-rc.12` while this RC is current. The package ships its bundled runtime inside the tarball, so a separate workspace install is not required for end users.
+The version command should report `0.1.0-rc.13` while this RC is current. The package ships its bundled runtime inside the tarball, so a separate workspace install is not required for end users.
 
 ### 3. Start a project
 

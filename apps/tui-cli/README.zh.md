@@ -6,10 +6,10 @@
 terminal surface. It boots the TUI profile with a small user-facing flag
 grammar; all sessions, agents, and rendering stay in the bundled runtime.
 
-> **Release Candidate** — `0.1.0-rc.12`, published on npm under the `rc`
+> **Release Candidate** — `0.1.0-rc.13`, published on npm under the `rc`
 > dist-tag. Clean-room installation verified on Windows, macOS, and Linux.
-> 本 RC 加固长任务稳定性，让工具执行期间的输入和历史浏览保持响应，
-> 修复实时 Thinking 绘制，并让 `-c` 恢复当前工作区最后使用的会话。
+> 本 RC 增加真正生效的逐会话 preset 切换、DeepSeek 会话费用估算和更克制的
+> 终端配色，并包含最新的长会话渲染与评估更新。
 
 ## Install
 
@@ -17,7 +17,7 @@ grammar; all sessions, agents, and rendering stay in the bundled runtime.
 npm install -g @jame100101/dsh-tui@rc
 ```
 
-(or `npm install -g @jame100101/dsh-tui@0.1.0-rc.12` to pin the version)
+(or `npm install -g @jame100101/dsh-tui@0.1.0-rc.13` to pin the version)
 
 The package ships the built dsh runtime inside `runtime/`, so the global
 install needs no other DeepSeek Harness package — external dependencies

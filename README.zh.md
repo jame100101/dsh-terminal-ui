@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#快速开始"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0-rc.12"><img alt="npm 0.1.0-rc.12" src="https://img.shields.io/badge/NPM-0.1.0--rc.12-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0-rc.13"><img alt="npm 0.1.0-rc.13" src="https://img.shields.io/badge/NPM-0.1.0--rc.13-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#架构"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#架构"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#架构"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@
 
 <p align="center">本地优先 · 会话持久化 · 工具运行时</p>
 
-> 🚀 **Release Candidate `0.1.0-rc.12`** — 当前为预发布版本，尚未稳定。本 RC 重点改善长任务内存边界、工具执行期间的输入与历史浏览响应、实时 Thinking 绘制、权限切换确定性，以及 `-c` 按最近使用顺序恢复会话。请从[快速开始](#quick-start)开始。
+> 🚀 **Release Candidate `0.1.0-rc.13`** — 当前为预发布版本，尚未稳定。本 RC 增加真正生效的逐会话 preset 切换、DeepSeek 会话费用估算和更克制的终端配色，并包含最新的长会话渲染与评估更新。请从[快速开始](#quick-start)开始。
 
 <p align="center">
   <img src="assets/tui-session-panel.png" alt="dsh-tui Windows 启动截图" width="46%">
@@ -127,14 +127,14 @@ which npm
 
 ### 2. 安装 dsh-tui
 
-当前发布的 RC 版本是 `0.1.0-rc.12`。请安装 RC 通道，不要安装稳定的 `latest` 通道：
+当前发布的 RC 版本是 `0.1.0-rc.13`。请安装 RC 通道，不要安装稳定的 `latest` 通道：
 
 ```sh
 npm install -g @jame100101/dsh-tui@rc
 dsh-tui --version
 ```
 
-在当前 RC 仍是最新版本时，版本命令应输出 `0.1.0-rc.12`。包内已经包含 bundled runtime，终端用户不需要另行安装 workspace。
+在当前 RC 仍是最新版本时，版本命令应输出 `0.1.0-rc.13`。包内已经包含 bundled runtime，终端用户不需要另行安装 workspace。
 
 ### 3. 启动项目
 
