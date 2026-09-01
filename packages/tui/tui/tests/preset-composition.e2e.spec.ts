@@ -8,8 +8,10 @@ import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import { boot, healProfilesModuleFallback, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import type { JobOutcome, JobStart } from '@deepseek-ai/dsh-jobs'
-import { createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { CallId, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { foldRequestHeader, SessionId } from '@deepseek-ai/dsh-session'
+import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { WorkflowRunId } from '@deepseek-ai/dsh-workflow'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 import { createForkAgent, createForkArtifact } from '../src/fork-lifecycle'
@@ -17,6 +19,9 @@ import { projectJobsRows, subscribeVisibleJobs } from '../src/jobs-projection'
 import { pluginInventoryEntries, profilePatchEntry } from '../src/patch-toggle'
 import { createTuiAgent, resolveTuiPreset, SessionPresetQueue } from '../src/preset-lifecycle'
 import { prepareTuiResume, replayTuiResumeOrDispose } from '../src/resume-lifecycle'
+import {
+  createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
+} from '../src/workflow-projection'
 
 /* oxlint-disable typescript/no-unsafe-argument -- Oxlint resolves this cross-package boot fixture outside a test compiler face. */
 /* oxlint-disable typescript/no-unsafe-assignment -- Oxlint resolves this cross-package boot fixture outside a test compiler face. */
@@ -497,28 +502,70 @@ describe('shipped TUI preset composition', () => {
     }
   })
 
+  it('rejects a retired recorded route before publishing or changing the current surface Agent', async () => {
+    const adapter = new MockAdapter([textResponse('record route before retirement')])
+    const offAdapter = ctx.llm.registerAdapter(['resume-retired-route'], adapter)
+    const target = await createTuiAgent(ctx, workspace, 'standard')
+    target.ref.current = {
+      provider: 'resume-retired-route',
+      model: 'retired-model',
+    }
+    target.agent.followup(createUserMessage({
+      content: [{ type: 'text', text: 'record the route that will retire' }],
+      source: { kind: 'user' },
+    }))
+    await target.agent.whenIdle()
+    const targetId = target.agent.id
+    await persistAndDisposeTuiAgent(ctx, target)
+    offAdapter()
+
+    const current = await createTuiAgent(ctx, workspace, 'minimal')
+    const currentSelection = { ...current.ref.current }
+    try {
+      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      await expect(prepareTuiResume(
+        ctx,
+        targetId,
+        { header: snapshot.session, events: snapshot.events },
+        ctx.agentDefaultModel.currentSelection(),
+      )).rejects.toThrow(/resume-retired-route|adapter/ui)
+      expect(ctx.agents.get(current.agent.id)).toBe(current.agent)
+      expect(ctx.agents.get(targetId)).toBeUndefined()
+      expect(current.ref.current).toEqual(currentSelection)
+      expect(ctx.agentPresets.composedPreset(current.agent.ctx)).toBe('minimal')
+    } finally {
+      await current.handle.dispose()
+    }
+  })
+
   it('uses the deployment fallback when a resumed legacy Session has no request header', async () => {
     const target = await createTuiAgent(ctx, workspace, 'standard')
     const targetId = target.agent.id
     await persistAndDisposeTuiAgent(ctx, target)
     const snapshot = await ctx.sessionQuery.readSession(targetId)
+    const offAdapter = ctx.llm.registerAdapter(['legacy-deployment-provider'], new MockAdapter([], {
+      efforts: [{ id: ReasoningEffortId('low'), name: 'Low' }],
+      defaultEffort: ReasoningEffortId('low'),
+    }))
     const fallback = {
       provider: 'legacy-deployment-provider',
       model: 'legacy-deployment-model',
       reasoningEffort: ReasoningEffortId('low'),
     }
-    const resumed = await prepareTuiResume(
-      ctx,
-      targetId,
-      { header: snapshot.session, events: snapshot.events },
-      fallback,
-    )
+    let resumed: Awaited<ReturnType<typeof prepareTuiResume>> | undefined
     try {
+      resumed = await prepareTuiResume(
+        ctx,
+        targetId,
+        { header: snapshot.session, events: snapshot.events },
+        fallback,
+      )
       expect(resumed.selection).toEqual(fallback)
       expect(resumed.ref.current).toEqual(fallback)
       expect(resumed.handle.agent.options).toMatchObject(fallback)
     } finally {
-      await resumed.handle.dispose()
+      await resumed?.handle.dispose()
+      offAdapter()
     }
   })
 
@@ -576,6 +623,92 @@ describe('shipped TUI preset composition', () => {
       expect(ctx.agents.get(current.agent.id)).toBe(current.agent)
       expect(ctx.agentPresets.composedPreset(current.agent.ctx)).toBe('minimal')
     } finally {
+      await current.handle.dispose()
+    }
+  })
+
+  it('isolates two real Agent workflow streams although the process-global lifecycle observes both', async () => {
+    const agentA = await createTuiAgent(ctx, workspace, 'standard')
+    const agentB = await createTuiAgent(ctx, workspace, 'standard')
+    const globalStarts: string[] = []
+    const deliveredSessions = new Set<Session>()
+    let currentProjection = createWorkflowProjection()
+    const offStarts = ctx.on('workflow/start', (info) => { globalStarts.push(String(info.id)) })
+    const offDispatch = ctx.on('internal/dispatch', (_mode, eventName, args) => {
+      if (eventName !== 'session/event') return
+      const [source, event] = args as unknown as [Session, SessionEvent]
+      deliveredSessions.add(source)
+      const next = projectWorkflowSessionDelivery(
+        agentA.agent.session,
+        source,
+        currentProjection,
+        event,
+      )
+      if (next !== null) currentProjection = next
+    }, { global: true })
+    try {
+      const execute = (agent: Agent, name: string, callId: string) => ctx.tools.execute({
+        signal: new AbortController().signal,
+        callId: CallId(callId),
+        name: 'workflow',
+        arguments: {
+          script: 'return 1',
+          meta: { name, description: `${name} isolation proof` },
+        },
+        agent,
+      })
+      const [resultA, resultB] = await Promise.all([
+        execute(agentA.agent, 'current-workflow', 'tui-workflow-current'),
+        execute(agentB.agent, 'foreign-workflow', 'tui-workflow-foreign'),
+      ])
+      expect(resultA.isError).toBe(false)
+      expect(resultB.isError).toBe(false)
+      expect(globalStarts).toHaveLength(2)
+      expect(deliveredSessions.has(agentA.agent.session)).toBe(true)
+      expect(deliveredSessions.has(agentB.agent.session)).toBe(true)
+      expect([...currentProjection.values()].map(row => row.name)).toEqual(['current-workflow'])
+      expect([...foldWorkflowSessionEvents(agentA.agent.session.events).values()].map(row => row.name))
+        .toEqual(['current-workflow'])
+      expect([...foldWorkflowSessionEvents(agentB.agent.session.events).values()].map(row => row.name))
+        .toEqual(['foreign-workflow'])
+    } finally {
+      offDispatch()
+      offStarts()
+      await agentB.handle.dispose()
+      await agentA.handle.dispose()
+    }
+  })
+
+  it('reconstructs only the resumed Session workflow rows from persisted history', async () => {
+    const target = await createTuiAgent(ctx, workspace, 'standard')
+    const targetRun = WorkflowRunId('resume-target-workflow')
+    target.agent.session.append('tool-workflow/run-start', { runId: targetRun, name: 'target-history' })
+    target.agent.session.append('tool-workflow/run-end', { runId: targetRun, stopReason: 'completed' })
+    const targetId = target.agent.id
+    await persistAndDisposeTuiAgent(ctx, target)
+
+    const current = await createTuiAgent(ctx, workspace, 'standard')
+    const currentRun = WorkflowRunId('current-surface-workflow')
+    current.agent.session.append('tool-workflow/run-start', { runId: currentRun, name: 'current-history' })
+    let resumed: Awaited<ReturnType<typeof prepareTuiResume>> | undefined
+    try {
+      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      resumed = await prepareTuiResume(
+        ctx,
+        targetId,
+        { header: snapshot.session, events: snapshot.events },
+        ctx.agentDefaultModel.currentSelection(),
+      )
+      expect([...foldWorkflowSessionEvents(resumed.events).values()]).toEqual([{
+        id: targetRun,
+        name: 'target-history',
+        status: 'completed',
+        agentsStarted: 0,
+      }])
+      expect([...foldWorkflowSessionEvents(current.agent.session.events).values()].map(row => row.name))
+        .toEqual(['current-history'])
+    } finally {
+      await resumed?.handle.dispose()
       await current.handle.dispose()
     }
   })

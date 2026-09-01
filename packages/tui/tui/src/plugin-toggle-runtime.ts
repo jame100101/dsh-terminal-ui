@@ -178,6 +178,13 @@ export async function toggleProfilePlugin(options: PluginToggleOptions): Promise
     enabling,
     options.settleTimeoutMs,
   )
+  // The watcher can report a rejected candidate immediately after the atomic
+  // rename, before mutatePatch releases its lock and returns. Observe that
+  // rejection now so Node never treats this expected race as unhandled.
+  const observedWaiter = waiter.promise.then(
+    () => null,
+    (error: unknown) => error instanceof Error ? error : new Error(String(error)),
+  )
   try {
     mutation = await mutatePatch(
       options.patchPath,
@@ -185,7 +192,8 @@ export async function toggleProfilePlugin(options: PluginToggleOptions): Promise
         ? content => enableEntryText(content, options.id)
         : content => disableEntryText(content, options.id),
     )
-    await waiter.promise
+    const applyError = await observedWaiter
+    if (applyError !== null) throw applyError
     return { ok: true, enabled: enabling }
   } catch (error) {
     waiter.dispose()

@@ -113,7 +113,7 @@ import {
 } from './patch-toggle'
 import { toggleProfilePlugin } from './plugin-toggle-runtime'
 import {
-  createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowOverlay, projectWorkflowSessionDelivery,
+  createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
 } from './workflow-projection'
 import { projectJobsRows, subscribeVisibleJobs } from './jobs-projection'
 import type {
@@ -217,8 +217,6 @@ interface Surface {
   subagents: SubagentRow[]
   /** /workflows panel rows, keyed by run id (event-driven). */
   workflows: Map<string, WorkflowRow>
-  /** Cosmetic phase/log updates are accepted only after durable membership. */
-  workflowOverlays: Map<string, { phase?: string; lastLog?: string }>
   /** Per-message feedback by message id; replaced on every mutation. */
   feedback: Map<string, MessageFeedbackItem>
   /** Reasoning-effort selection and the current route's exposed levels. */
@@ -629,12 +627,10 @@ function subscribe(
         surface.agent.session,
         session,
         surface.workflows,
-        surface.workflowOverlays,
         event,
       )
       if (workflowUpdate !== null) {
-        surface.workflows = workflowUpdate.workflows
-        surface.workflowOverlays = workflowUpdate.overlays
+        surface.workflows = workflowUpdate
       }
       const previousFold = surface.fold
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
@@ -679,22 +675,6 @@ function subscribe(
   const offSettings = ctx.on('settings/updated', refreshSettings)
   const offCredentialReference = ctx.on('credentials/reference-updated', refreshSettings)
   const offCredentialRecord = ctx.on('credentials/record-updated', refreshSettings)
-  // Process-global workflow lifecycle events have no parent-session identity.
-  // They are cosmetic only and are accepted after durable membership exists.
-  const offWorkflowPhase = ctx.on('workflow/phase', (info, title) => {
-    const update = projectWorkflowOverlay(surface.workflows, surface.workflowOverlays, info.id, { phase: title })
-    if (update === null) return
-    surface.workflows = update.workflows
-    surface.workflowOverlays = update.overlays
-    publish()
-  })
-  const offWorkflowLog = ctx.on('workflow/log', (info, message) => {
-    const update = projectWorkflowOverlay(surface.workflows, surface.workflowOverlays, info.id, { lastLog: message })
-    if (update === null) return
-    surface.workflows = update.workflows
-    surface.workflowOverlays = update.overlays
-    publish()
-  })
   const jobs = ctx.get('jobs')
   const offJobsChanged = jobs === undefined
     ? (): void => {}
@@ -708,8 +688,6 @@ function subscribe(
     offCredentialReference()
     offCredentialRecord()
     offOccupancy()
-    offWorkflowPhase()
-    offWorkflowLog()
     offJobsChanged()
   }
 }
@@ -941,7 +919,6 @@ async function boot(
     jobs: [],
     subagents: [],
     workflows: new Map(),
-    workflowOverlays: new Map(),
     feedback: new Map(),
     reasoning: {
       effort: created.selection.reasoningEffort === undefined ? undefined : String(created.selection.reasoningEffort),
@@ -1300,7 +1277,6 @@ async function boot(
       surface.jobs = []
       surface.subagents = []
       surface.workflows = createWorkflowProjection()
-      surface.workflowOverlays = new Map()
       surface.reasoning = nextReasoning
       unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
       refreshCatalogs()
@@ -1488,7 +1464,6 @@ async function boot(
     surface.jobs = []
     surface.subagents = []
     surface.workflows = nextWorkflows
-    surface.workflowOverlays = new Map()
     surface.reasoning = nextReasoning
     surface.resumeProgress = null
     unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)

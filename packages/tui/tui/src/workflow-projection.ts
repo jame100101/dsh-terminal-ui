@@ -8,18 +8,6 @@
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { WorkflowRow } from './store'
 
-/** Cosmetic workflow facts that exist only while the owning process is live. */
-export interface WorkflowOverlay {
-  phase?: string
-  lastLog?: string
-}
-
-/** One accepted update to the current surface's workflow projection. */
-export interface WorkflowProjectionUpdate {
-  workflows: Map<string, WorkflowRow>
-  overlays: Map<string, WorkflowOverlay>
-}
-
 interface RunStartData {
   runId: string
   name: string
@@ -126,80 +114,23 @@ export function foldWorkflowSessionEvents(events: readonly SessionEvent[]): Map<
 }
 
 /**
- * Merge a current-session cosmetic phase/log update onto one durable row.
- * @param row - durable row already proven to belong to the current session.
- * @param update - latest ephemeral fields.
- * @returns a row with the cosmetic fields applied.
- */
-export function applyWorkflowOverlay(
-  row: WorkflowRow,
-  update: WorkflowOverlay,
-): WorkflowRow {
-  return {
-    ...row,
-    ...(update.phase === undefined ? {} : { phase: update.phase }),
-    ...(update.lastLog === undefined ? {} : { lastLog: update.lastLog.slice(0, 200) }),
-  }
-}
-
-/**
  * Apply one durable delivery only when its exact Session is the surface owner.
- * Existing cosmetic values are retained for a live row and forgotten after a
- * terminal durable event; unknown events return null without publishing.
+ * Unknown events return null without publishing. Process-global workflow
+ * events are deliberately excluded because they carry no parent Session.
  * @param owner - exact Session currently owned by the TUI surface.
  * @param source - Session carried by the global dispatch event.
- * @param workflows - current durable rows with any applied live cosmetics.
- * @param overlays - current live-only cosmetic values.
+ * @param workflows - current durable rows.
  * @param event - delivered Session event.
- * @returns replacement maps, or null when the delivery is foreign/unrelated.
+ * @returns replacement rows, or null when the delivery is foreign/unrelated.
  */
 export function projectWorkflowSessionDelivery(
   owner: Session,
   source: Session,
   workflows: Map<string, WorkflowRow>,
-  overlays: Map<string, WorkflowOverlay>,
   event: SessionEvent,
-): WorkflowProjectionUpdate | null {
+): Map<string, WorkflowRow> | null {
   if (source !== owner) return null
-  const durable = durableEvent(event)
-  if (durable === null) return null
   const nextWorkflows = applyWorkflowSessionEvent(workflows, event)
   if (nextWorkflows === workflows) return null
-  const id = durable.data.runId
-  const overlay = overlays.get(id)
-  if (overlay !== undefined) {
-    const row = nextWorkflows.get(id)
-    if (row !== undefined) nextWorkflows.set(id, applyWorkflowOverlay(row, overlay))
-  }
-  if (durable.type !== 'tool-workflow/run-end' || !overlays.has(id)) {
-    return { workflows: nextWorkflows, overlays }
-  }
-  const nextOverlays = new Map(overlays)
-  nextOverlays.delete(id)
-  return { workflows: nextWorkflows, overlays: nextOverlays }
-}
-
-/**
- * Apply a process-global phase/log update only after the current Session's
- * durable projection proves ownership of its run id.
- * @param workflows - current durable rows.
- * @param overlays - current live-only cosmetics.
- * @param runId - process-global workflow run id.
- * @param update - latest phase or log value.
- * @returns replacement maps, or null when this surface owns no such run.
- */
-export function projectWorkflowOverlay(
-  workflows: Map<string, WorkflowRow>,
-  overlays: Map<string, WorkflowOverlay>,
-  runId: string,
-  update: WorkflowOverlay,
-): WorkflowProjectionUpdate | null {
-  const row = workflows.get(runId)
-  if (row === undefined || row.status !== 'running') return null
-  const nextOverlay = { ...overlays.get(runId), ...update }
-  const nextOverlays = new Map(overlays)
-  nextOverlays.set(runId, nextOverlay)
-  const nextWorkflows = new Map(workflows)
-  nextWorkflows.set(runId, applyWorkflowOverlay(row, nextOverlay))
-  return { workflows: nextWorkflows, overlays: nextOverlays }
+  return nextWorkflows
 }

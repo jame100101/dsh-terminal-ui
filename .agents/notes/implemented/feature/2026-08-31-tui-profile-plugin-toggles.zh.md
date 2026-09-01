@@ -14,7 +14,7 @@ TUI 插件清单会显示 Loader 状态，但修改 profile patch 时必须离�
 
 标准 `tui` profile 向 TUI 插件提供其受监视 `cordis.patch.yml` 的绝对路径，以及为了保持 Agent preset 所有权而由 profile 管理禁用状态的 host 行 id。plugins 分页按 bare id 合并稳定 Loader 叶级条目，同 id 时优先根 boot Include 行，而非 Agent preset 叶级条目。所有显示行都可选中。`Enter` 仅修改保护集合之外唯一的根 Include 行；preset-only 行、条件 `disabled` 表达式以及当前 TUI 会立即报告固定状态原因，而不是写入无匹配目标的 profile patch。Include 载体、group tree、生成或不安全的 id 仍不进入清单。关闭已启用 provider 前，如果另一个活跃叶级条目注入了该 provider 提供的 service，本次操作会拒绝变更。bundle 测试会确保保护集合与移入 preset 的行完全一致，因此新增的 preset-owned tool 不会悄然成为 host 级开关。
 
-TUI host 会串行执行每次操作。操作取得 profile 文件锁，执行保留注释的逐行编辑，并原子替换文件。随后，一个仅在本次操作期间存在的 Loader listener 会等待所选条目：开启时必须形成 active fiber，关闭时必须消失。listener 消费 lifecycle dispatch，不轮询，也不安装渲染 timer。HMR 拒绝与超过有界等待时间均视为失败。失败时，只有 compare-and-swap 检查证明没有并发编辑者替换本次写入文本，才恢复完全一致的旧文件。
+TUI host 会串行执行每次操作。操作取得 profile 文件锁，执行保留注释的逐行编辑，并原子替换文件。一个仅在本次操作期间存在的 Loader listener 会等待所选条目：开启时必须形成 active fiber，关闭时必须消失。由于 watcher 可能在写入方释放文件锁之前就拒绝刚完成 rename 的文件，操作会在原子修改开始前接管 listener rejection。listener 消费 lifecycle dispatch，不轮询，也不安装渲染 timer。HMR 拒绝与超过有界等待时间均视为失败。失败时，只有 compare-and-swap 检查证明没有并发编辑者替换本次写入文本，才恢复完全一致的旧文件。
 
 renderer 把进行中的 id 保存在 ref 中，因此按键重复不会在 React 提交下一帧前排入第二次切换。既有 notice 更新提供进行中与最终反馈；该功能不会新增动画、interval、全 transcript 投影、Agent Loop、session event、model request 或 tool composition 路径。关闭项沿用既有 dim 样式，settings 投影观察到 Loader 已完成切换后才会重新变亮。
 

@@ -2,10 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
-  applyWorkflowOverlay, applyWorkflowSessionEvent, createWorkflowProjection, foldWorkflowSessionEvents,
-  projectWorkflowOverlay, projectWorkflowSessionDelivery,
+  applyWorkflowSessionEvent, createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
 } from '../src/workflow-projection'
-import type { WorkflowOverlay } from '../src/workflow-projection'
 
 function event(type: string, data: unknown, seq = 0): SessionEvent {
   return { type, data, seq, time: seq } as unknown as SessionEvent
@@ -44,87 +42,69 @@ describe('durable workflow projection', () => {
     expect(failed.get('run-b')).toEqual({ id: 'run-b', name: 'audit', status: 'error', agentsStarted: 0 })
   })
 
-  it('applies cosmetic phase/log only after durable membership', () => {
-    const row = { id: 'run-a', name: 'audit', status: 'running' as const, agentsStarted: 0 }
-    expect(applyWorkflowOverlay(row, { phase: 'phase-1', lastLog: 'message' })).toEqual({
-      ...row, phase: 'phase-1', lastLog: 'message',
-    })
-  })
-
   it('fences live durable delivery by exact current Session identity', () => {
     const currentSession = Session.create(SessionId('workflow-current'))
     const foreignSession = Session.create(SessionId('workflow-foreign'))
     const workflows = createWorkflowProjection()
-    const overlays = new Map<string, WorkflowOverlay>()
     const start = event('tool-workflow/run-start', { runId: 'run-a', name: 'audit' })
     expect(projectWorkflowSessionDelivery(
       currentSession,
       foreignSession,
       workflows,
-      overlays,
       start,
     )).toBeNull()
     const accepted = projectWorkflowSessionDelivery(
       currentSession,
       currentSession,
       workflows,
-      overlays,
       start,
     )
-    expect(accepted?.workflows.get('run-a')).toEqual({
+    expect(accepted?.get('run-a')).toEqual({
       id: 'run-a', name: 'audit', status: 'running', agentsStarted: 0,
     })
     if (accepted === null) throw new Error('expected current run start to open a row')
     const member = projectWorkflowSessionDelivery(
       currentSession,
       currentSession,
-      accepted.workflows,
-      accepted.overlays,
+      accepted,
       event('tool-workflow/agent-start', {
         runId: 'run-a', seq: 1, label: 'inspect', phase: 'inspect', childId: 'child-a',
       }, 1),
     )
-    expect(member?.workflows.get('run-a')).toMatchObject({ agentsStarted: 1, phase: 'inspect' })
+    expect(member?.get('run-a')).toMatchObject({ agentsStarted: 1, phase: 'inspect' })
     if (member === null) throw new Error('expected current member start to update the row')
     const completed = projectWorkflowSessionDelivery(
       currentSession,
       currentSession,
-      member.workflows,
-      member.overlays,
+      member,
       event('tool-workflow/run-end', { runId: 'run-a', stopReason: 'completed' }, 2),
     )
-    expect(completed?.workflows.get('run-a')).toMatchObject({ status: 'completed', agentsStarted: 1 })
+    expect(completed?.get('run-a')).toMatchObject({ status: 'completed', agentsStarted: 1 })
   })
 
-  it('accepts global cosmetics only for a durable current run and clears their live store at run end', () => {
-    const owner = Session.create(SessionId('workflow-overlay-owner'))
-    const start = event('tool-workflow/run-start', { runId: 'run-a', name: 'audit' })
-    const opened = projectWorkflowSessionDelivery(
-      owner,
-      owner,
-      createWorkflowProjection(),
-      new Map(),
-      start,
-    )
-    if (opened === null) throw new Error('expected current run start to open a row')
-    expect(projectWorkflowOverlay(opened.workflows, opened.overlays, 'foreign', { phase: 'wrong' })).toBeNull()
-    const cosmetic = projectWorkflowOverlay(opened.workflows, opened.overlays, 'run-a', {
-      phase: 'inspect',
-      lastLog: 'working',
+  it('rejects a subagent Session stream even when its run id collides with the current projection', () => {
+    const parentId = SessionId('workflow-parent')
+    const childId = SessionId('workflow-child')
+    const parent = Session.create(parentId)
+    const child = Session.create(childId, undefined, {
+      version: 0,
+      id: childId,
+      createdAt: 2,
+      origin: 'subagent',
+      parentSession: parentId,
+      delegationDepth: 1,
     })
-    expect(cosmetic?.workflows.get('run-a')).toMatchObject({ phase: 'inspect', lastLog: 'working' })
-    if (cosmetic === null) throw new Error('expected owned run cosmetics to apply')
-    const ended = projectWorkflowSessionDelivery(
-      owner,
-      owner,
-      cosmetic.workflows,
-      cosmetic.overlays,
-      event('tool-workflow/run-end', { runId: 'run-a', stopReason: 'completed' }),
+    const current = applyWorkflowSessionEvent(
+      createWorkflowProjection(),
+      event('tool-workflow/run-start', { runId: 'run-shared', name: 'parent-run' }),
     )
-    expect(ended?.workflows.get('run-a')).toMatchObject({ status: 'completed' })
-    expect(ended?.overlays.size).toBe(0)
-    if (ended === null) throw new Error('expected owned run end to settle the row')
-    expect(projectWorkflowOverlay(ended.workflows, ended.overlays, 'run-a', { phase: 'stale' })).toBeNull()
+    expect(projectWorkflowSessionDelivery(
+      parent,
+      child,
+      current,
+      event('tool-workflow/run-start', { runId: 'run-shared', name: 'child-run' }),
+    )).toBeNull()
+    expect(current.get('run-shared')?.name).toBe('parent-run')
   })
 
   it('resets a new Session and reconstructs a resumed Session from durable history only', () => {

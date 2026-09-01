@@ -52,10 +52,32 @@ function throwIfAborted(signal?: AbortSignal): void {
   throw signal.reason instanceof Error ? signal.reason : new Error('TUI resume cancelled')
 }
 
+/** Resolve exact-route reasoning metadata, propagating adapter lookup failure. */
+async function resolveRequiredTuiReasoning(
+  ctx: Context,
+  selection: ModelSelection,
+  signal?: AbortSignal,
+): Promise<TuiReasoningState> {
+  const llm = ctx.get('llm')
+  if (llm === undefined) {
+    throwIfAborted(signal)
+    return { effort: selection.reasoningEffort === undefined ? undefined : String(selection.reasoningEffort), levels: [] }
+  }
+  const resolved = await llm.resolveModelInfo(selection.provider, selection.model, signal)
+  throwIfAborted(signal)
+  const reasoning = resolved.reasoning
+  return {
+    effort: selection.reasoningEffort === undefined
+      ? reasoning?.defaultEffort === undefined ? undefined : String(reasoning.defaultEffort)
+      : String(selection.reasoningEffort),
+    levels: reasoning?.efforts.map(info => String(info.id)) ?? [],
+  }
+}
+
 /**
- * Resolve reasoning metadata for one route. An unavailable adapter leaves the
- * control empty; cancellation remains an operation failure rather than an
- * adapter fallback.
+ * Resolve reasoning metadata for a live route. A temporarily unavailable
+ * adapter leaves the optional control empty; cancellation remains an operation
+ * failure rather than an adapter fallback.
  * @param ctx - host context carrying the optional LLM registry.
  * @param selection - target provider, model, and optional explicit effort.
  * @param signal - optional preparation cancellation.
@@ -66,21 +88,8 @@ export async function resolveTuiReasoning(
   selection: ModelSelection,
   signal?: AbortSignal,
 ): Promise<TuiReasoningState> {
-  const llm = ctx.get('llm')
-  if (llm === undefined) {
-    throwIfAborted(signal)
-    return { effort: selection.reasoningEffort === undefined ? undefined : String(selection.reasoningEffort), levels: [] }
-  }
   try {
-    const resolved = await llm.resolveModelInfo(selection.provider, selection.model, signal)
-    throwIfAborted(signal)
-    const reasoning = resolved.reasoning
-    return {
-      effort: selection.reasoningEffort === undefined
-        ? reasoning?.defaultEffort === undefined ? undefined : String(reasoning.defaultEffort)
-        : String(selection.reasoningEffort),
-      levels: reasoning?.efforts.map(info => String(info.id)) ?? [],
-    }
+    return await resolveRequiredTuiReasoning(ctx, selection, signal)
   } catch (_error) {
     throwIfAborted(signal)
     return { effort: selection.reasoningEffort === undefined ? undefined : String(selection.reasoningEffort), levels: [] }
@@ -112,7 +121,9 @@ export async function prepareTuiResume(
   const missingPresetMetadata = recorded === undefined
   const preset = await resolveTuiPreset(ctx, recorded)
   throwIfAborted(signal)
-  const reasoning = await resolveTuiReasoning(ctx, selection, signal)
+  // Resume is transactional: unlike a background catalog refresh, a recorded
+  // route must resolve before the replacement Agent is published and adopted.
+  const reasoning = await resolveRequiredTuiReasoning(ctx, selection, signal)
   throwIfAborted(signal)
 
   let handle: AgentHandle | undefined
