@@ -6,19 +6,18 @@ English | [中文](README.zh.md)
 terminal surface. It boots the TUI profile with a small user-facing flag
 grammar; all sessions, agents, and rendering stay in the bundled runtime.
 
-> **Release Candidate** — `0.1.0-rc.13`, published on npm under the `rc`
-> dist-tag. Clean-room installation verified on Windows, macOS, and Linux.
-> This RC adds effective per-session preset switching, DeepSeek session-cost
-> estimates, a quieter terminal palette, and the latest long-session rendering
-> and evaluation updates.
+> **Stable release** — `0.1.0`, published on npm under the `latest` dist-tag.
+> Clean-room installation is verified on Windows, macOS, and Linux. The first
+> stable release includes bounded long-session rendering, persistent sessions,
+> per-session presets, plugin hot apply, and session-owned projections.
 
 ## Install
 
 ```text
-npm install -g @jame100101/dsh-tui@rc
+npm install -g @jame100101/dsh-tui
 ```
 
-(or `npm install -g @jame100101/dsh-tui@0.1.0-rc.13` to pin the version)
+(or `npm install -g @jame100101/dsh-tui@0.1.0` to pin the version)
 
 The package ships the built dsh runtime inside `runtime/`, so the global
 install needs no other DeepSeek Harness package — external dependencies

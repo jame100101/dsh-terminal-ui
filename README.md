@@ -6,7 +6,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0-rc.13"><img alt="npm 0.1.0-rc.13" src="https://img.shields.io/badge/NPM-0.1.0--rc.13-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0"><img alt="npm 0.1.0" src="https://img.shields.io/badge/NPM-0.1.0-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#architecture"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#architecture"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#architecture"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Local-first · Session persistence · Tool runtime</p>
 
-> 🚀 **Release Candidate `0.1.0-rc.13`** — this is a pre-release and is not stable yet. This RC adds effective per-session preset switching, DeepSeek session-cost estimates, a quieter terminal palette, and the latest long-session rendering and evaluation updates. See [Quick Start](#quick-start).
+> 🚀 **Stable release `0.1.0`** — the first stable npm release includes bounded long-session rendering, responsive input and history navigation, persistent sessions, per-session presets, plugin hot apply, DeepSeek session-cost estimates, and session-owned resume and workflow projections. See [Quick Start](#quick-start).
 
 <p align="center">
   <img src="assets/tui-session-panel.png" alt="dsh-tui Windows startup screenshot" width="46%">
@@ -125,14 +125,14 @@ Use `source ~/.zshrc` instead when the login shell is zsh. If the host already h
 
 ### 2. Install dsh-tui
 
-The current published RC is `0.1.0-rc.13`. Install the RC channel rather than the stable `latest` channel:
+Install the current stable release from npm:
 
 ```sh
-npm install -g @jame100101/dsh-tui@rc
+npm install -g @jame100101/dsh-tui
 dsh-tui --version
 ```
 
-The version command should report `0.1.0-rc.13` while this RC is current. The package ships its bundled runtime inside the tarball, so a separate workspace install is not required for end users.
+The version command should report `0.1.0`. The package ships its bundled runtime inside the tarball, so a separate workspace install is not required for end users.
 
 ### 3. Start a project
 
@@ -254,15 +254,15 @@ Run `node --version` and upgrade to the declared range `^22.19.0 || >=24.0.0`. N
 
 Prefer nvm or another user-level Node.js installation so npm's global prefix is writable by your account. Do not make `sudo npm install -g ...` the default fix; it can create mixed ownership in the npm prefix.
 
-## Release Candidate Status
+## Release Status
 
-`dsh-tui` is currently a **Release Candidate**, not a stable release. Use:
+`dsh-tui` `0.1.0` is the first stable release and is published under npm's `latest` dist-tag:
 
 ```sh
-npm install -g @jame100101/dsh-tui@rc
+npm install -g @jame100101/dsh-tui@latest
 ```
 
-The `rc` dist-tag is intentionally separate from `latest`. Check the installed version with `dsh-tui --version` before reporting a problem.
+Check the installed version with `dsh-tui --version` before reporting a problem.
 
 ## Maintenance
 
@@ -273,7 +273,7 @@ The persistent-shell prompt alignment described above is a bundled runtime integ
 Upgrade or uninstall the global package with:
 
 ```sh
-npm install -g @jame100101/dsh-tui@rc
+npm install -g @jame100101/dsh-tui@latest
 npm uninstall -g @jame100101/dsh-tui
 ```
 
