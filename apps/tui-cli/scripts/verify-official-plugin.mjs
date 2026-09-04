@@ -129,10 +129,10 @@ function bootPty(executable, args, options) {
     })
     child.onExit(({ exitCode, signal }) => {
       clearTimeout(timeout)
-      // POSIX reports the requested Ctrl-C as 130; ConPTY reports the same
-      // ready-state stop as a handled exit after the TUI consumes the key.
-      const expectedExitCode = process.platform === 'win32' ? 0 : 130
-      if (!stopping || exitCode !== expectedExitCode) {
+      // Node 22 and ConPTY report this ready-state Ctrl-C as a handled exit;
+      // Node 24's POSIX PTY reports the same requested stop as signal code 130.
+      const requestedStop = exitCode === 0 || exitCode === 130
+      if (!stopping || !requestedStop) {
         reject(new Error(`verify-official-plugin: PTY exited ${String(exitCode)} (${String(signal)})\n${output.slice(-8_000)}`))
         return
       }
