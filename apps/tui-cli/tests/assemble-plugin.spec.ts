@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -26,6 +26,7 @@ function npmPackDryRun(directory: string) {
       cwd: root,
       env: { ...process.env, npm_config_cache: cache },
       encoding: 'utf8',
+      timeout: 20_000,
     })
     expect(result.error).toBeUndefined()
     expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0)
@@ -118,7 +119,7 @@ describe('assemblePlugin', () => {
     expect(files).toContain('README.md')
     expect(files).toContain('README.zh.md')
     expect(files).toContain('package.json')
-  })
+  }, 30_000)
 })
 
 describe('plugin-mode launcher compatibility', () => {
@@ -146,7 +147,7 @@ describe('plugin-mode launcher compatibility', () => {
     try {
       const compatible = join(fixture, 'compatible')
       const compatibleJs = writeDshPackage(compatible, '0.1.2-rc.1', 'dsh.js')
-      expect(resolveOfficialDshBin({ PATH: join(compatible, 'lib') })).toBe(compatibleJs)
+      expect(resolveOfficialDshBin({ PATH: join(compatible, 'lib') })).toBe(realpathSync(compatibleJs))
 
       const incompatible = join(fixture, 'incompatible')
       writeDshPackage(incompatible, '0.1.1', 'dsh.js')

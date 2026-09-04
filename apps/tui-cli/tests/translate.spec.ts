@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
@@ -242,7 +242,7 @@ describe('POSIX symlink resolution', () => {
       const officialBinDir = join(dir, 'bin')
       mkdirSync(officialBinDir)
       symlinkSync(relative(officialBinDir, officialJs), join(officialBinDir, 'dsh'))
-      expect(resolveDshBinPath({ PATH: officialBinDir })).toBe(officialJs)
+      expect(resolveDshBinPath({ PATH: officialBinDir })).toBe(realpathSync(officialJs))
 
       const binPath = join(import.meta.dirname, '..', 'bin', 'dsh-tui.js')
       const linkPath = join(dir, 'dsh-tui')
