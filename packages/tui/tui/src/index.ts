@@ -89,21 +89,30 @@ import { selectPanelSnapshot } from './publish-snapshot'
 import { buildTuiStartupProgram, parseTuiStartupIntent } from './startup-args'
 import type { StartupIntent } from './startup-args'
 import {
+  createForkArtifact,
+  createTuiAgent,
+  createWorkflowProjection,
   EXIT_FAILURE,
   EXIT_OK,
   EXIT_USAGE,
+  foldWorkflowSessionEvents,
   lastTurnNumber,
   mapTurnEndToExitCode,
+  prepareTuiResume,
+  projectJobsRows,
+  projectWorkflowSessionDelivery,
+  recordedPreset,
+  replayTuiResumeOrDispose,
   resolveContinueSession,
   resolveResumeTarget,
+  resolveTuiReasoning,
+  SessionPresetQueue,
+  subscribeVisibleJobs,
   turnEndReasonAfter,
-} from './startup'
-import type { ResumeCandidate, ResumeResolution } from './startup'
+} from './harness'
+import type { ResumeCandidate, ResumeResolution } from './harness'
 import { SessionRecencyStore } from './session-recency'
 import { ProjectionSidecarStore, foldIsIdle, projectionCheckpointIsComplete } from './projection-sidecar'
-import { createForkArtifact } from './fork-lifecycle'
-import { createTuiAgent, recordedPreset, SessionPresetQueue } from './preset-lifecycle'
-import { prepareTuiResume, replayTuiResumeOrDispose, resolveTuiReasoning } from './resume-lifecycle'
 import {
   hasConditionalDisabledState,
   isProfilePatchEntry,
@@ -111,10 +120,6 @@ import {
   pluginInventoryEntries,
 } from './patch-toggle'
 import { toggleProfilePlugin } from './plugin-toggle-runtime'
-import {
-  createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
-} from './workflow-projection'
-import { projectJobsRows, subscribeVisibleJobs } from './jobs-projection'
 import type {
   CommandEntry, CredentialRow, GeneralSettings, JobRow, ModelEntry, PendingApproval, PendingQuestion, SessionEntry,
   SettingsData, SkillEntry, SubagentRow, TuiStore, WorkflowRow,
