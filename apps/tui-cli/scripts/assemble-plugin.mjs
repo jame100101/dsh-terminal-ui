@@ -17,6 +17,8 @@ const pkgDir = join(scriptDir, '..')
 const root = join(scriptDir, '..', '..', '..')
 const defaultOut = join(pkgDir, 'plugin-dist')
 const wrapperRequire = createRequire(join(pkgDir, 'package.json'))
+const workspaceManifest = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
+const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
 const HARNESS = '0.1.2-rc.1'
 const INK_PATCH = 'patches/ink@7.1.1.patch'
@@ -98,14 +100,22 @@ export function assemblePlugin(destination = defaultOut) {
   }, undefined, 2)}\n`)
   const license = join(pkgDir, 'LICENSE')
   if (existsSync(license)) cpSync(license, join(destination, 'LICENSE'))
+  for (const readme of ['README.md', 'README.zh.md', 'README.i18n.yaml']) {
+    cpSync(join(pkgDir, readme), join(destination, readme))
+  }
   const manifest = {
-    name: '@jame100101/dsh-tui',
+    name: workspaceManifest.name,
     description: 'Out-of-tree DeepSeek Harness TUI bundle (plugin mode)',
-    version: '0.2.0-rc.1',
+    version: workspaceManifest.version,
+    publishConfig: { access: 'public' },
+    repository: workspaceManifest.repository,
+    homepage: 'https://github.com/jame100101/dsh-terminal-ui#readme',
+    bugs: { url: 'https://github.com/jame100101/dsh-terminal-ui/issues' },
+    engines: { node: rootManifest.engines.node },
     type: 'module',
     main: 'lib/index.js',
     bin: { 'dsh-tui': 'bin/dsh-tui.js' },
-    files: ['bin', 'lib', 'cordis.patch.yml', 'LICENSE'],
+    files: ['bin', 'lib', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md'],
     license: 'MIT',
     dsh: { bundle: { patch: './cordis.patch.yml' } },
     dependencies: {

@@ -4,14 +4,16 @@ import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
@@ -55,6 +57,47 @@ function assertPortableManifest(manifest) {
       assert(!/^(?:file|link|workspace):/u.test(String(spec)), `${field}.${name} uses ${String(spec)}`)
     }
   }
+}
+
+function filesUnder(directory) {
+  const found = []
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name)
+    if (entry.isDirectory()) found.push(...filesUnder(path))
+    else if (entry.isFile()) found.push(path)
+  }
+  return found
+}
+
+function assertPortablePluginTree(pluginRoot) {
+  const files = filesUnder(pluginRoot)
+  const relativeFiles = files.map(path => relative(pluginRoot, path).replaceAll('\\', '/'))
+  assert(!relativeFiles.some(path => path.startsWith('apps/cli/')), 'plugin contains apps/cli')
+  assert(!relativeFiles.some(path => path.startsWith('packages/core/')), 'plugin contains packages/core')
+  assert(!relativeFiles.some(path => path.startsWith('node_modules/@deepseek-ai/')), 'plugin copied Harness packages')
+  assert(!relativeFiles.some(path => path.startsWith('runtime/')), 'plugin contains a bundled runtime')
+  assert(!relativeFiles.some(path => path.endsWith('/assemble-runtime.mjs')), 'plugin contains assemble-runtime')
+  for (const path of files.filter(path => basename(path) === 'package.json')) {
+    assertPortableManifest(readJson(path))
+  }
+  const rootSpelling = root.replaceAll('\\', '/')
+  for (const path of files.filter(path => /\.(?:js|json|md|ya?ml)$/u.test(path))) {
+    const contents = readFileSync(path, 'utf8').replaceAll('\\', '/')
+    assert(!contents.includes(rootSpelling), `${relative(pluginRoot, path)} contains the repository path`)
+  }
+  return { files: relativeFiles.length, copiedHarnessPackages: false }
+}
+
+function withoutEnvironmentKey(env, name) {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => key.toUpperCase() !== name.toUpperCase()))
+}
+
+function withPrependedPath(env, directory) {
+  const next = withoutEnvironmentKey(env, 'DSH_BIN')
+  const existing = Object.entries(next).find(([key]) => key.toUpperCase() === 'PATH')
+  if (existing !== undefined) delete next[existing[0]]
+  next.PATH = `${directory}${delimiter}${existing?.[1] ?? ''}`
+  return next
 }
 
 function bootPty(executable, args, options) {
@@ -143,8 +186,14 @@ async function main() {
   const installedPlugin = join(profile, 'node_modules', '@jame100101', 'dsh-tui')
   const pluginManifest = readJson(join(installedPlugin, 'package.json'))
   assert(pluginManifest.version === '0.2.0-rc.1', `installed plugin ${String(pluginManifest.version)}`)
+  assert(pluginManifest.private !== true, 'staged plugin is private')
+  assert(pluginManifest.repository?.url === 'git+https://github.com/jame100101/dsh-terminal-ui.git', 'repository metadata differs')
+  assert(pluginManifest.engines?.node === '^22.19.0 || >=24.0.0', 'Node engine range differs')
+  assert(existsSync(join(installedPlugin, 'README.md')), 'README.md is absent')
+  assert(existsSync(join(installedPlugin, 'README.zh.md')), 'README.zh.md is absent')
   assertPortableManifest(pluginManifest)
   assert(JSON.stringify(pluginManifest.bundledDependencies) === JSON.stringify(['ink']), 'Ink is not the sole bundled dependency')
+  const couplingScan = assertPortablePluginTree(installedPlugin)
 
   const dumped = run(process.execPath, [dshBin, '--profile', 'tui', '--dump-config'], {
     cwd: clean,
@@ -183,6 +232,25 @@ async function main() {
     env: { ...runtimeEnv, DSH_BIN: dshBin },
     diagnosticPath,
   })
+  unlinkSync(diagnosticPath)
+  const pathBinDir = join(clean, 'node_modules', '.bin')
+  const expectedPathEntry = join(pathBinDir, process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
+  assert(statSync(expectedPathEntry).isFile(), `npm PATH entry is missing: ${expectedPathEntry}`)
+  const launcherPathBoot = await bootPty(process.execPath, [launcher], {
+    cwd: clean,
+    env: withPrependedPath(runtimeEnv, pathBinDir),
+    diagnosticPath,
+  })
+
+  const missingHome = mkdtempSync(join(tmpdir(), 'dsh-official-missing-profile-'))
+  const missingProfile = spawnSync(process.execPath, [launcher], {
+    cwd: clean,
+    env: { ...commonEnv, DSH_HOME: missingHome, DSH_BIN: dshBin },
+    encoding: 'utf8',
+  })
+  assert(missingProfile.status === 1, `missing profile exited ${String(missingProfile.status)}`)
+  assert(missingProfile.stderr.includes(`the tui profile does not have ${PLUGIN_NAME} installed`), 'missing profile diagnostic differs')
+  assert(missingProfile.stderr.includes(`dsh plugin --profile tui add ${PLUGIN_NAME}`), 'missing profile install command is absent')
 
   console.log(JSON.stringify({
     status: 'PASS',
@@ -193,7 +261,10 @@ async function main() {
     plugin: `${pluginManifest.name}@${pluginManifest.version}`,
     bundles: profileManifest.dsh.profile.bundles,
     directBootMs: directBoot.durationMs,
-    launcherBootMs: launcherBoot.durationMs,
+    launcherDshBinBootMs: launcherBoot.durationMs,
+    launcherPathBootMs: launcherPathBoot.durationMs,
+    missingProfileUx: 'PASS',
+    couplingScan,
     moduleIdentity: diagnostic,
   }, undefined, 2))
 }

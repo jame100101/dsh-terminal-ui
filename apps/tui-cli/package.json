@@ -2,6 +2,7 @@
   "name": "@jame100101/dsh-tui",
   "description": "Out-of-tree terminal UI plugin and thin launcher for the official DeepSeek Harness",
   "version": "0.2.0-rc.1",
+  "private": true,
   "publishConfig": {
     "access": "public"
   },
@@ -22,6 +23,7 @@
   "license": "MIT",
   "scripts": {
     "assemble-plugin": "node scripts/assemble-plugin.mjs",
+    "pack-plugin": "npm run assemble-plugin && npm pack ./plugin-dist",
     "verify-official-plugin": "node scripts/verify-official-plugin.mjs"
   },
   "dependencies": {

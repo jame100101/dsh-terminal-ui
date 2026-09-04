@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   checkExperimentalDependencyIsolation,
   checkExperimentalManifest,
+  checkWorkspaceManifest,
   expectedDshPackageFiles,
   type WorkspaceManifest,
 } from './check-workspace-constraints.ts'
@@ -77,6 +78,22 @@ describe('experimental workspace constraints', () => {
 })
 
 describe('package payload constraints', () => {
+  it('keeps an assembled-release workspace private', () => {
+    expect(checkWorkspaceManifest({
+      dir: 'apps/tui-cli',
+      manifest: {
+        name: '@jame100101/dsh-tui',
+        private: true,
+        publishConfig: { access: 'public' },
+        repository: {
+          type: 'git',
+          url: 'git+https://github.com/jame100101/dsh-terminal-ui.git',
+          directory: 'apps/tui-cli',
+        },
+      },
+    })).toEqual([])
+  })
+
   it('includes a declared profile patch without a package-name allowlist', () => {
     expect(expectedDshPackageFiles({
       name: '@deepseek-ai/dsh-private-profile',

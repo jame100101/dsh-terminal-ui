@@ -12,10 +12,11 @@
  * executes under the `isMain` guard so tests can import the module safely.
  */
 
-import { execFileSync, spawn } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { spawn } from 'node:child_process'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { delimiter, dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Command } from 'commander'
 
 /** Exit codes the wrapper itself reports (execution outcomes come from the child). */
@@ -23,6 +24,7 @@ const EXIT_OK = 0
 const EXIT_FAILURE = 1
 const EXIT_USAGE = 2
 const EXIT_INTERRUPT = 130
+const TUI_PLUGIN_NAME = '@jame100101/dsh-tui'
 
 /** Idempotent reset for every terminal mode the interactive TUI may enable. */
 export const INTERACTIVE_TERMINAL_RESET = [
@@ -192,7 +194,7 @@ export function readDshVersionFromBin(jsPath) {
 export function resolveOfficialDshBin(env = process.env) {
   const configured = env.DSH_BIN
   if (typeof configured === 'string' && configured !== '') {
-    const jsPath = resolve(configured)
+    const jsPath = canonicalFile(resolve(configured)) ?? resolve(configured)
     const version = readDshVersionFromBin(jsPath)
     if (!isCompatibleDshVersion(version ?? '')) {
       throw new Error(`DSH_BIN is not a compatible dsh ${COMPATIBLE_DSH_VERSIONS.join(', ')} (got ${version ?? 'unknown'})`)
@@ -220,14 +222,30 @@ export function resolveOfficialDshBin(env = process.env) {
  * @returns the first resolved command path, or undefined.
  */
 function lookupDshCommand(env) {
+  const pathEntry = Object.entries(env).find(([name]) => name.toUpperCase() === 'PATH')?.[1]
+  if (typeof pathEntry !== 'string' || pathEntry === '') return undefined
+  const pathExt = Object.entries(env).find(([name]) => name.toUpperCase() === 'PATHEXT')?.[1]
+  const extensions = process.platform === 'win32'
+    ? (typeof pathExt === 'string' && pathExt !== '' ? pathExt.split(';') : ['.COM', '.EXE', '.BAT', '.CMD'])
+    : []
+  const names = process.platform === 'win32'
+    ? ['dsh', ...extensions.map(extension => `dsh${extension}`), 'dsh.js']
+    : ['dsh', 'dsh.js']
+  for (const rawDir of pathEntry.split(delimiter)) {
+    const unquoted = rawDir.startsWith('"') && rawDir.endsWith('"') ? rawDir.slice(1, -1) : rawDir
+    for (const name of names) {
+      const candidate = resolve(unquoted === '' ? '.' : unquoted, name)
+      if (canonicalFile(candidate) !== undefined) return candidate
+    }
+  }
+  return undefined
+}
+
+/** Return one existing regular file in canonical filesystem spelling. */
+function canonicalFile(path) {
   try {
-    const output = execFileSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], {
-      encoding: 'utf8',
-      env,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    })
-    const line = output.split(/\r?\n/).find(entry => entry.trim() !== '')
-    return line === undefined ? undefined : line.trim()
+    if (!statSync(path).isFile()) return undefined
+    return realpathSync(path)
   } catch {
     return undefined
   }
@@ -239,13 +257,47 @@ function lookupDshCommand(env) {
  * @returns the JS bin, or undefined when the layout is unrecognized.
  */
 function officialJsFromCommand(commandPath) {
-  const dir = dirname(commandPath)
+  const canonicalCommand = canonicalFile(commandPath)
+  if (canonicalCommand === undefined) return undefined
+  if (canonicalCommand.endsWith('.js')) return canonicalCommand
+  const commandDir = dirname(resolve(commandPath))
+  const canonicalDir = dirname(canonicalCommand)
   const candidates = [
-    join(dir, 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
-    join(dir, '../lib/bin.js'),
-    commandPath.endsWith('.js') ? commandPath : undefined,
+    join(commandDir, 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
+    join(commandDir, '../@deepseek-ai/dsh/lib/bin.js'),
+    join(canonicalDir, 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
+    join(canonicalDir, '../@deepseek-ai/dsh/lib/bin.js'),
   ]
-  return candidates.find(path => typeof path === 'string' && existsSync(path))
+  for (const candidate of candidates) {
+    const canonical = canonicalFile(candidate)
+    if (canonical !== undefined) return canonical
+  }
+  return undefined
+}
+
+/**
+ * Check the installed `tui` profile through the compatible official dsh
+ * installation's public home-path resolver. The launcher does not guess the
+ * default home and does not create or mutate a profile.
+ * @param dshBinPath - compatible official dsh JS entry.
+ * @param env - launcher environment.
+ * @returns an actionable diagnostic when the TUI bundle is absent.
+ */
+export async function missingTuiProfileMessage(dshBinPath, env = process.env) {
+  const officialRequire = createRequire(dshBinPath)
+  const homePathsEntry = officialRequire.resolve('@deepseek-ai/dsh-home-paths')
+  const homePaths = await import(pathToFileURL(homePathsEntry).href)
+  const dshHome = homePaths.resolveDshHome(undefined, env)
+  const profileManifestPath = join(dshHome, 'profiles', 'tui', 'package.json')
+  let manifest
+  try {
+    manifest = JSON.parse(readFileSync(profileManifestPath, 'utf8'))
+  } catch (error) {
+    if (error instanceof SyntaxError || error?.code !== 'ENOENT') throw error
+  }
+  const bundles = manifest?.dsh?.profile?.bundles
+  if (Array.isArray(bundles) && bundles.includes(TUI_PLUGIN_NAME)) return undefined
+  return `the tui profile does not have ${TUI_PLUGIN_NAME} installed\n\nRun:\n\n  dsh plugin --profile tui add ${TUI_PLUGIN_NAME}`
 }
 
 /**
@@ -290,6 +342,11 @@ export async function runDsh(
   let dshBinPath
   try {
     dshBinPath = resolveDshBinPath(env)
+    const profileMessage = await missingTuiProfileMessage(dshBinPath, env)
+    if (profileMessage !== undefined) {
+      writeErr(`dsh-tui: ${profileMessage}\n`)
+      return EXIT_FAILURE
+    }
   } catch (error) {
     writeErr(`dsh-tui: ${error instanceof Error ? error.message : String(error)}\n`)
     return EXIT_FAILURE
@@ -324,6 +381,8 @@ export async function runDsh(
   }
   if (outcome.code !== null) return outcome.code
   if (outcome.signal === 'SIGINT') return EXIT_INTERRUPT
+  // The official dsh lifecycle defines SIGTERM as a successful supervisor
+  // stop on every surface; this wrapper preserves that established contract.
   if (outcome.signal === 'SIGTERM') return EXIT_OK
   return EXIT_FAILURE
 }

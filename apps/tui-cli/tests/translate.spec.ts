@@ -1,16 +1,23 @@
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
-import { mkdtempSync, readFileSync, symlinkSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { join, relative } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
-  INTERACTIVE_TERMINAL_RESET, parseDshTuiArgs, resolveDshBinPath, restoreInteractiveTerminal, runDsh,
+  INTERACTIVE_TERMINAL_RESET, missingTuiProfileMessage, parseDshTuiArgs, resolveDshBinPath, restoreInteractiveTerminal, runDsh,
   translateDshTuiArgs,
 } from '../bin/dsh-tui.js'
 
 const root = join(import.meta.dirname, '..', '..', '..')
-const officialDshEnv = { DSH_BIN: join(root, 'apps/cli/lib/bin.js') }
+const officialDshHome = mkdtempSync(join(tmpdir(), 'dsh-tui-profile-'))
+const officialProfile = join(officialDshHome, 'profiles', 'tui')
+mkdirSync(officialProfile, { recursive: true })
+writeFileSync(join(officialProfile, 'package.json'), JSON.stringify({
+  dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@jame100101/dsh-tui'] } },
+}))
+const officialDshEnv = { DSH_BIN: join(root, 'apps/cli/lib/bin.js'), DSH_HOME: officialDshHome }
+afterAll(() => rmSync(officialDshHome, { recursive: true, force: true }))
 /** Commander output goes nowhere in tests. */
 const silent = { stdout: { write: () => {} }, stderr: { write: () => {} } }
 /** Diagnostics go nowhere in tests. */
@@ -131,6 +138,24 @@ describe('resolveDshBinPath', () => {
   })
 })
 
+describe('tui profile check', () => {
+  it('accepts a profile containing the out-of-tree TUI bundle', async () => {
+    await expect(missingTuiProfileMessage(officialDshEnv.DSH_BIN, officialDshEnv)).resolves.toBeUndefined()
+  })
+
+  it('reports the exact install command for a missing profile', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'dsh-tui-profile-missing-'))
+    try {
+      await expect(missingTuiProfileMessage(officialDshEnv.DSH_BIN, { DSH_HOME: home })).resolves.toBe(
+        'the tui profile does not have @jame100101/dsh-tui installed\n\n'
+        + 'Run:\n\n  dsh plugin --profile tui add @jame100101/dsh-tui',
+      )
+    } finally {
+      rmSync(home, { recursive: true, force: true })
+    }
+  })
+})
+
 describe('runDsh', () => {
   /** A spawn fake that reports the given exit outcome on the next microtask. */
   function fakeSpawn(outcome) {
@@ -202,22 +227,36 @@ describe('runDsh', () => {
   })
 })
 
-describe('symlink entrypoint', () => {
+describe('POSIX symlink resolution', () => {
   // npm's POSIX bin shims are symlinks; the wrapper must recognize itself
   // as main when launched through one. Windows npm shims are .cmd files, so
   // this exact reproduction is POSIX-only.
-  it.skipIf(process.platform === 'win32')('runs --version through a symlinked bin and exits 0', async () => {
+  it.skipIf(process.platform === 'win32')('resolves PATH dsh and runs dsh-tui through real npm-style symlinks', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-tui-symlink-'))
-    const binPath = join(import.meta.dirname, '..', 'bin', 'dsh-tui.js')
-    const linkPath = join(dir, 'dsh-tui')
-    symlinkSync(binPath, linkPath)
-    const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }
-    const { stdout, error } = await new Promise<{ stdout: string; error: Error | null }>((resolvePromise) => {
-      execFile(process.execPath, [linkPath, '--version'], (error, stdout) => {
-        resolvePromise({ stdout, error })
+    try {
+      const officialRoot = join(dir, 'lib/node_modules/@deepseek-ai/dsh')
+      mkdirSync(join(officialRoot, 'lib'), { recursive: true })
+      writeFileSync(join(officialRoot, 'package.json'), JSON.stringify({ version: '0.1.2-rc.1' }))
+      const officialJs = join(officialRoot, 'lib/bin.js')
+      writeFileSync(officialJs, '#!/usr/bin/env node\n')
+      const officialBinDir = join(dir, 'bin')
+      mkdirSync(officialBinDir)
+      symlinkSync(relative(officialBinDir, officialJs), join(officialBinDir, 'dsh'))
+      expect(resolveDshBinPath({ PATH: officialBinDir })).toBe(officialJs)
+
+      const binPath = join(import.meta.dirname, '..', 'bin', 'dsh-tui.js')
+      const linkPath = join(dir, 'dsh-tui')
+      symlinkSync(binPath, linkPath)
+      const manifest = JSON.parse(readFileSync(join(import.meta.dirname, '..', 'package.json'), 'utf8')) as { version: string }
+      const { stdout, error } = await new Promise<{ stdout: string; error: Error | null }>((resolvePromise) => {
+        execFile(process.execPath, [linkPath, '--version'], (error, stdout) => {
+          resolvePromise({ stdout, error })
+        })
       })
-    })
-    expect(error).toBeNull()
-    expect(stdout.trim()).toBe(manifest.version)
+      expect(error).toBeNull()
+      expect(stdout.trim()).toBe(manifest.version)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
