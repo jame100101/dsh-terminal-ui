@@ -125,16 +125,17 @@ which npm
 
 如果登录 shell 是 zsh，请将 `source ~/.bashrc` 换成 `source ~/.zshrc`。如果系统已有旧版 apt 或系统 Node.js，请先升级或选择满足要求的版本。
 
-### 2. 安装 dsh-tui
+### 2. 安装 0.2 release candidate
 
-从 npm 安装当前稳定版：
+Out-of-tree release candidate 使用官方 Harness 和 packed plugin：
 
 ```sh
-npm install -g @jame100101/dsh-tui
-dsh-tui --version
+npm install -g @deepseek-ai/dsh@0.1.2-rc.1
+dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh --profile tui
 ```
 
-版本命令应输出 `0.1.0`。包内已经包含 bundled runtime，终端用户不需要另行安装 workspace。
+Plugin 命令会创建 custom `tui` profile，依次加载 `@deepseek-ai/dsh-base` 和 `@jame100101/dsh-tui`。包内还提供可选的 `dsh-tui` thin launcher。已发布的 `0.1.x` 包仍是包含 bundled Harness runtime 的旧版独立发行；`0.2.0-rc.1` 尚未发布。
 
 ### 3. 启动项目
 
@@ -201,8 +202,8 @@ dsh-tui
 - **工具与权限：** bash、PowerShell、文件和 Web 工具通过 sandbox-mode 栏运行，并支持审批和 ask-user 交互。
 - **响应式终端布局：** 处理 resize、alternate-screen 生命周期、鼠标滚轮、选择和滚动条交互。
 - **Unicode 显示：** composer 和会话记录支持 CJK、emoji 以及 ⚙ 等符号。
-- **持久 Shell 启动：** bundled Harness runtime 让持久 Shell 工具和终端读取器共用同一个 prompt sentinel，`pwd`、`ls` 等短命令不会因暗号不一致而等待 fallback 超时。
-- **npm 分发：** 单次全局安装即可包含 bundled runtime。
+- **持久 Shell 启动：** 官方 Harness 让持久 Shell 工具和终端读取器共用同一个 prompt sentinel，`pwd`、`ls` 等短命令不会因暗号不一致而等待 fallback 超时。
+- **插件分发：** TUI 作为 profile bundle 安装到兼容的官方 Harness 上，不再复制 Harness runtime。
 
 ## 常见故障
 
@@ -258,7 +259,7 @@ where.exe dsh-tui
 
 ## 发布状态
 
-`dsh-tui` `0.1.0` 是首个稳定版，发布在 npm 的 `latest` dist-tag 下：
+`dsh-tui` `0.1.0` 是发布在 npm `latest` dist-tag 下的旧版独立发行。`0.2.0-rc.1` 插件迁移已用本地 tarball 测试，尚未发布：
 
 ```sh
 npm install -g @jame100101/dsh-tui@latest
@@ -270,7 +271,7 @@ npm install -g @jame100101/dsh-tui@latest
 
 会话数据和本地配置保存在用户的 DSH 数据目录中。如果会话对你很重要，请备份该目录；删除旧会话时请使用 TUI 或支持的会话工具，不要删除无关项目文件。
 
-上面提到的持久 Shell prompt 对齐是 bundled runtime 的集成细节。本 README 只向用户说明该行为，不修改核心 Harness README 或核心 Harness 协议。
+上面提到的持久 Shell prompt 对齐属于官方 Harness。该插件只添加终端界面，不替换这项实现。
 
 升级或卸载全局包：
 
@@ -307,13 +308,13 @@ pnpm run test
 
 ```text
 dsh-tui (CLI wrapper, apps/tui-cli)
-  → dsh launcher (bundled runtime)
+  → official @deepseek-ai/dsh launcher
   → Cordis plugin composition (profile: tui)
-  → React + Ink TUI plugin (@deepseek-ai/dsh-tui)
+  → React + patched Ink TUI plugin (@jame100101/dsh-tui)
   → event-sourced session log → live transcript rows
 ```
 
-wrapper 负责转换启动参数并启动 bundled runtime。TUI 插件将 append-only session log 折叠为用户、agent、思考、工具卡片、重试和状态等记录；TTY 使用 Ink 全屏渲染器，pipe 和 CI 使用逐行 fallback。
+wrapper 负责转换启动参数并运行 `dsh --profile tui`。TUI 插件将 append-only session log 折叠为用户、agent、思考、工具卡片、重试和状态等记录；TTY 使用 patched Ink 全屏渲染器，pipe 和 CI 使用逐行 fallback。
 
 如需逐项比较 Web 前端，请参阅 **[TUI-WEB-COMPARISON.md](TUI-WEB-COMPARISON.md)**。
 

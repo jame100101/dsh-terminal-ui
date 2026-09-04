@@ -3,8 +3,8 @@
  * dsh-tui — the thin Claude Code-style launcher over `dsh --profile tui`.
  *
  * The wrapper only owns the UX: it parses the user-facing grammar, translates
- * it into the TUI app's internal flags, resolves the built `dsh` bin of its
- * dependency, spawns it with inherited stdio, forwards the two stop signals,
+ * it into the TUI app's internal flags, resolves a compatible official `dsh`
+ * bin, spawns it with inherited stdio, forwards the two stop signals,
  * and passes the child's exit code through. Session queries, resume, fork,
  * agents, the TUI, and print rendering all stay inside the app.
  *
@@ -13,19 +13,18 @@
  */
 
 import { spawn } from 'node:child_process'
-import { readFileSync, realpathSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { delimiter, dirname, join, resolve } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { Command } from 'commander'
-
-const require = createRequire(import.meta.url)
 
 /** Exit codes the wrapper itself reports (execution outcomes come from the child). */
 const EXIT_OK = 0
 const EXIT_FAILURE = 1
 const EXIT_USAGE = 2
 const EXIT_INTERRUPT = 130
+const TUI_PLUGIN_NAME = '@jame100101/dsh-tui'
 
 /** Idempotent reset for every terminal mode the interactive TUI may enable. */
 export const INTERACTIVE_TERMINAL_RESET = [
@@ -160,45 +159,155 @@ export function parseDshTuiArgs(argv, streams = { stdout: process.stdout, stderr
   return translated
 }
 
+/** Harness versions this plugin-mode launcher will spawn. */
+export const COMPATIBLE_DSH_VERSIONS = Object.freeze(['0.1.2-rc.1'])
+
 /**
- * Whether `child` is the same path as `parent` or a file under it.
- * @param parent - directory that would own a bundled runtime.
- * @param child - a resolved package.json path.
- * @returns true when `child` lives inside `parent`.
+ * Whether a dsh package version is in the plugin-mode compatibility set.
+ * @param version - the `package.json` version of `@deepseek-ai/dsh`.
+ * @returns true when plugin mode may spawn that install.
  */
-function pathIsInside(parent, child) {
-  const rel = relative(resolve(parent), resolve(child))
-  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+export function isCompatibleDshVersion(version) {
+  return COMPATIBLE_DSH_VERSIONS.includes(version)
 }
 
 /**
- * Resolve the launcher bin this wrapper spawns.
- * In the monorepo, use workspace `@deepseek-ai/dsh` (`apps/cli`) so TUI source
- * edits run. The published package has no workspace dsh; it uses `runtime/`.
- * A leftover `runtime/` copy in the repo must not shadow local edits.
+ * Read the dsh package version next to a JS bin (`lib/bin.js` → `package.json`).
+ * @param jsPath - absolute path to the dsh JS entry.
+ * @returns the version string, or undefined when the manifest is missing.
+ */
+export function readDshVersionFromBin(jsPath) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dirname(jsPath), '..', 'package.json'), 'utf8'))
+    return typeof manifest.version === 'string' ? manifest.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Resolve an official dsh JS bin from `DSH_BIN` or PATH. Never installs.
+ * @param env - process environment (injectable under tests).
+ * @returns the absolute JS bin path.
+ * @throws when no compatible official dsh is configured or found.
+ */
+export function resolveOfficialDshBin(env = process.env) {
+  const configured = env.DSH_BIN
+  if (typeof configured === 'string' && configured !== '') {
+    const jsPath = canonicalFile(resolve(configured)) ?? resolve(configured)
+    const version = readDshVersionFromBin(jsPath)
+    if (!isCompatibleDshVersion(version ?? '')) {
+      throw new Error(`DSH_BIN is not a compatible dsh ${COMPATIBLE_DSH_VERSIONS.join(', ')} (got ${version ?? 'unknown'})`)
+    }
+    return jsPath
+  }
+  const fromPath = lookupDshCommand(env)
+  if (fromPath === undefined) {
+    throw new Error(`no official dsh on PATH; install @deepseek-ai/dsh@${COMPATIBLE_DSH_VERSIONS[0]} or set DSH_BIN`)
+  }
+  const jsPath = officialJsFromCommand(fromPath)
+  if (jsPath === undefined) {
+    throw new Error(`PATH dsh ${fromPath} has no @deepseek-ai/dsh JS bin`)
+  }
+  const version = readDshVersionFromBin(jsPath)
+  if (!isCompatibleDshVersion(version ?? '')) {
+    throw new Error(`PATH dsh is not a compatible ${COMPATIBLE_DSH_VERSIONS.join(', ')} (got ${version ?? 'unknown'})`)
+  }
+  return jsPath
+}
+
+/**
+ * Locate `dsh` on PATH without a shell.
+ * @param env - environment providing PATH.
+ * @returns the first resolved command path, or undefined.
+ */
+function lookupDshCommand(env) {
+  const pathEntry = Object.entries(env).find(([name]) => name.toUpperCase() === 'PATH')?.[1]
+  if (typeof pathEntry !== 'string' || pathEntry === '') return undefined
+  const pathExt = Object.entries(env).find(([name]) => name.toUpperCase() === 'PATHEXT')?.[1]
+  const extensions = process.platform === 'win32'
+    ? (typeof pathExt === 'string' && pathExt !== '' ? pathExt.split(';') : ['.COM', '.EXE', '.BAT', '.CMD'])
+    : []
+  const names = process.platform === 'win32'
+    ? ['dsh', ...extensions.map(extension => `dsh${extension}`), 'dsh.js']
+    : ['dsh', 'dsh.js']
+  for (const rawDir of pathEntry.split(delimiter)) {
+    const unquoted = rawDir.startsWith('"') && rawDir.endsWith('"') ? rawDir.slice(1, -1) : rawDir
+    for (const name of names) {
+      const candidate = resolve(unquoted === '' ? '.' : unquoted, name)
+      if (canonicalFile(candidate) !== undefined) return candidate
+    }
+  }
+  return undefined
+}
+
+/** Return one existing regular file in canonical filesystem spelling. */
+function canonicalFile(path) {
+  try {
+    if (!statSync(path).isFile()) return undefined
+    return realpathSync(path)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Map an npm/global `dsh` shim to its JS entry.
+ * @param commandPath - PATH resolution of `dsh` or `dsh.cmd`.
+ * @returns the JS bin, or undefined when the layout is unrecognized.
+ */
+function officialJsFromCommand(commandPath) {
+  const canonicalCommand = canonicalFile(commandPath)
+  if (canonicalCommand === undefined) return undefined
+  if (canonicalCommand.endsWith('.js')) return canonicalCommand
+  const commandDir = dirname(resolve(commandPath))
+  const canonicalDir = dirname(canonicalCommand)
+  const candidates = [
+    join(commandDir, 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
+    join(commandDir, '../@deepseek-ai/dsh/lib/bin.js'),
+    join(canonicalDir, 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
+    join(canonicalDir, '../@deepseek-ai/dsh/lib/bin.js'),
+  ]
+  for (const candidate of candidates) {
+    const canonical = canonicalFile(candidate)
+    if (canonical !== undefined) return canonical
+  }
+  return undefined
+}
+
+/**
+ * Check the installed `tui` profile through the compatible official dsh
+ * installation's public home-path resolver. The launcher does not guess the
+ * default home and does not create or mutate a profile.
+ * @param dshBinPath - compatible official dsh JS entry.
+ * @param env - launcher environment.
+ * @returns an actionable diagnostic when the TUI bundle is absent.
+ */
+export async function missingTuiProfileMessage(dshBinPath, env = process.env) {
+  const officialRequire = createRequire(dshBinPath)
+  const homePathsEntry = officialRequire.resolve('@deepseek-ai/dsh-home-paths')
+  const homePaths = await import(pathToFileURL(homePathsEntry).href)
+  const dshHome = homePaths.resolveDshHome(undefined, env)
+  const profileManifestPath = join(dshHome, 'profiles', 'tui', 'package.json')
+  let manifest
+  try {
+    manifest = JSON.parse(readFileSync(profileManifestPath, 'utf8'))
+  } catch (error) {
+    if (error instanceof SyntaxError || error?.code !== 'ENOENT') throw error
+  }
+  const bundles = manifest?.dsh?.profile?.bundles
+  if (Array.isArray(bundles) && bundles.includes(TUI_PLUGIN_NAME)) return undefined
+  return `the tui profile does not have ${TUI_PLUGIN_NAME} installed\n\nRun:\n\n  dsh plugin --profile tui add ${TUI_PLUGIN_NAME}`
+}
+
+/**
+ * Resolve the compatible official dsh bin this wrapper spawns. `DSH_BIN`
+ * takes precedence over PATH; the launcher never installs or upgrades dsh.
+ * @param env - process environment (injectable under tests).
  * @returns the absolute bin path.
  */
-export function resolveDshBinPath() {
-  const runtimeDir = fileURLToPath(new URL('../runtime/', import.meta.url))
-  try {
-    const manifestPath = require.resolve('@deepseek-ai/dsh/package.json')
-    if (!pathIsInside(runtimeDir, manifestPath)) {
-      const manifest = require('@deepseek-ai/dsh/package.json')
-      const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
-      if (typeof bin === 'string' && bin !== '') return join(dirname(manifestPath), bin)
-    }
-  } catch {
-    // Published installs do not depend on workspace `@deepseek-ai/dsh`.
-  }
-  const bundledManifestPath = fileURLToPath(new URL('../runtime/package.json', import.meta.url))
-  try {
-    const manifest = JSON.parse(readFileSync(bundledManifestPath, 'utf8'))
-    const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
-    if (typeof bin === 'string' && bin !== '') return join(dirname(bundledManifestPath), bin)
-  } catch {
-    // The bundled runtime is a release artifact.
-  }
-  throw new Error('@deepseek-ai/dsh declares no dsh bin')
+export function resolveDshBinPath(env = process.env) {
+  return resolveOfficialDshBin(env)
 }
 
 /**
@@ -220,6 +329,7 @@ export function writeLauncherStderr(chunk) {
  * @param spawnImpl - the spawn function (real `spawn` in production, a fake in tests).
  * @param writeErr - diagnostic sink (process.stderr in production).
  * @param restoreTerminal - parent-process terminal reset hook.
+ * @param env - launcher environment, injectable under tests.
  * @returns the exit code to report.
  */
 export async function runDsh(
@@ -227,10 +337,16 @@ export async function runDsh(
   spawnImpl = spawn,
   writeErr = writeLauncherStderr,
   restoreTerminal = restoreInteractiveTerminal,
+  env = process.env,
 ) {
   let dshBinPath
   try {
-    dshBinPath = resolveDshBinPath()
+    dshBinPath = resolveDshBinPath(env)
+    const profileMessage = await missingTuiProfileMessage(dshBinPath, env)
+    if (profileMessage !== undefined) {
+      writeErr(`dsh-tui: ${profileMessage}\n`)
+      return EXIT_FAILURE
+    }
   } catch (error) {
     writeErr(`dsh-tui: ${error instanceof Error ? error.message : String(error)}\n`)
     return EXIT_FAILURE
@@ -241,7 +357,7 @@ export async function runDsh(
   // always boots the TUI dependency graph through production entry points.
   const child = spawnImpl(process.execPath, [dshBinPath, ...translated], {
     stdio: 'inherit',
-    env: { ...process.env, NODE_ENV: 'production' },
+    env: { ...env, NODE_ENV: 'production' },
   })
   const forward = (signal) => { try { child.kill(signal) } catch {} }
   const onSigint = () => forward('SIGINT')
@@ -265,6 +381,8 @@ export async function runDsh(
   }
   if (outcome.code !== null) return outcome.code
   if (outcome.signal === 'SIGINT') return EXIT_INTERRUPT
+  // The official dsh lifecycle defines SIGTERM as a successful supervisor
+  // stop on every surface; this wrapper preserves that established contract.
   if (outcome.signal === 'SIGTERM') return EXIT_OK
   return EXIT_FAILURE
 }

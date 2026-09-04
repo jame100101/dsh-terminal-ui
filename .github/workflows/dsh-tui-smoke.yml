@@ -1,9 +1,7 @@
-# Keyless cross-platform verification of the real npm install experience for
-# @jame100101/dsh-tui: builds the bundled runtime from source, packs the npm
-# tarball, installs it globally, and exercises the CLI (version, help, usage
-# errors). It never calls the DeepSeek API — real-model validation lives in
-# e2e.yml. Runs manually before a release and automatically on pull requests
-# that touch product-affecting paths.
+# Keyless cross-platform verification of the out-of-tree npm plugin. The job
+# builds only the TUI host face, runs the focused packaging and launcher tests,
+# packs the staged plugin, and verifies it against a fresh official dsh install.
+# It never calls the DeepSeek API.
 name: dsh-tui cross-platform smoke
 
 on:
@@ -53,41 +51,23 @@ jobs:
       - name: Install (immutable)
         run: pnpm install --frozen-lockfile
 
-      # The assemble step needs both build faces: some workspace packages
-      # only emit their Node entry in the client build.
-      - name: Build host + client lib
-        run: pnpm run build:lib
+      - name: Build TUI host dependencies
+        run: pnpm run build:lib:host
 
-      - name: Assemble the dsh-tui bundled runtime
-        run: pnpm run dsh-tui:assemble-runtime
+      - name: Focused launcher and packaging tests
+        run: pnpm exec vitest run apps/tui-cli/tests/assemble-plugin.spec.ts apps/tui-cli/tests/translate.spec.ts
 
-      - name: Pack the npm tarball
+      - name: Assemble the plugin
+        run: pnpm --filter @jame100101/dsh-tui run assemble-plugin
+
+      - name: Pack the staged plugin
         shell: bash
         run: |
-          cd apps/tui-cli
-          npm pack --pack-destination "$RUNNER_TEMP"
+          npm pack ./apps/tui-cli/plugin-dist --pack-destination "$RUNNER_TEMP"
 
-      - name: Install the tarball globally
+      - name: Verify official clean room
         shell: bash
         run: |
           TGZ="$(find "$RUNNER_TEMP" -maxdepth 1 -name '*.tgz' -print -quit)"
           test -n "$TGZ" || { echo "::error::no tarball found in $RUNNER_TEMP"; exit 1; }
-          npm install -g "$TGZ"
-
-      # Keyless CLI smoke: version and help exit 0, an unknown option is a
-      # usage mistake and must exit 2. None of these touch the API.
-      - name: CLI smoke (no API)
-        shell: bash
-        run: |
-          set -euo pipefail
-          dsh-tui --version
-          dsh-tui --help >/dev/null
-          set +e
-          dsh-tui --definitely-unknown-option >/dev/null 2>&1
-          code=$?
-          set -e
-          if [ "$code" -ne 2 ]; then
-            echo "::error::unknown option must exit 2, got $code"
-            exit 1
-          fi
-          echo "usage-error exit code 2 confirmed"
+          node apps/tui-cli/scripts/verify-official-plugin.mjs "$TGZ"
