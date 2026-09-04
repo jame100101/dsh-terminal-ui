@@ -2,40 +2,39 @@
 
 English | [中文](README.zh.md)
 
-`dsh-tui` — a thin, Claude Code-style command line over the DeepSeek Harness
-terminal surface. It boots the TUI profile with a small user-facing flag
-grammar; all sessions, agents, and rendering stay in the bundled runtime.
+`@jame100101/dsh-tui` adds the React and Ink terminal interface to an official DeepSeek Harness profile. The optional `dsh-tui` command is a thin argument translator for `dsh --profile tui`; session, agent, tool, and persistence services come from the official Harness installation.
 
-> **Stable release** — `0.1.0`, published on npm under the `latest` dist-tag.
-> Clean-room installation is verified on Windows, macOS, and Linux. The first
-> stable release includes bounded long-session rendering, persistent sessions,
-> per-session presets, plugin hot apply, and session-owned projections.
+## Version lines
 
-## Install
+- `0.1.x` is the legacy standalone package. The published `0.1.0` tarball contains a bundled Harness runtime.
+- `0.2.x` is the out-of-tree plugin line. `0.2.0-rc.1` uses `@deepseek-ai/dsh@0.1.2-rc.1` and is not published.
 
-```text
-npm install -g @jame100101/dsh-tui
-```
+## Install the 0.2 release candidate
 
-(or `npm install -g @jame100101/dsh-tui@0.1.0` to pin the version)
+Build and pack the plugin from this checkout, then install the tarball into a fresh or existing `tui` profile:
 
-The `0.1.x` package ships the built dsh runtime inside `runtime/`, so the
-global install needs no other DeepSeek Harness package. First boot
-initializes the `tui` profile under `$DSH_HOME` on its own.
-
-`0.2.x` (this branch, not published) is an out-of-tree `dsh.bundle` on
-official `@deepseek-ai/dsh@0.1.2-rc.1`:
-
-```text
+```sh
+pnpm run build:lib:host
+node apps/tui-cli/scripts/assemble-plugin.mjs
+cd apps/tui-cli/plugin-dist
+npm pack
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
 dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
-dsh-tui
+dsh --profile tui
 ```
 
-Plugin mode needs that compatible `dsh` on `PATH` or `DSH_BIN`.
-`DSH_TUI_MODE=plugin` refuses the bundled runtime; `bundled` keeps `0.1` resolution.
+The first plugin installation creates the custom profile with these ordered bundles:
 
-## Usage
+```text
+@deepseek-ai/dsh-base
+@jame100101/dsh-tui
+```
+
+The plugin package carries the patched Ink build used by the fullscreen renderer. Harness packages resolve from the official `dsh` installation, and the TUI and Ink resolve one React runtime.
+
+## Thin launcher
+
+The packaged `dsh-tui` bin forwards the existing command grammar to compatible official Harness `0.1.2-rc.1`. It finds `dsh` on `PATH`, or accepts the official JavaScript entry through `DSH_BIN`. It does not install, upgrade, or modify Harness or the profile.
 
 ```text
 dsh-tui                          interactive TUI, new session
@@ -48,15 +47,16 @@ dsh-tui -p "run the tests"       one-shot: print the assistant result and exit
 dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 ```
 
-Exit codes: `0` success, `1` execution failure, `2` usage error, `130`
-SIGINT. `--print` output goes to stdout (assistant result only); diagnostics
-go to stderr.
+Exit codes are `0` for success, `1` for an execution failure, `2` for a usage error, and `130` for SIGINT. `--print` writes the assistant result to stdout and diagnostics to stderr.
 
-`-c` uses TUI foreground activity rather than session creation order. The bounded index lives at `$DSH_HOME/tui/session-recency.json`; initial use in a directory falls back to the newest top-level session, while untouched subagent sessions stay out of that migration fallback.
+If no compatible official Harness is present, the launcher names the required package version. After an interactive child exits, it resets mouse tracking, bracketed paste, cursor visibility, the alternate screen, and SGR state.
 
-The wrapper resolves the bundled launcher bin, spawns it with inherited
-stdio, and passes the child's exit code through — it never captures output,
-queries sessions, or renders anything itself. After an interactive child
-exits, including a native fatal, it writes an idempotent reset for mouse
-tracking, bracketed paste, cursor visibility, the alternate screen, and
-SGR. `--print` skips that write.
+## Verification
+
+The clean-room verifier installs official Harness outside this repository, creates an isolated `DSH_HOME`, installs the packed plugin, checks package identity and patched Ink resolution, and boots both entry paths under a PTY:
+
+```sh
+node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+```
+
+It leaves the temporary install and `DSH_HOME` in place and prints both paths for inspection.

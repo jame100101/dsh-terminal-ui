@@ -1,4 +1,4 @@
-# Agent Note: Dual-path out-of-tree TUI plugin extraction
+# Agent Note: Out-of-tree TUI plugin extraction
 
 Status: implemented
 
@@ -6,30 +6,36 @@ English | [中文](2026-09-04-tui-out-of-tree-plugin.zh.md)
 
 ## Problem
 
-The published `dsh-tui` 0.1.0 wrapper copies the entire Harness runtime. Every upstream Harness change required a full source sync. Official dsh already loads out-of-tree packages that declare `dsh.bundle` into a profile. The TUI still had no plugin-mode pack or launcher path, and lifecycle calls were spread across the surface module.
+The published `dsh-tui` 0.1.0 wrapper copied the entire Harness runtime, so each upstream change required a full source sync. Official dsh already installs packages that declare `dsh.bundle` into ordered profile layers. The TUI needed an independently packed bundle without changing its renderer, fold, viewport, projection sidecar, or input architecture.
 
 ## Decision
 
-Keep the bundled runtime and `assemble-runtime` until plugin mode has parity. Add a Harness integration seam at `packages/tui/tui/src/harness/` that re-exports the existing preset, fork, resume, jobs, and workflow modules so rendering, fold, and the projection sidecar do not grow new Agent/Session calls. Ship a second assembler, `assemble-plugin`, that stages `@jame100101/dsh-tui@0.2.0-rc.1` with the TUI `lib/`, launcher bin, plugin `cordis.patch.yml` (TUI row named `@jame100101/dsh-tui`), and vendored patched Ink. Plugin-mode launch (`DSH_TUI_MODE=plugin` or fallback after bundled resolution fails) spawns a compatible official dsh (`0.1.2-rc.1`) from `DSH_BIN` or PATH and never installs packages. Historical `0.1.0` stays the bundled npm release.
+Package `@jame100101/dsh-tui@0.2.0-rc.1` as an out-of-tree bundle for official `@deepseek-ai/dsh@0.1.2-rc.1`. Its patch layers the TUI composition after `@deepseek-ai/dsh-base`, and its launcher only translates arguments to `dsh --profile tui`. The launcher resolves compatible official dsh from `DSH_BIN` or PATH and never installs or upgrades packages.
+
+Keep Harness lifecycle calls behind `packages/tui/tui/src/harness/`. The existing preset, fork, resume, jobs, and workflow modules remain the implementation; rendering, fold, viewport, and projection state retain their existing data path.
+
+Bundle the patched `ink@7.1.1` package inside the npm tarball through `bundledDependencies`. Declare Ink's runtime dependencies normally so Ink and the TUI share the profile's React. The staged Ink build carries a patch hash marker, and an opt-in runtime diagnostic records the resolved Harness, Ink, and React paths from the loaded plugin process.
+
+Remove the bundled runtime assembler and launcher mode after the official clean-room install proves profile initialization, module identity, patched Ink resolution, and PTY boot. The published 0.1.0 artifact remains the historical standalone release.
 
 ## Alternatives considered
 
-### Why not delete the bundled runtime in the same change?
+### Why not retain both launcher modes?
 
-Plugin mode still needs a clean-profile install against a dsh that does not carry `PROFILE_TEMPLATES.tui`. Removing `runtime/` before that path is proven would break the 0.1 launcher.
+A bundled fallback can hide a broken official-plugin installation and preserves the full repository synchronization cost. Version 0.2 reports a missing or incompatible official dsh directly.
 
-### Why not a generic backend interface?
+### Why not add a backend abstraction?
 
-There is one backend. An abstract provider, RPC, or remote protocol would copy session history through extra buffers and risk the long-session fold path.
+The plugin and the official profile run in one Cordis process. An RPC or provider layer would add another session-history representation without replacing a real backend choice.
 
-### Why vendor Ink in the plugin pack?
+### Why not use registry Ink?
 
-The fullscreen terminal-coordinate patch is not on registry Ink. A profile `npm install` of stock `ink@7.1.1` would drop that patch. The plugin tarball carries `vendor/ink` as `file:./vendor/ink`.
+Registry Ink lacks the fullscreen terminal-coordinate patch. An npm bundled dependency preserves the patched package, while ordinary runtime dependencies avoid a second React instance.
 
 ## Consequences
 
-`dsh plugin --profile tui add` on official dsh 0.1.2-rc.1 is the 0.2 install. Bundled `assemble-runtime` remains. Plugin extraction is not complete until that install path reaches parity and the bundled closure is removed in a later change.
+Production packaging contains the TUI build, bundle patch, thin launcher, and patched Ink. It contains no Harness source tree, workspace dependency, repository path, `runtime/`, or `assemble-runtime`. Harness upgrades change the supported package version and rerun compatibility tests instead of merging Harness source.
 
 ## Testing
 
-`packages/tui/tui/tests/harness-seam.spec.ts`, `apps/tui-cli/tests/assemble-plugin.spec.ts`, and the existing preset/jobs/workflow suites cover the seam, the plugin pack layout, and #33–#36. Plugin-mode launch is unit-tested for `DSH_BIN` and version rejection.
+`apps/tui-cli/scripts/verify-official-plugin.mjs` installs official dsh outside the repository, creates a fresh `DSH_HOME`, installs the packed plugin, checks the two profile bundles, asserts Harness package paths and Cordis identity, verifies the Ink marker and shared React path, and boots direct dsh plus the launcher under a PTY. The TUI composition suite uses the out-of-tree patch for preset, model route, jobs, and workflow regressions.

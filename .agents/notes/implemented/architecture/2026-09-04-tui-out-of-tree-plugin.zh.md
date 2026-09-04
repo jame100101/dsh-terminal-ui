@@ -1,4 +1,4 @@
-# Agent Note: 双路径把 TUI 抽成 out-of-tree 插件
+# Agent Note: 把 TUI 抽成 out-of-tree 插件
 
 Status: implemented
 
@@ -6,30 +6,36 @@ Status: implemented
 
 ## Problem
 
-已发布的 `dsh-tui` 0.1.0 包装器会复制整份 Harness runtime。上游 Harness 每次变更都要做一次完整源码同步。官方 dsh 已经能把声明了 `dsh.bundle` 的包装进 profile。TUI 还没有插件模式的打包或启动路径，生命周期调用也散落在 surface 模块里。
+已发布的 `dsh-tui` 0.1.0 wrapper 会复制整份 Harness runtime，因此每次上游变更都需要完整同步源码。官方 dsh 已能把声明 `dsh.bundle` 的包装进有序 profile layer。TUI 需要独立打包 bundle，同时保持 renderer、fold、viewport、projection sidecar 和 input 架构不变。
 
 ## Decision
 
-在插件模式达到 parity 之前，保留 bundled runtime 和 `assemble-runtime`。在 `packages/tui/tui/src/harness/` 增加 Harness 集成缝，重导出已有的 preset、fork、resume、jobs、workflow 模块，这样 rendering、fold 和 projection sidecar 不会再长出新的 Agent/Session 调用。再提供第二个 assembler `assemble-plugin`，它会暂存 `@jame100101/dsh-tui@0.2.0-rc.1`：TUI 的 `lib/`、launcher bin、插件 `cordis.patch.yml`（TUI 行名为 `@jame100101/dsh-tui`），以及打过补丁的 Ink。插件模式启动（`DSH_TUI_MODE=plugin`，或 bundled 解析失败后的回退）从 `DSH_BIN` 或 PATH 拉起兼容的官方 dsh（`0.1.2-rc.1`），并且从不安装软件包。历史 `0.1.0` 仍是 bundled 的 npm 发行版。
+把 `@jame100101/dsh-tui@0.2.0-rc.1` 打成 official `@deepseek-ai/dsh@0.1.2-rc.1` 的 out-of-tree bundle。它的 patch 在 `@deepseek-ai/dsh-base` 后叠加 TUI composition，launcher 只把参数转换成 `dsh --profile tui`。launcher 从 `DSH_BIN` 或 PATH 解析兼容的官方 dsh，不安装或升级软件包。
+
+Harness lifecycle 调用统一经过 `packages/tui/tui/src/harness/`。现有 preset、fork、resume、jobs 和 workflow 模块继续承担实现；rendering、fold、viewport 和 projection state 保持原有 data path。
+
+通过 `bundledDependencies` 把 patched `ink@7.1.1` 包进 npm tarball。Ink runtime dependency 按普通依赖声明，使 Ink 和 TUI 共用 profile 中的 React。暂存的 Ink build 带有 patch hash marker，可选 runtime diagnostic 从已加载的 plugin process 记录 Harness、Ink 和 React 的解析路径。
+
+Official clean-room install 证明 profile 初始化、module identity、patched Ink 解析和 PTY boot 后，删除 bundled runtime assembler 和 launcher mode。已发布的 0.1.0 artifact 保持为历史 standalone release。
 
 ## Alternatives considered
 
-### Why not delete the bundled runtime in the same change?
+### Why not retain both launcher modes?
 
-插件模式仍需要在一份不带 `PROFILE_TEMPLATES.tui` 的 dsh 上做 clean-profile 安装。在那条路径被证明之前就删掉 `runtime/`，会弄坏 0.1 launcher。
+Bundled fallback 会掩盖 official-plugin 安装故障，并保留同步整份仓库的成本。0.2 直接报告官方 dsh 缺失或版本不兼容。
 
-### Why not a generic backend interface?
+### Why not add a backend abstraction?
 
-只有一个 backend。抽象 provider、RPC 或远程协议会把 session history 再拷一份经过额外缓冲区，并危及长会话 fold 路径。
+插件和官方 profile 在同一个 Cordis process 中运行。RPC 或 provider layer 会增加另一份 session-history 表示，却没有替换真实 backend choice。
 
-### Why vendor Ink in the plugin pack?
+### Why not use registry Ink?
 
-全屏终端坐标补丁不在 registry 的 Ink 上。profile 里 `npm install` 原版 `ink@7.1.1` 会丢掉该补丁。插件 tarball 用 `file:./vendor/ink` 携带 `vendor/ink`。
+Registry Ink 缺少 fullscreen terminal-coordinate patch。npm bundled dependency 会保留 patched package，普通 runtime dependency 则避免产生第二个 React instance。
 
 ## Consequences
 
-官方 dsh 0.1.2-rc.1 上的 `dsh plugin --profile tui add` 是 0.2 的安装方式。bundled 的 `assemble-runtime` 仍在。在这条安装路径达到 parity、并在后续变更中删除 bundled closure 之前，插件抽离不算完成。
+Production package 只包含 TUI build、bundle patch、thin launcher 和 patched Ink。它不包含 Harness source tree、workspace dependency、repository path、`runtime/` 或 `assemble-runtime`。Harness 升级只需调整支持的 package version 并重跑 compatibility test，不再合并 Harness 源码。
 
 ## Testing
 
-`packages/tui/tui/tests/harness-seam.spec.ts`、`apps/tui-cli/tests/assemble-plugin.spec.ts` 以及现有的 preset/jobs/workflow 套件覆盖该缝、插件打包布局和 #33–#36。插件模式启动对 `DSH_BIN` 和版本拒绝做了单元测试。
+`apps/tui-cli/scripts/verify-official-plugin.mjs` 会在仓库外安装 official dsh、创建 fresh `DSH_HOME`、安装 packed plugin、检查两个 profile bundle、断言 Harness package path 和 Cordis identity、验证 Ink marker 与共享 React path，并在 PTY 中启动 direct dsh 和 launcher。TUI composition suite 使用 out-of-tree patch 覆盖 preset、model route、jobs 和 workflow regression。

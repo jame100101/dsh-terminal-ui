@@ -2,39 +2,39 @@
 
 [English](README.md) | 中文
 
-`dsh-tui` — a thin, Claude Code-style command line over the DeepSeek Harness
-terminal surface. It boots the TUI profile with a small user-facing flag
-grammar; all sessions, agents, and rendering stay in the bundled runtime.
+`@jame100101/dsh-tui` 为官方 DeepSeek Harness profile 添加 React 和 Ink 终端界面。可选的 `dsh-tui` 命令只把参数转换后交给 `dsh --profile tui`；会话、agent、工具和持久化服务来自官方 Harness 安装。
 
-> **稳定版** — `0.1.0`，发布在 npm 的 `latest` dist-tag 下。
-> 已在 Windows、macOS 和 Linux 上验证干净安装。首个稳定版包含有界长会话渲染、
-> 持久会话、逐会话 preset、插件热应用和会话隔离的投影。
+## 版本线
 
-## Install
+- `0.1.x` 是旧版独立包。已发布的 `0.1.0` tarball 包含 bundled Harness runtime。
+- `0.2.x` 是 out-of-tree 插件版本线。`0.2.0-rc.1` 使用 `@deepseek-ai/dsh@0.1.2-rc.1`，当前尚未发布。
 
-```text
-npm install -g @jame100101/dsh-tui
-```
+## 安装 0.2 release candidate
 
-(也可用 `npm install -g @jame100101/dsh-tui@0.1.0` 固定版本)
+从当前 checkout 构建并打包插件，然后把 tarball 安装到新的或已有的 `tui` profile：
 
-`0.1.x` 包把编好的 dsh 运行时放在 `runtime/` 里，因此全局安装不需要再装其他
-DeepSeek Harness 包。首次启动会自行在 `$DSH_HOME` 下初始化 `tui`
-profile。
-
-`0.2.x`（本分支，尚未发布）是官方 `@deepseek-ai/dsh@0.1.2-rc.1` 上的
-out-of-tree `dsh.bundle`：
-
-```text
+```sh
+pnpm run build:lib:host
+node apps/tui-cli/scripts/assemble-plugin.mjs
+cd apps/tui-cli/plugin-dist
+npm pack
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
 dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
-dsh-tui
+dsh --profile tui
 ```
 
-插件模式需要 PATH 或 `DSH_BIN` 上有该兼容 `dsh`。
-`DSH_TUI_MODE=plugin` 拒绝 bundled runtime；`bundled` 保持 `0.1` 解析顺序。
+首次安装插件时会创建 custom profile，并按以下顺序加载 bundle：
 
-## Usage
+```text
+@deepseek-ai/dsh-base
+@jame100101/dsh-tui
+```
+
+插件包包含全屏渲染器使用的 patched Ink。Harness 包从官方 `dsh` 安装解析，TUI 和 Ink 解析到同一个 React runtime。
+
+## Thin launcher
+
+包内的 `dsh-tui` bin 把原有命令参数转发给兼容的官方 Harness `0.1.2-rc.1`。它从 `PATH` 查找 `dsh`，也可通过 `DSH_BIN` 指定官方 JavaScript entry。它不会安装、升级或修改 Harness 或 profile。
 
 ```text
 dsh-tui                          interactive TUI, new session
@@ -47,14 +47,16 @@ dsh-tui -p "run the tests"       one-shot: print the assistant result and exit
 dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 ```
 
-Exit codes: `0` success, `1` execution failure, `2` usage error, `130`
-SIGINT. `--print` output goes to stdout (assistant result only); diagnostics
-go to stderr.
+退出码为：成功 `0`、执行失败 `1`、用法错误 `2`、SIGINT `130`。`--print` 把助手结果写到 stdout，把诊断写到 stderr。
 
-`-c` 按 TUI 前台使用时间选择，而不是按会话创建顺序选择。有界索引位于 `$DSH_HOME/tui/session-recency.json`；某个目录首次使用索引时，会回退到最新的顶层会话，尚未在 TUI 前台打开过的 subagent 会话不参与这次迁移回退。
+缺少兼容的官方 Harness 时，launcher 会指出所需包版本。交互 child 退出后，它会复位 mouse tracking、bracketed paste、光标可见性、alternate screen 和 SGR 状态。
 
-The wrapper resolves the bundled launcher bin, spawns it with inherited
-stdio, and passes the child's exit code through — it never captures output,
-queries sessions, or renders anything itself. 交互 child 退出后（包括原生
-fatal）会幂等复位 mouse tracking、bracketed paste、光标可见性、备用屏幕和
-SGR。`--print` 不写这些序列。
+## 验证
+
+Clean-room verifier 会在仓库外安装官方 Harness、创建隔离的 `DSH_HOME`、安装 packed plugin、检查包 identity 和 patched Ink 解析，并在 PTY 中启动两个 entry path：
+
+```sh
+node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+```
+
+验证器会保留临时安装和 `DSH_HOME`，并输出两个路径供检查。

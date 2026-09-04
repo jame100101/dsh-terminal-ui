@@ -123,16 +123,17 @@ which npm
 
 Use `source ~/.zshrc` instead when the login shell is zsh. If the host already has an older apt or system Node.js, upgrade or select a supported version before continuing.
 
-### 2. Install dsh-tui
+### 2. Install the 0.2 release candidate
 
-Install the current stable release from npm:
+The out-of-tree release candidate uses the official Harness and a packed plugin:
 
 ```sh
-npm install -g @jame100101/dsh-tui
-dsh-tui --version
+npm install -g @deepseek-ai/dsh@0.1.2-rc.1
+dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh --profile tui
 ```
 
-The version command should report `0.1.0`. The package ships its bundled runtime inside the tarball, so a separate workspace install is not required for end users.
+The plugin command creates a custom `tui` profile with `@deepseek-ai/dsh-base` followed by `@jame100101/dsh-tui`. The package also contains the optional `dsh-tui` thin launcher. Published `0.1.x` packages remain standalone legacy releases with a bundled Harness runtime; `0.2.0-rc.1` is not published.
 
 ### 3. Start a project
 
@@ -199,8 +200,8 @@ Exit codes: `0` means success, `1` a runtime failure, `2` a usage error, and `13
 - **Tools and permissions:** bash, PowerShell, file, and web tools use a sandbox-mode bar with approval and ask-user interactions.
 - **Responsive terminal layout:** handles resize, alternate-screen lifecycle, mouse wheel, selection, and scrollbar interaction.
 - **Unicode-aware display:** supports CJK text, emoji, and symbols such as ⚙ in composer and transcript layout.
-- **Persistent shell startup:** the bundled Harness runtime uses one shared prompt sentinel between the persistent shell tool and its terminal reader, so short commands such as `pwd` and `ls` do not wait for a mismatched-prompt fallback timeout.
-- **npm distribution:** a single self-contained global install includes the bundled runtime.
+- **Persistent shell startup:** the official Harness uses one shared prompt sentinel between the persistent shell tool and its terminal reader, so short commands such as `pwd` and `ls` do not wait for a mismatched-prompt fallback timeout.
+- **Plugin distribution:** the TUI installs as a profile bundle over the compatible official Harness instead of copying its runtime.
 
 ## Troubleshooting
 
@@ -256,7 +257,7 @@ Prefer nvm or another user-level Node.js installation so npm's global prefix is 
 
 ## Release Status
 
-`dsh-tui` `0.1.0` is the first stable release and is published under npm's `latest` dist-tag:
+`dsh-tui` `0.1.0` is the legacy standalone release published under npm's `latest` dist-tag. The `0.2.0-rc.1` plugin migration is tested from a local tarball and is not published:
 
 ```sh
 npm install -g @jame100101/dsh-tui@latest
@@ -268,7 +269,7 @@ Check the installed version with `dsh-tui --version` before reporting a problem.
 
 Session data and local configuration are stored under the user's DSH data directory. Keep that directory backed up if sessions matter to you, and remove old sessions through the TUI or the supported session tools rather than deleting unrelated project files.
 
-The persistent-shell prompt alignment described above is a bundled runtime integration detail. This README documents it for users; it does not change the core Harness README or the core Harness protocol.
+The persistent-shell prompt alignment described above belongs to official Harness. This plugin adds the terminal interface without replacing that implementation.
 
 Upgrade or uninstall the global package with:
 
@@ -305,13 +306,13 @@ Documentation changes should update both `README.md` and `README.zh.md`. Product
 
 ```text
 dsh-tui (CLI wrapper, apps/tui-cli)
-  → dsh launcher (bundled runtime)
+  → official @deepseek-ai/dsh launcher
   → Cordis plugin composition (profile: tui)
-  → React + Ink TUI plugin (@deepseek-ai/dsh-tui)
+  → React + patched Ink TUI plugin (@jame100101/dsh-tui)
   → event-sourced session log → live transcript rows
 ```
 
-The wrapper translates launch flags and starts the bundled runtime. The TUI plugin folds the append-only session log into transcript rows for users, assistant messages, thinking, tool cards, retries, and status, then chooses the Ink full-screen renderer for TTYs or a line-driven fallback for pipes and CI.
+The wrapper translates launch flags and starts `dsh --profile tui`. The TUI plugin folds the append-only session log into transcript rows for users, assistant messages, thinking, tool cards, retries, and status, then chooses the patched Ink full-screen renderer for TTYs or a line-driven fallback for pipes and CI.
 
 For a feature-by-feature comparison with the Web frontend, see **[TUI-WEB-COMPARISON.md](TUI-WEB-COMPARISON.md)**.
 
