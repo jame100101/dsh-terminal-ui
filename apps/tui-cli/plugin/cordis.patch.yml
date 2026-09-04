@@ -1,5 +1,5 @@
-# Out-of-tree dsh-tui bundle patch: the terminal surface over official dsh-base.
-# Same composition as packages/bundle/tui-app; the TUI row names this package.
+# Out-of-tree dsh-tui bundle patch: the terminal interface over official dsh-base.
+# The TUI row resolves from this package.
 # Like headless, it mounts no HTTP server, Web runtime, or browser plugin.
 # Like web-app, it keeps shared providers and registries on the host plane and
 # disables base model-facing rows; every TUI session obtains those rows from
@@ -22,6 +22,7 @@
       name: '@jame100101/dsh-tui'
       config:
         profilePatchPath: !!js dshHomePath('profiles', 'tui', 'cordis.patch.yml')
+        runtimeDiagnosticPath: !!js process.env.DSH_TUI_RUNTIME_DIAGNOSTIC || undefined
         # These rows move behind agent presets below. Enabling one on the host
         # would bypass per-session composition rather than toggle an extension.
         pluginToggleProtectedIds:

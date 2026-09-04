@@ -3098,10 +3098,12 @@ export interface Config {
   pluginToggleProtectedIds?: string[]
   /** Maximum wait for one plugin toggle's Loader lifecycle to settle. */
   pluginToggleSettleTimeoutMs?: number
+  /** Optional file receiving module-identity diagnostics after activation. */
+  runtimeDiagnosticPath?: string
 }
 ```
 
-Source: [`packages/tui/tui/src/index.ts:131`](../packages/tui/tui/src/index.ts)
+Source: [`packages/tui/tui/src/index.ts:142`](../packages/tui/tui/src/index.ts)
 
 <a id="deepseek-aidsh-typert-loader"></a>
 

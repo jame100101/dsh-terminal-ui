@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -18,7 +19,7 @@ describe('plugin bundle patch', () => {
 })
 
 describe('assemblePlugin', () => {
-  it('stages lib, bin, patch, vendored Ink, and a dsh.bundle manifest', () => {
+  it('stages lib, bin, patch, bundled patched Ink, and a dsh.bundle manifest', () => {
     const destination = join(root, 'apps/tui-cli/plugin-dist')
     assemblePlugin(destination)
     const manifest = JSON.parse(readFileSync(join(destination, 'package.json'), 'utf8')) as {
@@ -26,19 +27,37 @@ describe('assemblePlugin', () => {
       version: string
       dsh?: { bundle?: { patch?: string } }
       dependencies?: Record<string, string>
+      bundledDependencies?: string[]
       peerDependencies?: Record<string, string>
     }
     expect(manifest.name).toBe('@jame100101/dsh-tui')
     expect(manifest.version).toBe('0.2.0-rc.1')
     expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
-    expect(manifest.dependencies?.ink).toBe('file:./vendor/ink')
+    expect(manifest.dependencies?.ink).toBe('7.1.1')
+    expect(manifest.dependencies?.['react-reconciler']).toBe('^0.33.0')
+    expect(manifest.bundledDependencies).toEqual(['ink'])
     expect(manifest.peerDependencies?.['@deepseek-ai/dsh-agent']).toBe('0.1.2-rc.1')
     expect(existsSync(join(destination, 'lib/index.js'))).toBe(true)
+    expect(existsSync(join(destination, 'lib/types'))).toBe(false)
+    expect(existsSync(join(destination, 'lib/tsconfig.tsbuildinfo'))).toBe(false)
     expect(existsSync(join(destination, 'bin/dsh-tui.js'))).toBe(true)
     expect(existsSync(join(destination, 'cordis.patch.yml'))).toBe(true)
-    expect(existsSync(join(destination, 'vendor/ink/package.json'))).toBe(true)
+    expect(existsSync(join(destination, 'node_modules/ink/package.json'))).toBe(true)
+    expect(existsSync(join(destination, 'node_modules/ink/node_modules'))).toBe(false)
+    const marker = JSON.parse(readFileSync(join(destination, 'node_modules/ink/build/dsh-tui-patch.json'), 'utf8')) as {
+      package: string
+      source: string
+      sha256: string
+    }
+    const patchBytes = readFileSync(join(root, 'patches/ink@7.1.1.patch'))
+    expect(marker).toEqual({
+      package: 'ink@7.1.1',
+      source: 'patches/ink@7.1.1.patch',
+      sha256: createHash('sha256').update(patchBytes).digest('hex'),
+    })
     const patch = readFileSync(join(destination, 'cordis.patch.yml'), 'utf8')
     expect(patch).toContain("name: '@jame100101/dsh-tui'")
+    expect(patch).toContain('runtimeDiagnosticPath:')
   })
 })
 
@@ -55,10 +74,9 @@ describe('plugin-mode launcher compatibility', () => {
     expect(version).toBe('0.1.2-rc.1')
   })
 
-  it('honors DSH_BIN in plugin mode and rejects an incompatible bin', () => {
+  it('honors DSH_BIN and rejects an incompatible bin', () => {
     const js = join(root, 'apps/cli/lib/bin.js')
     expect(resolveOfficialDshBin({ DSH_BIN: js })).toBe(js)
-    expect(() => resolveOfficialDshBin({ DSH_BIN: js, DSH_TUI_MODE: 'plugin' })).not.toThrow()
     expect(() => resolveOfficialDshBin({ DSH_BIN: join(root, 'apps/tui-cli/bin/dsh-tui.js') }))
       .toThrow(/compatible dsh/u)
   })

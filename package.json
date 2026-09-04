@@ -156,7 +156,7 @@
     "dsh-tui:perf": "node evaluation/tui/run-with-perf.mjs",
     "dsh-tui:evaluate:conpty": "node evaluation/tui/conpty-soak.mjs",
     "dsh-tui:evaluate:soak": "node --import tsx/esm evaluation/tui/soak.mjs",
-    "dsh-tui:assemble-runtime": "node apps/tui-cli/scripts/assemble-runtime.mjs",
+    "dsh-tui:verify-plugin": "node apps/tui-cli/scripts/verify-official-plugin.mjs",
     "demo:ptc": "node scripts/demo-ptc.mjs",
     "demo:inspector": "node --import tsx/esm apps/cli/src/bin.ts web --patch ./packages/experimental/inspector/cordis.source.patch.yml",
     "mock:llm": "node --import tsx packages/test-support/llm-mock-server/src/bin.ts",

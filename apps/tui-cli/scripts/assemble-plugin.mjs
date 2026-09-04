@@ -1,10 +1,13 @@
 // Stage the out-of-tree plugin payload: built TUI lib, this package's launcher
 // bin, the plugin bundle patch, and the patched Ink tree. Official dsh
 // packages resolve from the host install (peerDependencies); they are not
-// copied. Does not replace assemble-runtime.mjs (bundled mode stays).
+// copied. Ink is an npm bundled dependency because package-manager `file:`
+// specs inside a tarball resolve against the consuming profile, not the
+// package payload.
 //
 // Usage: node apps/tui-cli/scripts/assemble-plugin.mjs
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -16,6 +19,7 @@ const defaultOut = join(pkgDir, 'plugin-dist')
 const wrapperRequire = createRequire(join(pkgDir, 'package.json'))
 
 const HARNESS = '0.1.2-rc.1'
+const INK_PATCH = 'patches/ink@7.1.1.patch'
 const PEERS = {
   '@deepseek-ai/cordis': '4.0.2',
   '@deepseek-ai/cordis-plugin-loader': '1.0.3',
@@ -67,12 +71,31 @@ export function assemblePlugin(destination = defaultOut) {
   const patch = join(pkgDir, 'plugin/cordis.patch.yml')
   if (!existsSync(patch)) throw new Error('assemble-plugin: plugin/cordis.patch.yml missing')
   const inkRoot = dirname(dirname(wrapperRequire.resolve('ink')))
+  const inkManifest = JSON.parse(readFileSync(join(inkRoot, 'package.json'), 'utf8'))
+  const inkPatchPath = join(root, INK_PATCH)
+  if (!existsSync(inkPatchPath)) throw new Error(`assemble-plugin: ${INK_PATCH} missing`)
   rmSync(destination, { recursive: true, force: true })
   mkdirSync(join(destination, 'bin'), { recursive: true })
-  cpSync(tuiLib, join(destination, 'lib'), { recursive: true })
+  mkdirSync(join(destination, 'lib'))
+  for (const entry of readdirSync(tuiLib, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      cpSync(join(tuiLib, entry.name), join(destination, 'lib', entry.name))
+    }
+  }
   cpSync(join(pkgDir, 'bin/dsh-tui.js'), join(destination, 'bin/dsh-tui.js'))
   cpSync(patch, join(destination, 'cordis.patch.yml'))
-  cpSync(inkRoot, join(destination, 'vendor/ink'), { recursive: true })
+  const stagedInk = join(destination, 'node_modules/ink')
+  cpSync(inkRoot, stagedInk, { recursive: true })
+  // pnpm's workspace copy contains dependency links. The packed plugin owns
+  // only Ink itself; its declared runtime dependencies install normally in
+  // the profile and therefore share React with the TUI.
+  rmSync(join(stagedInk, 'node_modules'), { recursive: true, force: true })
+  const patchSha256 = createHash('sha256').update(readFileSync(inkPatchPath)).digest('hex')
+  writeFileSync(join(stagedInk, 'build/dsh-tui-patch.json'), `${JSON.stringify({
+    package: `ink@${inkManifest.version}`,
+    source: INK_PATCH,
+    sha256: patchSha256,
+  }, undefined, 2)}\n`)
   const license = join(pkgDir, 'LICENSE')
   if (existsSync(license)) cpSync(license, join(destination, 'LICENSE'))
   const manifest = {
@@ -82,16 +105,18 @@ export function assemblePlugin(destination = defaultOut) {
     type: 'module',
     main: 'lib/index.js',
     bin: { 'dsh-tui': 'bin/dsh-tui.js' },
-    files: ['bin', 'lib', 'cordis.patch.yml', 'vendor', 'LICENSE'],
+    files: ['bin', 'lib', 'cordis.patch.yml', 'LICENSE'],
     license: 'MIT',
     dsh: { bundle: { patch: './cordis.patch.yml' } },
     dependencies: {
+      ...inkManifest.dependencies,
       commander: '15.0.0',
-      ink: 'file:./vendor/ink',
+      ink: inkManifest.version,
       marked: '16.4.2',
       react: '19.2.8',
       'string-width': '8.2.2',
     },
+    bundledDependencies: ['ink'],
     peerDependencies: PEERS,
   }
   writeFileSync(join(destination, 'package.json'), `${JSON.stringify(manifest, undefined, 2)}\n`)

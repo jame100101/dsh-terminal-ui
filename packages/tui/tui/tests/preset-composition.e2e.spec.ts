@@ -13,7 +13,7 @@ import { foldRequestHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { WorkflowRunId } from '@deepseek-ai/dsh-workflow'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
+import { MockAdapter, textResponse } from './mock-adapter.ts'
 import { createForkAgent, createForkArtifact } from '../src/fork-lifecycle'
 import { projectJobsRows, subscribeVisibleJobs } from '../src/jobs-projection'
 import { pluginInventoryEntries, profilePatchEntry } from '../src/patch-toggle'
@@ -32,7 +32,7 @@ import {
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
 const installAnchor = join(root, 'apps', 'cli', 'package.json')
 const basePatch = join(root, 'packages', 'bundle', 'base', 'cordis.patch.yml')
-const tuiPatch = join(root, 'packages', 'bundle', 'tui-app', 'cordis.patch.yml')
+const tuiPatch = join(root, 'apps', 'tui-cli', 'plugin', 'cordis.patch.yml')
 const localSkill = 'tui-preset-local-proof'
 
 function commandNames(ctx: Context, agent: Agent): string[] {

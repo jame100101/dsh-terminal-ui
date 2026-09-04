@@ -15,9 +15,11 @@
  * @module @deepseek-ai/dsh-tui
  */
 
-import { readFileSync } from 'node:fs'
-import { basename, extname, resolve } from 'node:path'
-import type { Context } from '@deepseek-ai/cordis'
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { basename, dirname, extname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
@@ -146,6 +148,8 @@ export interface Config {
   pluginToggleProtectedIds?: string[]
   /** Maximum wait for one plugin toggle's Loader lifecycle to settle. */
   pluginToggleSettleTimeoutMs?: number
+  /** Optional file receiving module-identity diagnostics after activation. */
+  runtimeDiagnosticPath?: string
 }
 
 /** Validated TUI plugin configuration schema. */
@@ -154,7 +158,41 @@ export const Config: z<Config> = z.object({
   profilePatchPath: z.string().required(false),
   pluginToggleProtectedIds: z.array(z.string()).default([]),
   pluginToggleSettleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS),
+  runtimeDiagnosticPath: z.string().required(false),
 })
+
+/** Resolve one package entry to its canonical filesystem path. */
+function resolvedModulePath(specifier: string): string {
+  return realpathSync(fileURLToPath(import.meta.resolve(specifier)))
+}
+
+/**
+ * Write the opt-in clean-install diagnostic from the loaded TUI module. The
+ * paths prove that Harness imports use the official dsh installation while Ink
+ * uses this plugin's bundled patched copy; resolving React from both module
+ * locations detects a split renderer runtime.
+ */
+function writeRuntimeDiagnostic(ctx: Context, destination: string): void {
+  const inkEntry = resolvedModulePath('ink')
+  const reactFromTui = resolvedModulePath('react')
+  const reactFromInk = realpathSync(createRequire(inkEntry).resolve('react'))
+  const markerPath = join(dirname(inkEntry), 'dsh-tui-patch.json')
+  const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as unknown
+  const modules = Object.fromEntries([
+    '@deepseek-ai/cordis',
+    '@deepseek-ai/dsh-agent',
+    '@deepseek-ai/dsh-session',
+    '@deepseek-ai/dsh-jobs',
+    '@deepseek-ai/dsh-workflow',
+  ].map(specifier => [specifier, resolvedModulePath(specifier)]))
+  writeFileSync(destination, `${JSON.stringify({
+    tuiModule: realpathSync(fileURLToPath(import.meta.url)),
+    cordisContextIdentity: ctx instanceof Context,
+    modules,
+    ink: { entry: inkEntry, markerPath: realpathSync(markerPath), marker },
+    react: { fromTui: reactFromTui, fromInk: reactFromInk, sameRuntime: reactFromTui === reactFromInk },
+  }, undefined, 2)}\n`)
+}
 
 /** Localized copy for a rejected feedback mutation. */
 function feedbackErrorText(error: { code: string }, locale: 'zh' | 'en'): string {
@@ -2003,6 +2041,7 @@ async function boot(
  * @param config - validated TUI plugin config.
  */
 export function apply(ctx: Context, config: Config): void {
+  if (config.runtimeDiagnosticPath !== undefined) writeRuntimeDiagnostic(ctx, config.runtimeDiagnosticPath)
   const tuiScope = ctx.settings.register('tui', z.object({
     busyEnter: z.union(['queue', 'steer']).default('queue'),
     thinking: z.union(['collapsed', 'expanded']).default('collapsed'),
