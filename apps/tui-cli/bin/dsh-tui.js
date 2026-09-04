@@ -12,8 +12,8 @@
  * executes under the `isMain` guard so tests can import the module safely.
  */
 
-import { spawn } from 'node:child_process'
-import { readFileSync, realpathSync } from 'node:fs'
+import { execFileSync, spawn } from 'node:child_process'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -171,34 +171,132 @@ function pathIsInside(parent, child) {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
 }
 
+/** Harness versions this plugin-mode launcher will spawn. */
+export const COMPATIBLE_DSH_VERSIONS = Object.freeze(['0.1.2-rc.1'])
+
+/**
+ * Whether a dsh package version is in the plugin-mode compatibility set.
+ * @param version - the `package.json` version of `@deepseek-ai/dsh`.
+ * @returns true when plugin mode may spawn that install.
+ */
+export function isCompatibleDshVersion(version) {
+  return COMPATIBLE_DSH_VERSIONS.includes(version)
+}
+
+/**
+ * Read the dsh package version next to a JS bin (`lib/bin.js` → `package.json`).
+ * @param jsPath - absolute path to the dsh JS entry.
+ * @returns the version string, or undefined when the manifest is missing.
+ */
+export function readDshVersionFromBin(jsPath) {
+  try {
+    const manifest = JSON.parse(readFileSync(join(dirname(jsPath), '..', 'package.json'), 'utf8'))
+    return typeof manifest.version === 'string' ? manifest.version : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Resolve an official dsh JS bin from `DSH_BIN` or PATH. Never installs.
+ * @param env - process environment (injectable under tests).
+ * @returns the absolute JS bin path.
+ * @throws when no compatible official dsh is configured or found.
+ */
+export function resolveOfficialDshBin(env = process.env) {
+  const configured = env.DSH_BIN
+  if (typeof configured === 'string' && configured !== '') {
+    const jsPath = resolve(configured)
+    const version = readDshVersionFromBin(jsPath)
+    if (!isCompatibleDshVersion(version ?? '')) {
+      throw new Error(`dsh-tui: DSH_BIN is not a compatible dsh ${COMPATIBLE_DSH_VERSIONS.join(', ')} (got ${version ?? 'unknown'})`)
+    }
+    return jsPath
+  }
+  const fromPath = lookupDshCommand()
+  if (fromPath === undefined) {
+    throw new Error(`dsh-tui: no official dsh on PATH; install @deepseek-ai/dsh@${COMPATIBLE_DSH_VERSIONS[0]} or set DSH_BIN`)
+  }
+  const jsPath = officialJsFromCommand(fromPath)
+  if (jsPath === undefined) {
+    throw new Error(`dsh-tui: PATH dsh ${fromPath} has no @deepseek-ai/dsh JS bin`)
+  }
+  const version = readDshVersionFromBin(jsPath)
+  if (!isCompatibleDshVersion(version ?? '')) {
+    throw new Error(`dsh-tui: PATH dsh is not a compatible ${COMPATIBLE_DSH_VERSIONS.join(', ')} (got ${version ?? 'unknown'})`)
+  }
+  return jsPath
+}
+
+/** Locate `dsh` on PATH without a shell. */
+function lookupDshCommand() {
+  try {
+    const output = execFileSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    const line = output.split(/\r?\n/).find(entry => entry.trim() !== '')
+    return line === undefined ? undefined : line.trim()
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Map an npm/global `dsh` shim to its JS entry.
+ * @param commandPath - PATH resolution of `dsh` or `dsh.cmd`.
+ * @returns the JS bin, or undefined when the layout is unrecognized.
+ */
+function officialJsFromCommand(commandPath) {
+  const dir = dirname(commandPath)
+  const candidates = [
+    join(dir, 'node_modules/@deepseek-ai/dsh/lib/bin.js'),
+    join(dir, '../lib/bin.js'),
+    commandPath.endsWith('.js') ? commandPath : undefined,
+  ]
+  return candidates.find(path => typeof path === 'string' && existsSync(path))
+}
+
 /**
  * Resolve the launcher bin this wrapper spawns.
- * In the monorepo, use workspace `@deepseek-ai/dsh` (`apps/cli`) so TUI source
- * edits run. The published package has no workspace dsh; it uses `runtime/`.
+ * `DSH_TUI_MODE=plugin` requires a compatible official dsh (`DSH_BIN` or PATH).
+ * `DSH_TUI_MODE=bundled` uses workspace then `runtime/` and never PATH.
+ * Default: workspace `@deepseek-ai/dsh`, then bundled `runtime/`, then official.
  * A leftover `runtime/` copy in the repo must not shadow local edits.
+ * @param env - process environment (injectable under tests).
  * @returns the absolute bin path.
  */
-export function resolveDshBinPath() {
+export function resolveDshBinPath(env = process.env) {
+  const mode = env.DSH_TUI_MODE
+  if (mode === 'plugin') return resolveOfficialDshBin(env)
   const runtimeDir = fileURLToPath(new URL('../runtime/', import.meta.url))
-  try {
-    const manifestPath = require.resolve('@deepseek-ai/dsh/package.json')
-    if (!pathIsInside(runtimeDir, manifestPath)) {
-      const manifest = require('@deepseek-ai/dsh/package.json')
-      const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
-      if (typeof bin === 'string' && bin !== '') return join(dirname(manifestPath), bin)
+  const workspaceOrBundled = () => {
+    try {
+      const manifestPath = require.resolve('@deepseek-ai/dsh/package.json')
+      if (!pathIsInside(runtimeDir, manifestPath)) {
+        const manifest = require('@deepseek-ai/dsh/package.json')
+        const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
+        if (typeof bin === 'string' && bin !== '') return join(dirname(manifestPath), bin)
+      }
+    } catch {
+      // Published installs do not depend on workspace `@deepseek-ai/dsh`.
     }
-  } catch {
-    // Published installs do not depend on workspace `@deepseek-ai/dsh`.
-  }
-  const bundledManifestPath = fileURLToPath(new URL('../runtime/package.json', import.meta.url))
-  try {
+    const bundledManifestPath = fileURLToPath(new URL('../runtime/package.json', import.meta.url))
     const manifest = JSON.parse(readFileSync(bundledManifestPath, 'utf8'))
     const bin = typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.dsh
     if (typeof bin === 'string' && bin !== '') return join(dirname(bundledManifestPath), bin)
-  } catch {
-    // The bundled runtime is a release artifact.
+    throw new Error('@deepseek-ai/dsh declares no dsh bin')
   }
-  throw new Error('@deepseek-ai/dsh declares no dsh bin')
+  if (mode === 'bundled') return workspaceOrBundled()
+  try {
+    return workspaceOrBundled()
+  } catch (bundledError) {
+    try {
+      return resolveOfficialDshBin(env)
+    } catch {
+      throw bundledError
+    }
+  }
 }
 
 /**

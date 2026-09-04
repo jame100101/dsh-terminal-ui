@@ -20,7 +20,8 @@
   ],
   "license": "MIT",
   "scripts": {
-    "assemble-runtime": "node scripts/assemble-runtime.mjs"
+    "assemble-runtime": "node scripts/assemble-runtime.mjs",
+    "assemble-plugin": "node scripts/assemble-plugin.mjs"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.4.0",
