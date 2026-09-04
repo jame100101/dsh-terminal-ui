@@ -125,35 +125,37 @@ Use `source ~/.zshrc` instead when the login shell is zsh. If the host already h
 
 ### 2. Install the 0.2 release candidate
 
-The out-of-tree release candidate uses the official Harness and a packed plugin:
+Install the compatible official Harness, add the published plugin to a `tui` profile, and launch that profile:
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 dsh --profile tui
 ```
 
-The plugin command creates a custom `tui` profile with `@deepseek-ai/dsh-base` followed by `@jame100101/dsh-tui`. The package also contains the optional `dsh-tui` thin launcher. Published `0.1.x` packages remain standalone legacy releases with a bundled Harness runtime; `0.2.0-rc.1` is not published.
+The plugin command creates a custom `tui` profile with `@deepseek-ai/dsh-base` followed by `@jame100101/dsh-tui`. Published `0.1.x` packages are legacy standalone releases with a bundled Harness runtime; `0.2.x` packages are out-of-tree plugins for the official Harness.
+
+The plugin manager installs the package's optional `dsh-tui` thin launcher in the profile-local `node_modules/.bin` directory, not on the user's shell `PATH`. Use `dsh --profile tui` as the canonical launch command. A separate global plugin install is not recommended because npm installs another Harness and Cordis dependency tree for the launcher.
 
 ### 3. Start a project
 
-Run `dsh-tui` from the directory you want to use as the workspace. The current directory is the default workspace:
+Run the `tui` profile from the directory you want to use as the workspace. The current directory is the default workspace:
 
 ```sh
 cd your-project
-dsh-tui
+dsh --profile tui
 ```
 
 Set your DeepSeek API key before starting. Bash, zsh, and PowerShell examples:
 
 ```sh
 export DEEPSEEK_API_KEY=your_api_key
-dsh-tui
+dsh --profile tui
 ```
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "your_api_key"
-dsh-tui
+dsh --profile tui
 ```
 
 Keep API keys out of source files and shell history where practical.
@@ -170,16 +172,16 @@ Credentials are stored locally in `$DSH_HOME/.credentials.yaml` (default: `~/.ds
 
 | Command | Purpose |
 | --- | --- |
-| `dsh-tui` | Start the TUI in the current directory. |
-| `dsh-tui "<task>"` | Start the TUI and submit a task immediately. |
-| `dsh-tui -c` / `--continue` | Resume the newest session from the current directory. |
-| `dsh-tui -r` | Open the interactive session picker. |
-| `dsh-tui -r <session-id>` | Resume a session by id, id prefix, or title. |
-| `dsh-tui -c --fork-session` | Fork a resumed session at its last completed turn. |
-| `dsh-tui -p "<task>"` | Print one task result to stdout without opening the TUI. |
-| `dsh-tui -c -p "<task>"` | Resume a session, then run one task non-interactively. |
-| `dsh-tui --version` | Print the installed package version. |
-| `dsh-tui --help` | Show CLI options. |
+| `dsh --profile tui` | Start the TUI in the current directory. |
+| `dsh --profile tui "<task>"` | Start the TUI and submit a task immediately. |
+| `dsh --profile tui -c` / `--continue` | Resume the newest session from the current directory. |
+| `dsh --profile tui -r` | Open the interactive session picker. |
+| `dsh --profile tui -r <session-id>` | Resume a session by id, id prefix, or title. |
+| `dsh --profile tui -c --fork-session` | Fork a resumed session at its last completed turn. |
+| `dsh --profile tui -p "<task>"` | Print one task result to stdout without opening the TUI. |
+| `dsh --profile tui -c -p "<task>"` | Resume a session, then run one task non-interactively. |
+| `dsh --profile tui --version` | Print the compatible official TUI host version. |
+| `dsh --profile tui --help` | Show CLI options. |
 | `/help` | Show interactive commands inside the TUI. |
 | `/new` | Create a new session. |
 | `/resume` | Browse and resume a saved session. |
@@ -225,7 +227,7 @@ where.exe npm
 
 npm is normally supplied by the Node.js installation. Repair or reinstall Node.js and its PATH entry instead of downloading npm separately.
 
-### `dsh-tui: command not found`
+### `dsh: command not found`
 
 Check the global npm prefix and the executable locations:
 
@@ -233,7 +235,7 @@ Check the global npm prefix and the executable locations:
 npm prefix -g
 which node
 which npm
-which dsh-tui
+which dsh
 ```
 
 On Windows:
@@ -242,10 +244,14 @@ On Windows:
 npm prefix -g
 where.exe node
 where.exe npm
-where.exe dsh-tui
+where.exe dsh
 ```
 
 If the global bin directory is not on PATH, add the directory reported by your npm installation or use a user-level Node manager such as nvm.
+
+### `dsh-tui: command not found`
+
+This is expected after `dsh plugin --profile tui add`: the plugin manager keeps the package bin inside the profile and does not expose it on the shell `PATH`. Launch with `dsh --profile tui`.
 
 ### Node.js version is too old
 
@@ -257,13 +263,13 @@ Prefer nvm or another user-level Node.js installation so npm's global prefix is 
 
 ## Release Status
 
-`dsh-tui` `0.1.0` is the legacy standalone release published under npm's `latest` dist-tag. The `0.2.0-rc.1` plugin migration is tested from a local tarball and is not published:
+`dsh-tui` `0.1.0` is the legacy standalone release published under npm's `latest` dist-tag. `0.2.0-rc.1` is the out-of-tree plugin prerelease and installs by exact version without replacing `latest`:
 
 ```sh
-npm install -g @jame100101/dsh-tui@latest
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 ```
 
-Check the installed version with `dsh-tui --version` before reporting a problem.
+Use `npm install -g @jame100101/dsh-tui@latest` only for the legacy `0.1.0` standalone line.
 
 ## Maintenance
 
@@ -271,11 +277,10 @@ Session data and local configuration are stored under the user's DSH data direct
 
 The persistent-shell prompt alignment described above belongs to official Harness. This plugin adds the terminal interface without replacing that implementation.
 
-Upgrade or uninstall the global package with:
+Reinstall the exact plugin prerelease to update the `tui` profile after a compatible release:
 
 ```sh
-npm install -g @jame100101/dsh-tui@latest
-npm uninstall -g @jame100101/dsh-tui
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 ```
 
 ## Development

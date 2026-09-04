@@ -7,16 +7,15 @@ English | [中文](README.zh.md)
 ## Version lines
 
 - `0.1.x` is the legacy standalone package. The published `0.1.0` tarball contains a bundled Harness runtime.
-- `0.2.x` is the out-of-tree plugin line. `0.2.0-rc.1` uses `@deepseek-ai/dsh@0.1.2-rc.1` and is not published.
+- `0.2.x` is the out-of-tree plugin line. `0.2.0-rc.1` requires and is tested with `@deepseek-ai/dsh@0.1.2-rc.1`.
 
 ## Install the 0.2 release candidate
 
-Build and pack the plugin from this checkout, then install the tarball into a fresh or existing `tui` profile:
+Install the compatible official Harness, add the published plugin to a fresh or existing `tui` profile, and launch that profile:
 
 ```sh
-npm run dsh-tui:pack-plugin
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add ./apps/tui-cli/jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 dsh --profile tui
 ```
 
@@ -29,9 +28,11 @@ The first plugin installation creates the custom profile with these ordered bund
 
 The plugin package carries the patched Ink build used by the fullscreen renderer. Harness packages resolve from the official `dsh` installation, and the TUI and Ink resolve one React runtime.
 
+The plugin manager installs `dsh-tui` in the profile-local `node_modules/.bin` directory and does not add it to the shell `PATH`. The canonical launch command is `dsh --profile tui`.
+
 ## Thin launcher
 
-The packaged `dsh-tui` bin forwards the existing command grammar to compatible official Harness `0.1.2-rc.1`. It resolves npm global and local `dsh` entries on `PATH`, including POSIX symlinks and Windows command shims, or accepts the official JavaScript entry through `DSH_BIN`. It does not install, upgrade, or modify Harness or the profile.
+The packaged `dsh-tui` bin forwards the existing command grammar to compatible official Harness `0.1.2-rc.1`. It resolves npm global and local `dsh` entries on `PATH`, including POSIX symlinks and Windows command shims, or accepts the official JavaScript entry through `DSH_BIN`. It does not install, upgrade, or modify Harness or the profile. This advanced launcher is available only when an environment deliberately exposes the package bin; installing the plugin globally for that purpose is not recommended because npm installs another Harness and Cordis dependency tree.
 
 ```text
 dsh-tui                          interactive TUI, new session
@@ -57,3 +58,11 @@ node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-
 ```
 
 It leaves the temporary install and `DSH_HOME` in place and prints both paths for inspection.
+
+## Build from source
+
+Development builds may assemble and pack the plugin from a repository checkout:
+
+```sh
+npm run dsh-tui:pack-plugin
+```

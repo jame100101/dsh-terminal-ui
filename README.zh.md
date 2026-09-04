@@ -127,35 +127,37 @@ which npm
 
 ### 2. 安装 0.2 release candidate
 
-Out-of-tree release candidate 使用官方 Harness 和 packed plugin：
+安装兼容的官方 Harness，把已发布插件加入 `tui` profile，然后启动该 profile：
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 dsh --profile tui
 ```
 
-Plugin 命令会创建 custom `tui` profile，依次加载 `@deepseek-ai/dsh-base` 和 `@jame100101/dsh-tui`。包内还提供可选的 `dsh-tui` thin launcher。已发布的 `0.1.x` 包仍是包含 bundled Harness runtime 的旧版独立发行；`0.2.0-rc.1` 尚未发布。
+Plugin 命令会创建 custom `tui` profile，依次加载 `@deepseek-ai/dsh-base` 和 `@jame100101/dsh-tui`。已发布的 `0.1.x` 包是包含 bundled Harness runtime 的旧版独立发行；`0.2.x` 包是适配官方 Harness 的 out-of-tree plugin。
+
+Plugin manager 会把包内可选的 `dsh-tui` thin launcher 安装到 profile 本地的 `node_modules/.bin`，而不是用户 shell 的 `PATH`。Canonical launch command 是 `dsh --profile tui`。不建议单独全局安装 plugin 来获得 launcher，因为 npm 会为它安装另一套 Harness 和 Cordis dependency tree。
 
 ### 3. 启动项目
 
-在想要作为 workspace 的目录中运行 `dsh-tui`。当前目录默认就是 workspace：
+在想要作为 workspace 的目录中启动 `tui` profile。当前目录默认就是 workspace：
 
 ```sh
 cd your-project
-dsh-tui
+dsh --profile tui
 ```
 
 启动前设置 DeepSeek API key。Bash、zsh 和 PowerShell 示例：
 
 ```sh
 export DEEPSEEK_API_KEY=your_api_key
-dsh-tui
+dsh --profile tui
 ```
 
 ```powershell
 $env:DEEPSEEK_API_KEY = "your_api_key"
-dsh-tui
+dsh --profile tui
 ```
 
 请尽量不要把 API key 写入源代码或 shell 历史。
@@ -172,16 +174,16 @@ dsh-tui
 
 | 命令 | 作用 |
 | --- | --- |
-| `dsh-tui` | 在当前目录启动 TUI。 |
-| `dsh-tui "<task>"` | 启动 TUI 后立即提交任务。 |
-| `dsh-tui -c` / `--continue` | 恢复当前目录最近的会话。 |
-| `dsh-tui -r` | 打开交互式会话选择器。 |
-| `dsh-tui -r <session-id>` | 按 ID、ID 前缀或标题恢复会话。 |
-| `dsh-tui -c --fork-session` | 从恢复会话最后一个已完成轮次创建分叉。 |
-| `dsh-tui -p "<task>"` | 不打开 TUI，将单个任务结果输出到 stdout。 |
-| `dsh-tui -c -p "<task>"` | 恢复会话后以非交互方式执行一个任务。 |
-| `dsh-tui --version` | 输出已安装的包版本。 |
-| `dsh-tui --help` | 显示 CLI 选项。 |
+| `dsh --profile tui` | 在当前目录启动 TUI。 |
+| `dsh --profile tui "<task>"` | 启动 TUI 后立即提交任务。 |
+| `dsh --profile tui -c` / `--continue` | 恢复当前目录最近的会话。 |
+| `dsh --profile tui -r` | 打开交互式会话选择器。 |
+| `dsh --profile tui -r <session-id>` | 按 ID、ID 前缀或标题恢复会话。 |
+| `dsh --profile tui -c --fork-session` | 从恢复会话最后一个已完成轮次创建分叉。 |
+| `dsh --profile tui -p "<task>"` | 不打开 TUI，将单个任务结果输出到 stdout。 |
+| `dsh --profile tui -c -p "<task>"` | 恢复会话后以非交互方式执行一个任务。 |
+| `dsh --profile tui --version` | 输出兼容的官方 TUI host 版本。 |
+| `dsh --profile tui --help` | 显示 CLI 选项。 |
 | `/help` | 在 TUI 中显示交互式命令。 |
 | `/new` | 创建新会话。 |
 | `/resume` | 浏览并恢复已保存的会话。 |
@@ -227,7 +229,7 @@ where.exe npm
 
 npm 通常由 Node.js 安装包提供。请修复或重新安装 Node.js 及其 PATH 配置，不要单独下载 npm。
 
-### `dsh-tui: command not found`
+### `dsh: command not found`
 
 检查 npm 全局前缀和可执行文件位置：
 
@@ -235,7 +237,7 @@ npm 通常由 Node.js 安装包提供。请修复或重新安装 Node.js 及其 
 npm prefix -g
 which node
 which npm
-which dsh-tui
+which dsh
 ```
 
 Windows 使用：
@@ -244,10 +246,14 @@ Windows 使用：
 npm prefix -g
 where.exe node
 where.exe npm
-where.exe dsh-tui
+where.exe dsh
 ```
 
 如果全局 bin 目录不在 PATH 中，请将 npm 报告的目录加入 PATH，或使用 nvm 等用户级 Node 版本管理器。
+
+### `dsh-tui: command not found`
+
+执行 `dsh plugin --profile tui add` 后出现该结果符合预期：plugin manager 会把 package bin 保留在 profile 内，不会暴露到 shell `PATH`。请使用 `dsh --profile tui` 启动。
 
 ### Node.js 版本过低
 
@@ -259,13 +265,13 @@ where.exe dsh-tui
 
 ## 发布状态
 
-`dsh-tui` `0.1.0` 是发布在 npm `latest` dist-tag 下的旧版独立发行。`0.2.0-rc.1` 插件迁移已用本地 tarball 测试，尚未发布：
+`dsh-tui` `0.1.0` 是发布在 npm `latest` dist-tag 下的旧版独立发行。`0.2.0-rc.1` 是 out-of-tree plugin prerelease，按准确版本安装且不会替换 `latest`：
 
 ```sh
-npm install -g @jame100101/dsh-tui@latest
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 ```
 
-报告问题前，请用 `dsh-tui --version` 检查已安装版本。
+只有使用旧版 `0.1.0` standalone 版本线时，才使用 `npm install -g @jame100101/dsh-tui@latest`。
 
 ## 维护
 
@@ -273,11 +279,10 @@ npm install -g @jame100101/dsh-tui@latest
 
 上面提到的持久 Shell prompt 对齐属于官方 Harness。该插件只添加终端界面，不替换这项实现。
 
-升级或卸载全局包：
+兼容版本发布后，重新安装准确的 plugin prerelease 即可更新 `tui` profile：
 
 ```sh
-npm install -g @jame100101/dsh-tui@latest
-npm uninstall -g @jame100101/dsh-tui
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 ```
 
 ## 开发

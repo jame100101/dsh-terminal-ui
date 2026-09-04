@@ -7,16 +7,15 @@
 ## 版本线
 
 - `0.1.x` 是旧版独立包。已发布的 `0.1.0` tarball 包含 bundled Harness runtime。
-- `0.2.x` 是 out-of-tree 插件版本线。`0.2.0-rc.1` 使用 `@deepseek-ai/dsh@0.1.2-rc.1`，当前尚未发布。
+- `0.2.x` 是 out-of-tree 插件版本线。`0.2.0-rc.1` 要求并已使用 `@deepseek-ai/dsh@0.1.2-rc.1` 验证。
 
 ## 安装 0.2 release candidate
 
-从当前 checkout 构建并打包插件，然后把 tarball 安装到新的或已有的 `tui` profile：
+安装兼容的官方 Harness，把已发布插件加入新的或已有的 `tui` profile，然后启动该 profile：
 
 ```sh
-npm run dsh-tui:pack-plugin
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add ./apps/tui-cli/jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 dsh --profile tui
 ```
 
@@ -29,9 +28,11 @@ dsh --profile tui
 
 插件包包含全屏渲染器使用的 patched Ink。Harness 包从官方 `dsh` 安装解析，TUI 和 Ink 解析到同一个 React runtime。
 
+Plugin manager 会把 `dsh-tui` 安装到 profile 本地的 `node_modules/.bin`，不会把它加入 shell `PATH`。Canonical launch command 是 `dsh --profile tui`。
+
 ## Thin launcher
 
-包内的 `dsh-tui` bin 把原有命令参数转发给兼容的官方 Harness `0.1.2-rc.1`。它能从 `PATH` 解析 npm global 和 local `dsh` entry，包括 POSIX symlink 与 Windows command shim，也可通过 `DSH_BIN` 指定官方 JavaScript entry。它不会安装、升级或修改 Harness 或 profile。
+包内的 `dsh-tui` bin 把原有命令参数转发给兼容的官方 Harness `0.1.2-rc.1`。它能从 `PATH` 解析 npm global 和 local `dsh` entry，包括 POSIX symlink 与 Windows command shim，也可通过 `DSH_BIN` 指定官方 JavaScript entry。它不会安装、升级或修改 Harness 或 profile。只有环境主动暴露 package bin 时才能使用这个 advanced launcher；不建议为此全局安装 plugin，因为 npm 会再安装一套 Harness 和 Cordis dependency tree。
 
 ```text
 dsh-tui                          interactive TUI, new session
@@ -57,3 +58,11 @@ node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-
 ```
 
 验证器会保留临时安装和 `DSH_HOME`，并输出两个路径供检查。
+
+## 从源码构建
+
+开发时可以从 repository checkout 组装并打包 plugin：
+
+```sh
+npm run dsh-tui:pack-plugin
+```
