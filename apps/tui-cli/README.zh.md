@@ -18,10 +18,21 @@ npm install -g @jame100101/dsh-tui
 
 (也可用 `npm install -g @jame100101/dsh-tui@0.1.0` 固定版本)
 
-The package ships the built dsh runtime inside `runtime/`, so the global
-install needs no other DeepSeek Harness package — external dependencies
-install from the npm registry automatically. First boot initializes the
-`tui` profile under `$DSH_HOME` on its own.
+`0.1.x` 包把编好的 dsh 运行时放在 `runtime/` 里，因此全局安装不需要再装其他
+DeepSeek Harness 包。首次启动会自行在 `$DSH_HOME` 下初始化 `tui`
+profile。
+
+`0.2.x`（本分支，尚未发布）是官方 `@deepseek-ai/dsh@0.1.2-rc.1` 上的
+out-of-tree `dsh.bundle`：
+
+```text
+npm install -g @deepseek-ai/dsh@0.1.2-rc.1
+dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh-tui
+```
+
+插件模式需要 PATH 或 `DSH_BIN` 上有该兼容 `dsh`。
+`DSH_TUI_MODE=plugin` 拒绝 bundled runtime；`bundled` 保持 `0.1` 解析顺序。
 
 ## Usage
 
