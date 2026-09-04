@@ -14,12 +14,9 @@ English | [中文](README.zh.md)
 Build and pack the plugin from this checkout, then install the tarball into a fresh or existing `tui` profile:
 
 ```sh
-pnpm run build:lib:host
-node apps/tui-cli/scripts/assemble-plugin.mjs
-cd apps/tui-cli/plugin-dist
-npm pack
+npm run dsh-tui:pack-plugin
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh plugin --profile tui add ./apps/tui-cli/jame100101-dsh-tui-0.2.0-rc.1.tgz
 dsh --profile tui
 ```
 
@@ -34,7 +31,7 @@ The plugin package carries the patched Ink build used by the fullscreen renderer
 
 ## Thin launcher
 
-The packaged `dsh-tui` bin forwards the existing command grammar to compatible official Harness `0.1.2-rc.1`. It finds `dsh` on `PATH`, or accepts the official JavaScript entry through `DSH_BIN`. It does not install, upgrade, or modify Harness or the profile.
+The packaged `dsh-tui` bin forwards the existing command grammar to compatible official Harness `0.1.2-rc.1`. It resolves npm global and local `dsh` entries on `PATH`, including POSIX symlinks and Windows command shims, or accepts the official JavaScript entry through `DSH_BIN`. It does not install, upgrade, or modify Harness or the profile.
 
 ```text
 dsh-tui                          interactive TUI, new session
@@ -47,13 +44,13 @@ dsh-tui -p "run the tests"       one-shot: print the assistant result and exit
 dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 ```
 
-Exit codes are `0` for success, `1` for an execution failure, `2` for a usage error, and `130` for SIGINT. `--print` writes the assistant result to stdout and diagnostics to stderr.
+Exit codes are `0` for success or the official Harness supervisor-stop result from SIGTERM, `1` for an execution failure, `2` for a usage error, and `130` for SIGINT. SIGTERM remains `0` because official Harness treats it as an ordinary supervised shutdown on every application surface. `--print` writes the assistant result to stdout and diagnostics to stderr.
 
-If no compatible official Harness is present, the launcher names the required package version. After an interactive child exits, it resets mouse tracking, bracketed paste, cursor visibility, the alternate screen, and SGR state.
+If no compatible official Harness is present, the launcher names the required package version. Before boot, it resolves the Harness home through the compatible official installation and reports `dsh plugin --profile tui add @jame100101/dsh-tui` when the `tui` profile does not contain the plugin. After an interactive child exits, it resets mouse tracking, bracketed paste, cursor visibility, the alternate screen, and SGR state.
 
 ## Verification
 
-The clean-room verifier installs official Harness outside this repository, creates an isolated `DSH_HOME`, installs the packed plugin, checks package identity and patched Ink resolution, and boots both entry paths under a PTY:
+The clean-room verifier installs official Harness outside this repository, creates an isolated `DSH_HOME`, installs the packed plugin, checks package identity and patched Ink resolution, and boots direct dsh plus launcher paths using explicit `DSH_BIN` and npm's PATH entry under a PTY:
 
 ```sh
 node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-rc.1.tgz

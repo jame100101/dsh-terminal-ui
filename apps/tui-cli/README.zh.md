@@ -14,12 +14,9 @@
 从当前 checkout 构建并打包插件，然后把 tarball 安装到新的或已有的 `tui` profile：
 
 ```sh
-pnpm run build:lib:host
-node apps/tui-cli/scripts/assemble-plugin.mjs
-cd apps/tui-cli/plugin-dist
-npm pack
+npm run dsh-tui:pack-plugin
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add ./jame100101-dsh-tui-0.2.0-rc.1.tgz
+dsh plugin --profile tui add ./apps/tui-cli/jame100101-dsh-tui-0.2.0-rc.1.tgz
 dsh --profile tui
 ```
 
@@ -34,7 +31,7 @@ dsh --profile tui
 
 ## Thin launcher
 
-包内的 `dsh-tui` bin 把原有命令参数转发给兼容的官方 Harness `0.1.2-rc.1`。它从 `PATH` 查找 `dsh`，也可通过 `DSH_BIN` 指定官方 JavaScript entry。它不会安装、升级或修改 Harness 或 profile。
+包内的 `dsh-tui` bin 把原有命令参数转发给兼容的官方 Harness `0.1.2-rc.1`。它能从 `PATH` 解析 npm global 和 local `dsh` entry，包括 POSIX symlink 与 Windows command shim，也可通过 `DSH_BIN` 指定官方 JavaScript entry。它不会安装、升级或修改 Harness 或 profile。
 
 ```text
 dsh-tui                          interactive TUI, new session
@@ -47,13 +44,13 @@ dsh-tui -p "run the tests"       one-shot: print the assistant result and exit
 dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 ```
 
-退出码为：成功 `0`、执行失败 `1`、用法错误 `2`、SIGINT `130`。`--print` 把助手结果写到 stdout，把诊断写到 stderr。
+退出码为：成功或 official Harness 收到 SIGTERM 后的 supervisor-stop 结果 `0`、执行失败 `1`、用法错误 `2`、SIGINT `130`。SIGTERM 保持为 `0`，因为 official Harness 在所有 application surface 上都把它视为普通的 supervised shutdown。`--print` 把助手结果写到 stdout，把诊断写到 stderr。
 
-缺少兼容的官方 Harness 时，launcher 会指出所需包版本。交互 child 退出后，它会复位 mouse tracking、bracketed paste、光标可见性、alternate screen 和 SGR 状态。
+缺少兼容的官方 Harness 时，launcher 会指出所需包版本。启动前，它通过兼容的官方安装解析 Harness home；如果 `tui` profile 不含插件，就会提示运行 `dsh plugin --profile tui add @jame100101/dsh-tui`。交互 child 退出后，它会复位 mouse tracking、bracketed paste、光标可见性、alternate screen 和 SGR 状态。
 
 ## 验证
 
-Clean-room verifier 会在仓库外安装官方 Harness、创建隔离的 `DSH_HOME`、安装 packed plugin、检查包 identity 和 patched Ink 解析，并在 PTY 中启动两个 entry path：
+Clean-room verifier 会在仓库外安装官方 Harness、创建隔离的 `DSH_HOME`、安装 packed plugin、检查包 identity 和 patched Ink 解析，并在 PTY 中分别通过 direct dsh、显式 `DSH_BIN` launcher 和 npm PATH entry launcher 启动：
 
 ```sh
 node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-rc.1.tgz

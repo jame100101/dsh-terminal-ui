@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-09-04-tui-out-of-tree-plugin.md
-2026-09-04-tui-out-of-tree-plugin.md: 5520004581f24cce1e0438b9eb4b4347a8ed0843
-2026-09-04-tui-out-of-tree-plugin.zh.md: 4bec64c2e3d5258128b71c11e2663faf2903ce81
+2026-09-04-tui-out-of-tree-plugin.md: fd6bc47c62a1df83b9eeb5ce10d57fd630ca988e
+2026-09-04-tui-out-of-tree-plugin.zh.md: c82183ffd45c33fb87197bf8798912cf788bee60
