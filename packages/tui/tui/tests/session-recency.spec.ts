@@ -21,7 +21,7 @@ async function withSidecar(
 
 /** Minimal session lifecycle header. */
 function header(id: string, createdAt: number, cwd?: string): SessionHeader {
-  return { version: 0, id: SessionId(id), createdAt, ...(cwd === undefined ? {} : { cwd }) }
+  return { version: 0, id: SessionId(id), createdAt, isSeeded: false, ...(cwd === undefined ? {} : { cwd }) }
 }
 
 describe('SessionRecencyStore', () => {

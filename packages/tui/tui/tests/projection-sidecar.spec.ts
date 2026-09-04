@@ -21,7 +21,7 @@ async function withDir(run: (directory: string) => Promise<void>): Promise<void>
 }
 
 function header(id: string, createdAt: number): SessionHeader {
-  return { version: 0, id: SessionId(id), createdAt, cwd: '/work' }
+  return { version: 0, id: SessionId(id), createdAt, isSeeded: false, cwd: '/work' }
 }
 
 function idleFold(nodes: FoldState['nodes'] = []): FoldState {

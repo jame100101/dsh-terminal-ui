@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import LlmRuntime, { createUserMessage, CallId, LlmError, StreamChunk  } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { createUserMessage, ToolCallId, LlmError, ReasoningEffortId, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SessionStore, { SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import { MockAdapter, maxTokensResponse, textResponse, toolCallResponse } from './mock-adapter.ts'
 
 function driverDone(agent: Agent): Promise<void> {
@@ -17,6 +18,7 @@ async function harness(adapter: MockAdapter, persona = '') {
   const ctx = new Context()
   await ctx.plugin(LlmRuntime)
   await ctx.plugin(SessionStore)
+  await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, { persona })
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
@@ -43,7 +45,7 @@ function send(agent: Agent, text: string) {
 
 /** All user-message texts recorded in the log (to assert what actually ran). */
 function userTexts(agent: Agent): string[] {
-  return agent.session.events
+  return agent.session.snapshotEvents()
     .filter(e => e.type === 'user/message')
     .flatMap(e => e.type === 'user/message' ? e.data.content : [])
     .flatMap(b => b.type === 'text' ? [b.text] : [])
@@ -54,10 +56,10 @@ describe('agent loop', () => {
     'rejects invalid AgentOptions.maxTokens %s before publication',
     async (maxTokens) => {
       const ctx = await harness(new MockAdapter([]))
-      expect(() => ctx.agentLoop.create(
+      await expect(ctx.agentLoop.create(
         SessionId('invalid-max-tokens'),
         { provider: 'mock', model: 'mock', maxTokens },
-      )).toThrow('agent maxTokens must be a positive safe integer')
+      )).rejects.toThrow('agent maxTokens must be a positive safe integer')
       expect(ctx.agents.list()).toEqual([])
       expect(ctx.sessions.list()).toEqual([])
     },
@@ -66,7 +68,7 @@ describe('agent loop', () => {
   it('seeds a valid AgentOptions.maxTokens into the first model request', async () => {
     const adapter = new MockAdapter([textResponse('bounded')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(
+    const agent = await ctx.agentLoop.create(
       SessionId('valid-max-tokens'),
       { provider: 'mock', model: 'mock', maxTokens: 256 },
     )
@@ -77,10 +79,38 @@ describe('agent loop', () => {
     expect(adapter.requests[0]?.maxTokens).toBe(256)
   })
 
+  it('seeds an AgentOptions reasoning effort into the first model request', async () => {
+    const effort = ReasoningEffortId('high')
+    const adapter = new MockAdapter([textResponse('reasoned')], {
+      efforts: [{ id: effort, name: 'High' }],
+      defaultEffort: effort,
+    })
+    const ctx = await harness(adapter)
+    const agent = await ctx.agentLoop.create(
+      SessionId('configured-reasoning-effort'),
+      { provider: 'mock', model: 'mock', reasoningEffort: effort },
+    )
+
+    send(agent, 'use the configured reasoning effort')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests[0]?.reasoningEffort).toBe(effort)
+  })
+
+  it('validates reasoning effort in declarative agent config', () => {
+    const effort = ReasoningEffortId('high')
+    expect(AgentLoop.Config({
+      agents: [{ id: 'configured-agent', reasoningEffort: effort }],
+    }).agents[0]?.reasoningEffort).toBe(effort)
+    expect(() => AgentLoop.Config({
+      agents: [{ id: 'configured-agent', reasoningEffort: ReasoningEffortId('') }],
+    })).toThrow()
+  })
+
   it('cancels queued wakeup work together with an active maintenance task', async () => {
     const adapter = new MockAdapter([textResponse('park reply')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('cancel-maintenance-wakeup'), {
+    const agent = await ctx.agentLoop.create(SessionId('cancel-maintenance-wakeup'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -108,10 +138,31 @@ describe('agent loop', () => {
     expect(adapter.requests).toHaveLength(1)
   })
 
+  it('rejects a second maintenance task while one is active', async () => {
+    const ctx = await harness(new MockAdapter([]))
+    const agent = await ctx.agentLoop.create(SessionId('maintenance-busy'), {
+      provider: 'mock',
+      model: 'mock',
+    })
+    const started = Promise.withResolvers<undefined>()
+    const finish = Promise.withResolvers<undefined>()
+    const maintenance = agent.runMaintenance(async () => {
+      started.resolve(undefined)
+      await finish.promise
+    })
+    await started.promise
+
+    expect(() => agent.runMaintenance(async () => {})).toThrow(/already has active work/)
+
+    finish.resolve(undefined)
+    await maintenance
+    await agent.whenIdle()
+  })
+
   it('replays a wake latched behind maintenance at convergence', async () => {
     const adapter = new MockAdapter([textResponse('wake reply')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('maintenance-wake-replay'), {
+    const agent = await ctx.agentLoop.create(SessionId('maintenance-wake-replay'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -135,7 +186,7 @@ describe('agent loop', () => {
   it('suppresses the replay when a latched maintenance wake is removed', async () => {
     const adapter = new MockAdapter([])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('maintenance-wake-removed'), {
+    const agent = await ctx.agentLoop.create(SessionId('maintenance-wake-removed'), {
       provider: 'mock',
       model: 'mock',
     })
@@ -156,13 +207,13 @@ describe('agent loop', () => {
 
     expect(userTexts(agent)).toEqual([])
     expect(adapter.requests).toEqual([])
-    expect(agent.session.events.filter(e => e.type === 'turn/start')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().filter(e => e.type === 'turn/start')).toHaveLength(0)
   })
 
   it('runs a simple turn: queued message → model → idle, with ordered events', async () => {
     const adapter = new MockAdapter([textResponse('hello there')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     // All boundaries — turn and step — are durable session events on the
     // session/event feed (no agent/* mirror). Record them in fire order to
@@ -179,13 +230,13 @@ describe('agent loop', () => {
 
     expect(order).toEqual(['turn/start', 'step/start', 'step/end', 'turn/end'])
 
-    const types = agent.session.events.map(e => e.type)
+    const types = agent.session.snapshotEvents().map(e => e.type)
     // Durable inbox receipt precedes the turn-owned transcript.
     expect(types[0]).toBe('agent/inbox/spliced')
     expect(types).toContain('turn/start')
     expect(types).toContain('user/message')
     expect(types).toContain('assistant/message')
-    const assistantMessage = agent.session.events.find(e => e.type === 'assistant/message')
+    const assistantMessage = agent.session.snapshotEvents().find(e => e.type === 'assistant/message')
     expect(assistantMessage?.type === 'assistant/message' && assistantMessage.data.usage).toEqual({ inputTokens: 10, outputTokens: 'hello there'.length })
     expect(types.at(-1)).toBe('turn/end')
 
@@ -209,7 +260,7 @@ describe('agent loop', () => {
         return [{ type: 'text', text: `echo: ${args.text}` }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'use the tool')
     await waitForIdle(ctx, agent)
@@ -227,7 +278,7 @@ describe('agent loop', () => {
     expect((block).content).toEqual([{ type: 'text', text: 'echo: ping' }])
 
     // session log records call + result
-    const types = agent.session.events.map(e => e.type)
+    const types = agent.session.snapshotEvents().map(e => e.type)
     expect(types).toContain('tool/call')
     expect(types).toContain('tool/result')
   })
@@ -246,7 +297,7 @@ describe('agent loop', () => {
         return []
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'hi')
     await waitForIdle(ctx, agent)
@@ -280,7 +331,7 @@ describe('agent loop', () => {
     ctx.on('agent/error', ({ error }) => {
       if (error instanceof Error) errors.push(error)
     })
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'hi')
     await waitForIdle(ctx, agent)
@@ -289,7 +340,7 @@ describe('agent loop', () => {
     expect(errors.map(error => error.message)).toEqual([
       'prompt variable "{{cwd}}" has no value for this assembly (section "deployment:persona")',
     ])
-    const turnEnd = agent.session.events.find(e => e.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents().find(e => e.type === 'turn/end')
     expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind).toBe('error')
     expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind === 'error'
       ? turnEnd.data.reason.error.message
@@ -306,7 +357,7 @@ describe('agent loop', () => {
 
     expect(adapter.requests).toHaveLength(1)
     expect(adapter.requests[0]!.system).toBe('You are an AI agent powered by DeepSeek Harness.\n\nIn /rescued.')
-    const turnEnds = agent.session.events.filter(e => e.type === 'turn/end')
+    const turnEnds = agent.session.snapshotEvents().filter(e => e.type === 'turn/end')
     expect(turnEnds).toHaveLength(2)
     expect(turnEnds[1]?.type === 'turn/end' && turnEnds[1].data.reason.kind).toBe('completed')
   })
@@ -328,7 +379,7 @@ describe('agent loop', () => {
       const config = await next()
       return { ...config, provider: 'mock', model: 'mock' }
     })
-    const agent = ctx.agentLoop.create(SessionId('a-late-model'), {})
+    const agent = await ctx.agentLoop.create(SessionId('a-late-model'), {})
 
     send(agent, 'hi')
     await waitForIdle(ctx, agent)
@@ -345,7 +396,7 @@ describe('agent loop', () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
     ctx.on('system-prompt/assemble', async () => ({ sections: [], contexts: [], tools: [], variables: {} }))
-    const agent = ctx.agentLoop.create(SessionId('a-no-system'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a-no-system'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'hi')
     await waitForIdle(ctx, agent)
@@ -365,8 +416,8 @@ describe('agent loop', () => {
     const ctx = await harness(adapter)
     let mode = 'read-only'
     const dispose = ctx.systemPrompt.context({ name: 'policy', order: 0, text: () => `Mode: ${mode}.` })
-    const agent = ctx.agentLoop.create(SessionId('a-runtime-context'), { provider: 'mock', model: 'mock' })
-    const contextEvents = () => agent.session.events.flatMap(event =>
+    const agent = await ctx.agentLoop.create(SessionId('a-runtime-context'), { provider: 'mock', model: 'mock' })
+    const contextEvents = () => agent.session.snapshotEvents().flatMap(event =>
       event.type === 'user/message'
         && event.data.source.kind === 'plugin'
         && event.data.source.plugin === '@deepseek-ai/dsh-system-prompt'
@@ -407,18 +458,19 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
     expect(contextEvents()).toHaveLength(3)
     expect(adapter.requests.map(request => request.system)).toEqual(Array(5).fill(adapter.requests[0]?.system))
-    expect(agent.session.events.filter(event => event.type === 'request/header')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().flatMap(event =>
+      event.type === 'request/header' ? [event.data.reason] : [])).toEqual(['initial'])
   })
 
   it('re-emits unchanged runtime context when a surface replacement removed the retained snapshot', async () => {
     const adapter = new MockAdapter([textResponse('one'), textResponse('two')])
     const ctx = await harness(adapter)
     ctx.systemPrompt.context({ name: 'policy', order: 0, text: 'Mode: read-only.' })
-    const agent = ctx.agentLoop.create(SessionId('a-runtime-context-compacted'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a-runtime-context-compacted'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'first')
     await waitForIdle(ctx, agent)
-    const contextEvent = agent.session.events.find(event =>
+    const contextEvent = agent.session.snapshotEvents().find(event =>
       event.type === 'user/message'
       && event.data.source.kind === 'plugin'
       && event.data.source.plugin === '@deepseek-ai/dsh-system-prompt')
@@ -433,7 +485,7 @@ describe('agent loop', () => {
 
     send(agent, 'after compaction')
     await waitForIdle(ctx, agent)
-    const runtimeContexts = agent.session.events.flatMap(event =>
+    const runtimeContexts = agent.session.snapshotEvents().flatMap(event =>
       event.type === 'user/message'
         && event.data.source.kind === 'plugin'
         && event.data.source.plugin === '@deepseek-ai/dsh-system-prompt'
@@ -449,11 +501,11 @@ describe('agent loop', () => {
     const adapter = new MockAdapter([textResponse('one'), textResponse('two')])
     const ctx = await harness(adapter)
     const dispose = ctx.systemPrompt.context({ name: 'policy', order: 0, text: 'Mode: read-only.' })
-    const agent = ctx.agentLoop.create(SessionId('a-runtime-context-compacted-clear'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a-runtime-context-compacted-clear'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'first')
     await waitForIdle(ctx, agent)
-    const contextEvent = agent.session.events.find(event =>
+    const contextEvent = agent.session.snapshotEvents().find(event =>
       event.type === 'user/message'
       && event.data.source.kind === 'plugin'
       && event.data.source.plugin === '@deepseek-ai/dsh-system-prompt')
@@ -481,7 +533,7 @@ describe('agent loop', () => {
   it('does not clear runtime context after an unrelated replacement', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a-runtime-context-unrelated-compaction'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a-runtime-context-unrelated-compaction'), { provider: 'mock', model: 'mock' })
     const original = agent.session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'old context' }],
       source: { kind: 'plugin', plugin: 'test-context' },
@@ -505,7 +557,7 @@ describe('agent loop', () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
     ctx.systemPrompt.context({ name: 'policy', order: 0, text: 'Mode: read-only.' })
-    const agent = ctx.agentLoop.create(SessionId('a-runtime-context-malformed'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a-runtime-context-malformed'), { provider: 'mock', model: 'mock' })
     agent.session.append('user/message', createUserMessage({
       content: [{ type: 'text', text: 'broken' }, { type: 'text', text: 'snapshot' }],
       source: { kind: 'plugin', plugin: '@deepseek-ai/dsh-system-prompt' },
@@ -513,7 +565,7 @@ describe('agent loop', () => {
 
     send(agent, 'repair context')
     await waitForIdle(ctx, agent)
-    const runtimeContexts = agent.session.events.flatMap(event =>
+    const runtimeContexts = agent.session.snapshotEvents().flatMap(event =>
       event.type === 'user/message'
         && event.data.source.kind === 'plugin'
         && event.data.source.plugin === '@deepseek-ai/dsh-system-prompt'
@@ -529,12 +581,12 @@ describe('agent loop', () => {
   it('records raw chunks for replay as assistant/chunk session events', async () => {
     const adapter = new MockAdapter([textResponse('abc')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'hi')
     await waitForIdle(ctx, agent)
 
-    const chunkEvents = agent.session.events.filter(e => e.type === 'assistant/chunk')
+    const chunkEvents = agent.session.snapshotEvents().filter(e => e.type === 'assistant/chunk')
     // textResponse('abc') = block-start + 3 deltas + block-end + usage + finish = 7
     expect(chunkEvents).toHaveLength(7)
     // replay: chunk events alone re-assemble to the recorded assistant message
@@ -553,7 +605,7 @@ describe('agent loop', () => {
     ])
     const ctx = await harness(adapter)
 
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     ctx.tools.register(defineContentToolFixture({
       name: 'slow',
       description: '',
@@ -568,13 +620,13 @@ describe('agent loop', () => {
     send(agent, 'start')
     await waitForIdle(ctx, agent)
 
-    const steering = agent.session.events.find(e =>
+    const steering = agent.session.snapshotEvents().find(e =>
       e.type === 'user/message' && JSON.stringify(e.data.content).includes('change of plans'))
     expect(steering).toBeDefined()
     // The entered batch is appended after the second step opens and before its
     // request derives history.
     const steeringSeq = steering!.seq
-    const secondStepStart = agent.session.events.filter(e => e.type === 'step/start')[1]
+    const secondStepStart = agent.session.snapshotEvents().filter(e => e.type === 'step/start')[1]
     expect(secondStepStart).toBeDefined()
     expect(steeringSeq).toBeGreaterThan(secondStepStart!.seq)
 
@@ -587,17 +639,17 @@ describe('agent loop', () => {
   it('starts idle steering synchronously and enters later steering at the next step', async () => {
     const adapter = new MockAdapter([textResponse('first'), textResponse('second')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const idle = waitForIdle(ctx, agent)
     agent.steer(createUserMessage({ content: [{ type: 'text', text: 'first idle steer' }], source: { kind: 'user' } }))
     expect(agent.status).toBe('running')
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
     agent.steer(createUserMessage({ content: [{ type: 'text', text: 'second idle steer' }], source: { kind: 'user' } }))
     await idle
 
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(1)
-    expect(agent.session.events
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
+    expect(agent.session.snapshotEvents()
       .filter(event => event.type === 'user/message')
       .map(event => event.data.content)).toEqual([
       [{ type: 'text', text: 'first idle steer' }],
@@ -612,7 +664,7 @@ describe('agent loop', () => {
   it('stops after a throwing pre-step listener and retains later steering until a wakeup', async () => {
     const adapter = new MockAdapter([textResponse('recovered')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('failed-steering'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('failed-steering'), { provider: 'mock', model: 'mock' })
     let fail = true
     ctx.on('agent/pre-step', ({ agent: subject }, next) => {
       if (subject !== agent || !fail) return next()
@@ -625,28 +677,28 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     expect(adapter.requests).toHaveLength(0)
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'turn/end')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/end')).toHaveLength(1)
     expect(agent.inbox.nextStep).toHaveLength(1)
 
     send(agent, 'resume')
     await waitForIdle(ctx, agent)
 
     expect(adapter.requests).toHaveLength(1)
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(2)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(2)
     expect(JSON.stringify(adapter.requests[0]?.messages)).toContain('pending steering')
   })
 
   it('inject() while idle durably stages context without opening a turn', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     agent.inject(createUserMessage({ content: [{ type: 'text', text: 'file changed: a.ts' }], source: { kind: 'plugin', plugin: 'watcher' } }))
     expect(agent.status).toBe('idle')
     expect(adapter.requests).toHaveLength(0)
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(0)
-    expect(agent.session.events.at(-1)).toMatchObject({
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(0)
+    expect(agent.session.snapshotEvents().at(-1)).toMatchObject({
       type: 'agent/inbox/spliced',
       data: {
         target: 'next-step',
@@ -660,7 +712,7 @@ describe('agent loop', () => {
 
     send(agent, 'go')
     await waitForIdle(ctx, agent)
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(1)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
     const flat = JSON.stringify(adapter.requests[0]!.messages)
     expect(flat).toContain('file changed: a.ts')
     expect(flat).not.toContain('<context source=')
@@ -669,13 +721,13 @@ describe('agent loop', () => {
   it('inject() persists structured context content verbatim with durable source', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('raw-context'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('raw-context'), { provider: 'mock', model: 'mock' })
     const text = '<system-reminder>Additional instructions from: pkg/AGENTS.md</system-reminder>'
     agent.inject(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'plugin', plugin: 'agent-instructions' } }))
     send(agent, 'go')
     await waitForIdle(ctx, agent)
 
-    const contextEvent = agent.session.events.find(event => event.type === 'user/message' && event.data.source.kind === 'plugin')
+    const contextEvent = agent.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'plugin')
     expect(contextEvent?.type === 'user/message' && contextEvent.data.source)
       .toEqual({ kind: 'plugin', plugin: 'agent-instructions' })
     const requestText = JSON.stringify(adapter.requests[0]!.messages)
@@ -689,7 +741,7 @@ describe('agent loop', () => {
       textResponse('done'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     let visibleDuringTool = false
     ctx.tools.register(defineContentToolFixture({
       name: 'noticer',
@@ -701,7 +753,7 @@ describe('agent loop', () => {
         agent.inject(createUserMessage({ content: [first], source: { kind: 'plugin', plugin: 'x' } }))
         first.text = 'mutated after inject'
         agent.inject(createUserMessage({ content: [{ type: 'text', text: 'second notice' }], source: { kind: 'plugin', plugin: 'x' } }))
-        visibleDuringTool = agent.session.events.some(e => e.type === 'user/message' && e.data.source.kind === 'plugin')
+        visibleDuringTool = agent.session.snapshotEvents().some(e => e.type === 'user/message' && e.data.source.kind === 'plugin')
         return [{ type: 'text', text: 'ok' }]
       },
     }))
@@ -713,10 +765,10 @@ describe('agent loop', () => {
 
     // The injection stays in the open turn, but its user-role context cannot
     // split the assistant tool call from the provider's tool-result message.
-    const turnStarts = agent.session.events.filter(e => e.type === 'turn/start')
+    const turnStarts = agent.session.snapshotEvents().filter(e => e.type === 'turn/start')
     expect(turnStarts).toHaveLength(1)
-    const result = agent.session.events.find(e => e.type === 'tool/result')!
-    const contexts = agent.session.events.filter(e => e.type === 'user/message' && e.data.source.kind === 'plugin')
+    const result = agent.session.snapshotEvents().find(e => e.type === 'tool/result')!
+    const contexts = agent.session.snapshotEvents().filter(e => e.type === 'user/message' && e.data.source.kind === 'plugin')
     expect(contexts).toHaveLength(2)
     expect(result.seq).toBeLessThan(contexts[0]!.seq)
     expect(contexts.flatMap(event => event.type === 'user/message' ? event.data.content : []))
@@ -744,7 +796,7 @@ describe('agent loop', () => {
       textResponse('done'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('invalid-context'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('invalid-context'), { provider: 'mock', model: 'mock' })
     ctx.tools.register(defineContentToolFixture({
       name: 'invalid-injector',
       description: 'attempts an invalid context injection',
@@ -760,7 +812,7 @@ describe('agent loop', () => {
     send(agent, 'go')
     await waitForIdle(ctx, agent)
 
-    expect(agent.session.events.some(event => event.type === 'user/message' && event.data.source.kind === 'plugin')).toBe(false)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'plugin')).toBe(false)
   })
 
   it('agent/turn-stopping can steer another step (/loop pattern)', async () => {
@@ -770,7 +822,7 @@ describe('agent loop', () => {
       textResponse('step 3'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let steps = 0
     ctx.on('session/event', (_session, event) => { if (event.type === 'step/end') steps++ })
@@ -798,14 +850,14 @@ describe('agent loop', () => {
         return [{ type: 'text', text: String(args.text) }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'go')
     await waitForIdle(ctx, agent)
     // only one model call despite the tool call requesting a follow-up
     expect(adapter.requests).toHaveLength(1)
     // The tool still executes and durably records its result.
-    expect(agent.session.events.some(e => e.type === 'tool/result')).toBe(true)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'tool/result')).toBe(true)
   })
 
   it('continues for steering that arrived during a concluding tool step', async () => {
@@ -814,7 +866,7 @@ describe('agent loop', () => {
       textResponse('next turn reply'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     ctx.tools.register(defineContentToolFixture({
       name: 'finalize',
       description: '',
@@ -831,7 +883,7 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     expect(adapter.requests).toHaveLength(2)
-    const events = agent.session.events.map(event => event.type)
+    const events = agent.session.snapshotEvents().map(event => event.type)
     expect(events.filter(type => type === 'turn/end')).toHaveLength(1)
     expect(JSON.stringify(adapter.requests[1]?.messages)).toContain('late steering')
     const texts = adapter.requests[1]!.messages
@@ -844,7 +896,7 @@ describe('agent loop', () => {
   it('agent/request waterfall switches models by returning a replacement config; the switch is logged', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     ctx.on('agent/request', async (_payload, next) => {
       const config = await next()
@@ -860,7 +912,7 @@ describe('agent loop', () => {
     expect(adapter.requests[0]!.model).toBe('other-model')
     // The header event records what the request ACTUALLY used — the switch is
     // a reconstructable fact, not silent drift.
-    const headerEvent = agent.session.events.find(e => e.type === 'request/header')
+    const headerEvent = agent.session.snapshotEvents().find(e => e.type === 'request/header')
     expect(headerEvent?.type === 'request/header' && headerEvent.data.header.config.model).toBe('other-model')
   })
 
@@ -874,7 +926,7 @@ describe('agent loop', () => {
       name: 'echo', description: 'echo', parameters: {},
       async execute() { return [{ type: 'text', text: 'echoed' }] },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const fires: { turn: number; step: number; signal: AbortSignal }[] = []
     ctx.on('agent/pre-step', ({ agent: subject, turn, step, signal }, next) => {
@@ -895,11 +947,11 @@ describe('agent loop', () => {
   it('agent/pre-step fires before its step boundary opens and before the request', async () => {
     const adapter = new MockAdapter([textResponse('ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let boundaryOpen = true
     ctx.on('agent/pre-step', ({ agent: subject }, next) => {
-      if (subject === agent) boundaryOpen = subject.session.events.at(-1)?.type === 'step/start'
+      if (subject === agent) boundaryOpen = subject.session.snapshotEvents().at(-1)?.type === 'step/start'
       return next()
     })
 
@@ -913,7 +965,7 @@ describe('agent loop', () => {
   it('a throwing agent/pre-step listener fails the proposal, not the loop', async () => {
     const adapter = new MockAdapter([textResponse('second turn ok')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let throwOnce = true
     ctx.on('agent/pre-step', (_payload, next) => {
@@ -931,21 +983,21 @@ describe('agent loop', () => {
     // The first proposal failed inside a balanced turn without calling the model.
     expect(errors.map(error => error.message)).toEqual(['boom in pre-step'])
     expect(adapter.requests.length).toBe(0)
-    expect(agent.session.events.some(event => event.type === 'turn/start')).toBe(true)
-    expect(agent.session.events.some(event => event.type === 'turn/end')).toBe(true)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'turn/start')).toBe(true)
+    expect(agent.session.snapshotEvents().some(event => event.type === 'turn/end')).toBe(true)
 
     // The loop survived: a second prompt runs a normal completed turn.
     send(agent, 'second')
     await waitForIdle(ctx, agent)
     expect(adapter.requests.length).toBe(1)
-    const lastTurnEnd = agent.session.events.findLast(e => e.type === 'turn/end')
+    const lastTurnEnd = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(lastTurnEnd?.type === 'turn/end' && lastTurnEnd.data.reason).toEqual({ kind: 'completed' })
   })
 
   it('cancel() mid-stream ends the turn with reason aborted', async () => {
     const adapter = new MockAdapter(['hang'])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const reasons: TurnEndReason[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
@@ -965,7 +1017,7 @@ describe('agent loop', () => {
     // turn stops by default and ends max-tokens, not completed.
     const adapter = new MockAdapter([maxTokensResponse('truncat')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const reasons: TurnEndReason[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
@@ -976,7 +1028,7 @@ describe('agent loop', () => {
     expect(adapter.requests).toHaveLength(1)
     expect(reasons).toEqual([{ kind: 'max-tokens' }])
     // Assert the durable row, not only the live listener.
-    const turnEnd = agent.session.events.findLast(e => e.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(turnEnd!.data.reason).toEqual({ kind: 'max-tokens' })
   })
 
@@ -988,7 +1040,7 @@ describe('agent loop', () => {
       textResponse('second half'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let steps = 0
     ctx.on('session/event', (_session, event) => { if (event.type === 'step/end') steps++ })
@@ -1038,7 +1090,7 @@ describe('agent loop', () => {
     // stop. The per-turn reason must be independent — turn 2 ends completed.
     const adapter = new MockAdapter([maxTokensResponse('cut'), textResponse('clean')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const reasons: TurnEndReason[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
@@ -1052,7 +1104,7 @@ describe('agent loop', () => {
   })
 
   it('does not dispatch tool calls from a max-tokens-truncated step', async () => {
-    const callId = CallId('c1')
+    const callId = ToolCallId('c1')
     const adapter = new MockAdapter([[
       { type: 'block-start', index: 0, blockType: 'tool-call' },
       { type: 'tool-call-delta', index: 0, id: callId, name: 'echo', argumentsDelta: '{"text":"x"}' },
@@ -1071,7 +1123,7 @@ describe('agent loop', () => {
         return [{ type: 'text', text: 'should not run' }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const reasons: TurnEndReason[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
@@ -1080,7 +1132,7 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     expect(executions).toBe(0)
-    expect(agent.session.events.some(e => e.type === 'tool/call')).toBe(false)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'tool/call')).toBe(false)
     expect(agent.session.deriveMessages()).toEqual([{
       id: expect.any(String) as unknown,
       role: 'user',
@@ -1090,7 +1142,7 @@ describe('agent loop', () => {
     expect(reasons).toEqual([{ kind: 'max-tokens' }])
     // Empty content still needs an assistant/message to carry usage; derivation
     // skips that host so it does not create a spurious assistant turn.
-    const assistantMessage = agent.session.events.find(e => e.type === 'assistant/message')
+    const assistantMessage = agent.session.snapshotEvents().find(e => e.type === 'assistant/message')
     expect(assistantMessage?.type === 'assistant/message' && assistantMessage.data).toEqual({
       turn: 1,
       step: 1,
@@ -1107,7 +1159,7 @@ describe('agent loop', () => {
   it('appends an empty completion anchor for a max-tokens step with no usage', async () => {
     // The truncated tool call is dropped from durable content, while the
     // successful provider call still needs an exact replay anchor.
-    const callId = CallId('c1')
+    const callId = ToolCallId('c1')
     const adapter = new MockAdapter([[
       { type: 'block-start', index: 0, blockType: 'tool-call' },
       { type: 'tool-call-delta', index: 0, id: callId, name: 'echo', argumentsDelta: '{"text":"x"}' },
@@ -1121,7 +1173,7 @@ describe('agent loop', () => {
       parameters: { text: { type: 'string' } },
       async execute() { return [{ type: 'text', text: 'should not run' }] },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const reasons: TurnEndReason[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
@@ -1130,7 +1182,7 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     expect(reasons).toEqual([{ kind: 'max-tokens' }])
-    const assistant = agent.session.events.find(e => e.type === 'assistant/message')!
+    const assistant = agent.session.snapshotEvents().find(e => e.type === 'assistant/message')!
     expect(assistant.type === 'assistant/message' && assistant.data).toEqual({
       turn: 1,
       step: 1,
@@ -1155,7 +1207,7 @@ describe('agent loop', () => {
     // a durable successful-call boundary for replay consumers.
     const adapter = new MockAdapter([[{ type: 'finish', reason: { kind: 'stop' } }]])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const reasons: TurnEndReason[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/end') reasons.push(event.data.reason) })
@@ -1164,7 +1216,7 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     expect(reasons).toEqual([{ kind: 'completed' }])
-    const assistant = agent.session.events.find(e => e.type === 'assistant/message')!
+    const assistant = agent.session.snapshotEvents().find(e => e.type === 'assistant/message')!
     expect(assistant.type === 'assistant/message' && assistant.data).toEqual({
       turn: 1,
       step: 1,
@@ -1185,7 +1237,7 @@ describe('agent loop', () => {
   })
 
   it('keeps safe max-tokens assistant content while dropping truncated tool calls', async () => {
-    const callId = CallId('c1')
+    const callId = ToolCallId('c1')
     const adapter = new MockAdapter([[
       { type: 'block-start', index: 0, blockType: 'text' },
       { type: 'text-delta', index: 0, text: 'partial text' },
@@ -1199,14 +1251,14 @@ describe('agent loop', () => {
       },
     ], textResponse('continued')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     send(agent, 'go')
     await waitForIdle(ctx, agent)
     send(agent, 'continue')
     await waitForIdle(ctx, agent)
 
-    expect(agent.session.events.some(e => e.type === 'tool/call')).toBe(false)
+    expect(agent.session.snapshotEvents().some(e => e.type === 'tool/call')).toBe(false)
     // The follow-up request replays the truncated message with its replay
     // metadata pruned in step with the dropped tool call.
     expect(adapter.requests[1]?.messages[1]?.source).toEqual({
@@ -1262,7 +1314,7 @@ describe('agent loop', () => {
         return [{ type: 'text', text: String(args.text) }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     let threw = false
     // Post-commit session observers cannot control the loop. The tool call still
     // drives the second model request, and the turn completes normally.
@@ -1274,14 +1326,14 @@ describe('agent loop', () => {
     await waitForIdle(ctx, agent)
 
     expect(adapter.requests).toHaveLength(2)
-    const turnEnd = agent.session.events.findLast(e => e.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents().findLast(e => e.type === 'turn/end')
     expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason.kind).toBe('completed')
   })
 
   it('contains a reentrant send attempted during durable inbox publication', async () => {
     const adapter = new MockAdapter([textResponse('first')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     let nested = false
     ctx.on('session/event', (session, event) => {
@@ -1295,8 +1347,8 @@ describe('agent loop', () => {
     send(agent, 'outer message')
     await idle
 
-    const turns = agent.session.events.filter(event => event.type === 'turn/start')
-    const messages = agent.session.events
+    const turns = agent.session.snapshotEvents().filter(event => event.type === 'turn/start')
+    const messages = agent.session.snapshotEvents()
       .filter(event => event.type === 'user/message')
       .map(event => event.data.content)
     expect(turns).toHaveLength(1)
@@ -1306,7 +1358,7 @@ describe('agent loop', () => {
   it('preserves independent turn sources across an adjacent microtask send', async () => {
     const adapter = new MockAdapter([textResponse('first'), textResponse('second')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const idle = waitForIdle(ctx, agent)
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'user message' }], source: { kind: 'user' } }))
@@ -1314,8 +1366,8 @@ describe('agent loop', () => {
     agent.followup(createUserMessage({ content: [{ type: 'text', text: 'plugin message' }], source: { kind: 'plugin', plugin: 'test' } }))
     await idle
 
-    const turns = agent.session.events.filter(event => event.type === 'turn/start')
-    const sources = agent.session.events
+    const turns = agent.session.snapshotEvents().filter(event => event.type === 'turn/start')
+    const sources = agent.session.snapshotEvents()
       .filter(event => event.type === 'user/message')
       .map(event => event.data.source)
     expect(turns).toHaveLength(2)
@@ -1328,7 +1380,7 @@ describe('agent loop', () => {
   it('keeps a session-listener send after dequeue in the following turn', async () => {
     const adapter = new MockAdapter([textResponse('first'), textResponse('second')])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const turns: number[] = []
     ctx.on('session/event', (_s, event) => { if (event.type === 'turn/start') turns.push(event.data.turn) })
@@ -1364,17 +1416,17 @@ describe('agent loop', () => {
       textResponse('second'),
     ])
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     agentRef.current = agent
 
     const idle = waitForIdle(ctx, agent)
     send(agent, 'outer message')
     await idle
 
-    const messages = agent.session.events
+    const messages = agent.session.snapshotEvents()
       .filter(event => event.type === 'user/message')
       .map(event => event.data.content)
-    expect(agent.session.events.filter(event => event.type === 'turn/start')).toHaveLength(2)
+    expect(agent.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(2)
     expect(messages).toEqual([
       [{ type: 'text', text: 'outer message' }],
       [{ type: 'text', text: 'model callback message' }],
@@ -1384,7 +1436,7 @@ describe('agent loop', () => {
   it('records normalized model errors on the turn boundary', async () => {
     const adapter = new MockAdapter([]) // script exhausted → throws
     const ctx = await harness(adapter)
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
 
     const errors: unknown[] = []
     const reasons: TurnEndReason[] = []
@@ -1404,7 +1456,7 @@ describe('agent loop', () => {
     })
     expect(reasons[0]).toMatchObject({ kind: 'error' })
     // The durable failure and live relay describe the same failed turn.
-    const turnEnd = agent.session.events.find(e => e.type === 'turn/end')
+    const turnEnd = agent.session.snapshotEvents().find(e => e.type === 'turn/end')
     expect(turnEnd?.type === 'turn/end' && turnEnd.data.reason).toMatchObject({ kind: 'error' })
   })
 
@@ -1413,8 +1465,8 @@ describe('agent loop', () => {
     const ctx = await harness(adapter)
 
     let agent!: Agent
-    const fiber = await ctx.plugin(Object.assign((inner: Context) => {
-      agent = inner.agentLoop.create(SessionId('scoped'), { provider: 'mock', model: 'mock' })
+    const fiber = await ctx.plugin(Object.assign(async (inner: Context) => {
+      agent = await inner.agentLoop.create(SessionId('scoped'), { provider: 'mock', model: 'mock' })
     }, { inject: ['agentLoop'] }))
 
     expect(ctx.agents.get(SessionId('scoped'))).toBe(agent)
@@ -1429,15 +1481,20 @@ describe('agent loop', () => {
   })
 
   it('creates agents from config on startup', async () => {
-    const adapter = new MockAdapter([textResponse('from config')])
+    const effort = ReasoningEffortId('high')
+    const adapter = new MockAdapter([textResponse('from config')], {
+      efforts: [{ id: effort, name: 'High' }],
+      defaultEffort: effort,
+    })
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(AgentLoop, {
-      agents: [{ id: SessionId('config-agent'), provider: 'mock', model: 'mock' }],
+      agents: [{ id: SessionId('config-agent'), provider: 'mock', model: 'mock', reasoningEffort: effort }],
     })
     ctx.llm.registerAdapter(['mock'], adapter)
 
@@ -1451,12 +1508,16 @@ describe('agent loop', () => {
     send(agent, 'hi')
     await waitForIdle(ctx, agent)
     expect(adapter.requests).toHaveLength(1)
+    expect(adapter.requests[0]?.reasoningEffort).toBe(effort)
+    const header = agent.session.snapshotEvents().find(event => event.type === 'request/header')
+    expect(header?.type === 'request/header' && header.data.header.config.reasoningEffort).toBe(effort)
   })
 
   it('attaches config agent cwd to the fresh session header', async () => {
     const ctx = new Context()
     await ctx.plugin(LlmRuntime)
     await ctx.plugin(SessionStore)
+    await ctx.plugin(SessionProjectionRegistry)
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
@@ -1482,15 +1543,15 @@ describe('agent loop', () => {
         return [{ type: 'text', text: String(args.text) }]
       },
     }))
-    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const agent = await ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
     send(agent, 'run')
     await waitForIdle(ctx, agent)
 
-    const replayed = ctx.sessions.create(SessionId('replayed'), { seed: [...agent.session.events] })
+    const replayed = ctx.sessions.create(SessionId('replayed'), { seed: agent.session.snapshotEvents() })
     expect(replayed.deriveMessages()).toEqual(agent.session.deriveMessages())
     // event-by-event identity of types over the inherited prefix
-    expect(replayed.events.slice(0, agent.session.seq).map(e => e.type)).toEqual(
-      agent.session.events.map(e => e.type))
-    expect(replayed.events.at(-1)?.type).toBe('session/end-seed')
+    expect(replayed.snapshotEvents().slice(0, agent.session.seq).map(e => e.type)).toEqual(
+      agent.session.snapshotEvents().map(e => e.type))
+    expect(replayed.snapshotEvents().at(-1)?.type).toBe('session/end-seed')
   })
 })

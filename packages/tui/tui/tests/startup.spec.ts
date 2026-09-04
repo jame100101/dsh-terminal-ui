@@ -13,7 +13,7 @@ import type { SessionRecencyRecord } from '../src/session-recency'
 
 /** A minimal session header fixture. */
 function header(id: string, createdAt: number, cwd?: string): SessionHeader {
-  return { version: 0, id: SessionId(id), createdAt, ...(cwd === undefined ? {} : { cwd }) }
+  return { version: 0, id: SessionId(id), createdAt, isSeeded: false, ...(cwd === undefined ? {} : { cwd }) }
 }
 
 /** A minimal corpus record fixture. */

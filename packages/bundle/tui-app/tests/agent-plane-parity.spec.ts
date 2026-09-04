@@ -39,6 +39,8 @@ describe('TUI agent-plane ownership', () => {
         profilePatchPath: !!js dshHomePath('profiles', 'tui', 'cordis.patch.yml')`)
     expect(source).toMatch(/    - id: code-runtime\r?\n      name: '@deepseek-ai\/dsh-code-runtime-worker-thread'/u)
     expect(source).toMatch(/    - id: cordis-host-runner\r?\n      name: '@deepseek-ai\/dsh-cordis-host-runner'/u)
+    expect(source).toContain('    - id: subagent-model-selection-settings')
+    expect(source).toContain("      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'")
     expect(source).toMatch(/    - id: agent-presets\r?\n      name: '@deepseek-ai\/dsh-agent-presets'/u)
   })
 })

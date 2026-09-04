@@ -90,6 +90,7 @@ describe('durable workflow projection', () => {
       version: 0,
       id: childId,
       createdAt: 2,
+      isSeeded: false,
       origin: 'subagent',
       parentSession: parentId,
       delegationDepth: 1,

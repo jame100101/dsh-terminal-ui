@@ -22,7 +22,6 @@ import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-settings'
-import { settingsNamespace } from '@deepseek-ai/dsh-settings'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
@@ -495,7 +494,7 @@ async function loadSettingsData(
       inspectProviders: inspect?.list().length ?? 0,
     },
     presets: presetRows,
-    currentPreset: recordedPreset(surface.agent.session.header, surface.agent.session.events),
+    currentPreset: recordedPreset(surface.agent.session.header, surface.agent.session.snapshotEvents()),
   }
 }
 
@@ -603,8 +602,8 @@ function subscribe(
       resumeProgress: surface.resumeProgress,
       ...panels,
     })
-    if (foldIsIdle(surface.fold) && !surface.busy && projectionCheckpointIsComplete(surface.agent.session.events)) {
-      const last = surface.agent.session.events.at(-1)
+    if (foldIsIdle(surface.fold) && !surface.busy && projectionCheckpointIsComplete(surface.agent.session.snapshotEvents())) {
+      const last = surface.agent.session.snapshotEvents().at(-1)
       foldSidecar.write(surface.agent.session.header, last?.seq ?? 0, surface.fold)
     }
   }
@@ -721,31 +720,28 @@ function mountAnswerers(ctx: Context, store: TuiStore, surface: Surface): void {
       })
     })
   }
-  const questions = ctx.get('userQuestions')
-  if (questions !== undefined) {
-    ctx.effect(() => questions.registerProvider({
-      ask: request => new Promise((resolve) => {
-        surface.questionResolve = answers => resolve({ answers })
-        surface.pendingQuestion = {
-          questions: request.questions.map(question => ({
-            id: question.id,
-            question: question.question,
-            ...(question.detail === undefined ? {} : { detail: question.detail }),
-            ...(question.options === undefined ? {} : { options: question.options }),
-            ...(question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect }),
-          })),
+  if (ctx.get('userQuestions') !== undefined) {
+    ctx.on('user-questions/request', request => new Promise((resolve) => {
+      surface.questionResolve = answers => resolve({ answers })
+      surface.pendingQuestion = {
+        questions: request.questions.map(question => ({
+          id: question.id,
+          question: question.question,
+          ...(question.detail === undefined ? {} : { detail: question.detail }),
+          ...(question.options === undefined ? {} : { options: question.options }),
+          ...(question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect }),
+        })),
+      }
+      surface.version += 1
+      store.set({ ...store.getSnapshot(), pendingQuestion: surface.pendingQuestion, version: surface.version })
+      request.signal?.addEventListener('abort', () => {
+        if (surface.pendingQuestion !== null) {
+          surface.pendingQuestion = null
+          surface.questionResolve = null
+          surface.version += 1
+          store.set({ ...store.getSnapshot(), pendingQuestion: null, version: surface.version })
         }
-        surface.version += 1
-        store.set({ ...store.getSnapshot(), pendingQuestion: surface.pendingQuestion, version: surface.version })
-        request.signal?.addEventListener('abort', () => {
-          if (surface.pendingQuestion !== null) {
-            surface.pendingQuestion = null
-            surface.questionResolve = null
-            surface.version += 1
-            store.set({ ...store.getSnapshot(), pendingQuestion: null, version: surface.version })
-          }
-        }, { once: true })
-      }),
+      }, { once: true })
     }))
   }
 }
@@ -1246,17 +1242,18 @@ async function boot(
   /** Swap the surface onto a freshly created agent (/new). */
   const newSession = async (): Promise<void> => {
     try {
-      if (projectionCheckpointIsComplete(surface.agent.session.events)) {
+      if (projectionCheckpointIsComplete(surface.agent.session.snapshotEvents())) {
         projections.write(
           surface.agent.session.header,
-          surface.agent.session.events.at(-1)?.seq ?? 0,
+          surface.agent.session.snapshotEvents().at(-1)?.seq ?? 0,
           surface.fold,
         )
       }
       // A new session continues the preset the surface currently runs; a
       // metadata-free session resolves the roster default instead.
       const previousSessionId = surface.agent.id
-      const next = await createTuiAgent(ctx, surface.cwd, recordedPreset(surface.agent.session.header, surface.agent.session.events))
+      const nextPreset = recordedPreset(surface.agent.session.header, surface.agent.session.snapshotEvents())
+      const next = await createTuiAgent(ctx, surface.cwd, nextPreset)
       const nextReasoning = await resolveTuiReasoning(ctx, next.selection)
       unsubscribe()
       await currentHandle.dispose()
@@ -1420,10 +1417,10 @@ async function boot(
     const replayTotal = surface.resumeProgress.total
     surface.resumeProgress = { done: replayTotal, total: replayTotal }
     publishSurfaceFold()
-    if (projectionCheckpointIsComplete(surface.agent.session.events)) {
+    if (projectionCheckpointIsComplete(surface.agent.session.snapshotEvents())) {
       projections.write(
         surface.agent.session.header,
-        surface.agent.session.events.at(-1)?.seq ?? 0,
+        surface.agent.session.snapshotEvents().at(-1)?.seq ?? 0,
         surface.fold,
       )
     }
@@ -1491,7 +1488,7 @@ async function boot(
       }
       // Re-read after earlier queued work. A prompt claims the session in this
       // queue before `turn/start` becomes observable.
-      if (presetQueue.presetLocked(agent.id, agent.session.events)) {
+      if (presetQueue.presetLocked(agent.id, agent.session.snapshotEvents())) {
         return uiText(
           '预设已锁定：当前会话已经开始对话，预设不可再变更（请 /new 开新会话后再切换）',
           'Preset locked: this conversation has started; use /new before selecting another preset',
@@ -1605,7 +1602,7 @@ async function boot(
       }
     }
     const firstCount = store.getSnapshot().nodes.length
-    const turnBefore = lastTurnNumber(surface.agent.session.events)
+    const turnBefore = lastTurnNumber(surface.agent.session.snapshotEvents())
     await dispatchOrFollowup(prompt, false)
     try {
       await surface.agent.whenIdle()
@@ -1615,7 +1612,7 @@ async function boot(
     }
     const result = renderAssistantResultPlain(store.getSnapshot().nodes.slice(firstCount))
     if (result !== '') process.stdout.write(result + '\n')
-    const reason = turnEndReasonAfter(surface.agent.session.events, turnBefore)
+    const reason = turnEndReasonAfter(surface.agent.session.snapshotEvents(), turnBefore)
     requestExit(ctx, reason === undefined ? (prompt.startsWith('/') ? EXIT_OK : EXIT_FAILURE) : mapTurnEndToExitCode(reason))
   }
   try {
@@ -1829,11 +1826,11 @@ async function boot(
           store.set({ ...store.getSnapshot(), pendingQuestion: null, version: surface.version })
           resolve?.([...answers])
         },
-        updateSetting: patch => ctx.settings.update(settingsNamespace('tui'), patch as object),
+        updateSetting: patch => ctx.settings.update('tui', patch as object),
         togglePlugin,
         updatePluginConfig: async (ns, patch) => {
           try {
-            await ctx.settings.update(settingsNamespace(ns), patch as object)
+            await ctx.settings.update(ns, patch as object)
             return null
           } catch (error) {
             return `${uiText('写入失败', 'Write failed')}: ${error instanceof Error ? error.message : String(error)}`
@@ -2001,7 +1998,7 @@ async function boot(
  * @param config - validated TUI plugin config.
  */
 export function apply(ctx: Context, config: Config): void {
-  const tuiScope = ctx.settings.register(settingsNamespace('tui'), z.object({
+  const tuiScope = ctx.settings.register('tui', z.object({
     busyEnter: z.union(['queue', 'steer']).default('queue'),
     thinking: z.union(['collapsed', 'expanded']).default('collapsed'),
     theme: z.union(['dark', 'light']).default('dark'),

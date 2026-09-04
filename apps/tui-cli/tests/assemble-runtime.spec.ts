@@ -112,7 +112,14 @@ describe('assembled runtime (when present)', () => {
       join(runtime, 'node_modules/@deepseek-ai/dsh-tui'),
     ])).not.toThrow()
     expect(existsSync(join(runtime, 'lib/bin.js'))).toBe(true)
-    expect(existsSync(join(runtime, 'config/agent-presets'))).toBe(true)
+    // Shipped presets travel inside dsh-agent-presets (`SHIPPED_PRESET_ROOT`),
+    // not under the launcher's old `config/agent-presets` tree. The roster is
+    // standard/ptc/minimal/cordis; `code` is gone.
+    const shipped = join(runtime, 'node_modules/@deepseek-ai/dsh-agent-presets/presets')
+    for (const id of ['standard', 'ptc', 'minimal', 'cordis'] as const) {
+      expect(existsSync(join(shipped, id, 'agent.cordis.yml'))).toBe(true)
+    }
+    expect(existsSync(join(shipped, 'code'))).toBe(false)
     expect(existsSync(join(runtime, 'node_modules/@deepseek-ai/dsh-tui-app/cordis.patch.yml'))).toBe(true)
     const cursorHelpers = readFileSync(join(runtime, 'node_modules/ink/build/cursor-helpers.js'), 'utf8')
     const inkRuntime = readFileSync(join(runtime, 'node_modules/ink/build/ink.js'), 'utf8')

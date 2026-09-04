@@ -14,12 +14,13 @@ import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 // Empty type imports carry declaration merges: compaction extends the session
 // event vocabulary with `compaction/*`, commands with `command/run`/`done`,
 // llm-retry with `llm/retry`, plan-mode with `plan/mode`, goal with
-// `goal/change`, tools with `tool/code-dispatch*`.
+// `goal/change`, tool-todo with `todo/write`, tools with `tool/code-dispatch*`.
 import type {} from '@deepseek-ai/dsh-compaction'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-llm-retry'
 import type {} from '@deepseek-ai/dsh-plan-mode'
 import type {} from '@deepseek-ai/dsh-goal'
+import type {} from '@deepseek-ai/dsh-tool-todo'
 import type {} from '@deepseek-ai/dsh-tools'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { FoldState, GoalRow, SessionStats, TuiNode, ToolStatus } from './types'

@@ -4,11 +4,11 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import { boot, healProfilesModuleFallback, loadOverlayPatches } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import type { JobOutcome, JobStart } from '@deepseek-ai/dsh-jobs'
-import { CallId, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
+import { SHIPPED_PRESET_ROOT } from '@deepseek-ai/dsh-agent-presets'
+import { ToolCallId, createUserMessage, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import { foldRequestHeader, SessionId } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { WorkflowRunId } from '@deepseek-ai/dsh-workflow'
@@ -17,7 +17,7 @@ import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-a
 import { createForkAgent, createForkArtifact } from '../src/fork-lifecycle'
 import { projectJobsRows, subscribeVisibleJobs } from '../src/jobs-projection'
 import { pluginInventoryEntries, profilePatchEntry } from '../src/patch-toggle'
-import { createTuiAgent, resolveTuiPreset, SessionPresetQueue } from '../src/preset-lifecycle'
+import { createTuiAgent, recordedPreset, resolveTuiPreset, SessionPresetQueue } from '../src/preset-lifecycle'
 import { prepareTuiResume, replayTuiResumeOrDispose } from '../src/resume-lifecycle'
 import {
   createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
@@ -30,7 +30,6 @@ import {
 /* oxlint-disable typescript/no-unsafe-return -- Oxlint resolves this cross-package boot fixture outside a test compiler face. */
 
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
-const presets = join(root, 'apps', 'cli', 'config', 'agent-presets')
 const installAnchor = join(root, 'apps', 'cli', 'package.json')
 const basePatch = join(root, 'packages', 'bundle', 'base', 'cordis.patch.yml')
 const tuiPatch = join(root, 'packages', 'bundle', 'tui-app', 'cordis.patch.yml')
@@ -73,7 +72,7 @@ async function bootTuiComposition(home: string): Promise<Context> {
   await mkdir(profileDir, { recursive: true })
   await writeFile(settingsFile, '{}\n')
   await writeFile(join(profileDir, 'cordis.yml'), '[]\n')
-  healProfilesModuleFallback(installAnchor, home)
+  await healProfilesModuleFallback({ installAnchor, home })
   return await boot('dsh-tui-preset-test', join(profileDir, 'cordis.yml'), [
     ...loadOverlayPatches('dsh-tui-preset-test', basePatch),
     ...loadOverlayPatches('dsh-tui-preset-test', tuiPatch),
@@ -86,7 +85,7 @@ async function bootTuiComposition(home: string): Promise<Context> {
       id: 'agent-presets',
       config: {
         default: 'standard',
-        roots: [{ path: presets, trust: 'system' }],
+        roots: [{ path: SHIPPED_PRESET_ROOT, trust: 'system' }],
         includeUserRoot: false,
       },
     },
@@ -107,7 +106,7 @@ async function persistAndDisposeTuiAgent(
   ctx: Context,
   created: Awaited<ReturnType<typeof createTuiAgent>>,
 ): Promise<void> {
-  if (created.agent.session.events.length === 0) appendCompletedTurn(created.agent)
+  if (created.agent.session.snapshotEvents().length === 0) appendCompletedTurn(created.agent)
   expect(await ctx.sessions.flush(created.agent.session)).toBe(true)
   await created.handle.dispose()
 }
@@ -160,8 +159,8 @@ describe('shipped TUI preset composition', () => {
       const inventory = pluginInventoryEntries(entries)
       expect(inventory.filter(entry => entry.options.id === 'tool-fs')).toHaveLength(1)
       expect(profilePatchEntry(entries, 'agent-default-model')?.id).toBe('include:agent-default-model')
-      expect(inventory.some(entry => entry.options.id === 'tool-subagent-claude-code')).toBe(true)
-      expect(profilePatchEntry(entries, 'tool-subagent-claude-code')).toBeUndefined()
+      expect(profilePatchEntry(entries, 'tool-fs')?.id).toBe('include:tool-fs')
+      expect(profilePatchEntry(entries, 'persona')).toBeUndefined()
     } finally {
       await created.handle.dispose()
     }
@@ -176,7 +175,7 @@ describe('shipped TUI preset composition', () => {
       expect(commandNames(ctx, created.agent)).not.toEqual(expect.arrayContaining(['compact', 'plan']))
       expect(await skillNames(ctx, created.agent, workspace)).not.toContain(localSkill)
       expect(ctx.agentPresets.composedPreset(created.agent.ctx)).toBe('minimal')
-      expect(resolveSessionPreset(created.agent.session)).toBe('minimal')
+      expect(recordedPreset(created.agent.session.header, created.agent.session.snapshotEvents())).toBe('minimal')
       const minimalAssembly = await ctx.systemPrompt.assemble({ scope: created.agent })
       expect(minimalAssembly.sections).toEqual([
         { name: 'deployment:persona', text: 'You are a helpful software engineer assistant.' },
@@ -189,7 +188,7 @@ describe('shipped TUI preset composition', () => {
       expect(commandNames(ctx, created.agent)).toEqual(expect.arrayContaining(['compact', 'plan']))
       expect(await skillNames(ctx, created.agent, workspace)).toContain(localSkill)
       expect(ctx.agentPresets.composedPreset(created.agent.ctx)).toBe('standard')
-      expect(resolveSessionPreset(created.agent.session)).toBe('standard')
+      expect(recordedPreset(created.agent.session.header, created.agent.session.snapshotEvents())).toBe('standard')
       expect(toolNames(ctx, created.agent)).toEqual(expect.arrayContaining(['pwsh', 'read', 'skill', 'write']))
     } finally {
       await created.handle.dispose()
@@ -199,7 +198,7 @@ describe('shipped TUI preset composition', () => {
   it('activates code and cordis capabilities rather than changing only metadata', async () => {
     const created = await createTuiAgent(ctx, workspace)
     try {
-      await ctx.agentPresets.recompose(created.agent.ctx, 'code')
+      await ctx.agentPresets.recompose(created.agent.ctx, 'ptc')
       const codeAssembly = await ctx.systemPrompt.assemble({ scope: created.agent })
       expect(codeAssembly.tools.map(tool => tool.name)).toEqual(['run_code'])
 
@@ -218,7 +217,7 @@ describe('shipped TUI preset composition', () => {
     const selected = await ctx.agentPresets.recompose(current.agent.ctx, 'minimal')
     current.agent.session.append('agent-preset/selected', { agentPreset: selected.id })
 
-    const next = await createTuiAgent(ctx, workspace, resolveSessionPreset(current.agent.session))
+    const next = await createTuiAgent(ctx, workspace, recordedPreset(current.agent.session.header, current.agent.session.snapshotEvents()))
     try {
       expect(next.agent.session.header.agentPreset).toBe('minimal')
       expect(ctx.agentPresets.composedPreset(next.agent.ctx)).toBe('minimal')
@@ -242,8 +241,9 @@ describe('shipped TUI preset composition', () => {
       expect(cold.session).toMatchObject({
         agentPreset: parent.presetId,
         parentSession: parent.agent.id,
-        seedLength: parent.agent.session.events.length,
+        isSeeded: true,
       })
+      expect(Number(cold.inheritedEventCount)).toBe(parent.agent.session.snapshotEvents().length)
       child = await resumeColdTuiSession(ctx, childId)
       expect(child.handle.agent.session.header.agentPreset).toBe(parent.presetId)
       expect(ctx.agentPresets.composedPreset(child.handle.agent.ctx)).toBe(parent.presetId)
@@ -282,7 +282,7 @@ describe('shipped TUI preset composition', () => {
       appendCompletedTurn(parent.agent)
       const before = ctx.agents.list().length
       await expect(createForkAgent(ctx, {
-        seed: parent.agent.session.events,
+        seed: parent.agent.session.snapshotEvents(),
         cwd: workspace,
         parentSession: parent.agent.id,
         presetId: 'missing-preset',
@@ -302,7 +302,7 @@ describe('shipped TUI preset composition', () => {
       const liveBefore = ctx.agents.list()
       const sessionsBefore = ctx.sessions.list()
       await expect(createForkAgent(ctx, {
-        seed: parent.agent.session.events,
+        seed: parent.agent.session.snapshotEvents(),
         cwd: workspace,
         parentSession: parent.agent.id,
         presetId: 'standard',
@@ -318,7 +318,9 @@ describe('shipped TUI preset composition', () => {
 
   it('rolls a fork back when its durability barrier fails after publication', async () => {
     const parent = await createTuiAgent(ctx, workspace, 'standard')
-    const flush = vi.spyOn(ctx.sessions, 'flush').mockRejectedValueOnce(new Error('fork flush failed for test'))
+    const offFlush = ctx.on('session/flush', () => {
+      throw new Error('fork flush failed for test')
+    })
     try {
       appendCompletedTurn(parent.agent)
       const liveBefore = ctx.agents.list()
@@ -328,7 +330,7 @@ describe('shipped TUI preset composition', () => {
       expect(ctx.agents.list()).toEqual(liveBefore)
       expect(ctx.sessions.list()).toEqual(sessionsBefore)
     } finally {
-      flush.mockRestore()
+      offFlush()
       await parent.handle.dispose()
     }
   })
@@ -393,7 +395,7 @@ describe('shipped TUI preset composition', () => {
         model: 'model-a',
         reasoningEffort: 'high',
       })
-      expect(foldRequestHeader(child.handle.agent.session.events)?.config).toMatchObject({
+      expect(foldRequestHeader(child.handle.agent.session.snapshotEvents())?.config).toMatchObject({
         provider: 'fork-route-a',
         model: 'model-a',
         reasoningEffort: 'high',
@@ -467,7 +469,7 @@ describe('shipped TUI preset composition', () => {
       expect(adapter.requests.at(-1)).toMatchObject({
         provider: 'resume-route-a', model: 'model-a', reasoningEffort: 'high',
       })
-      expect(foldRequestHeader(resumed.handle.agent.session.events)?.config).toMatchObject({
+      expect(foldRequestHeader(resumed.handle.agent.session.snapshotEvents())?.config).toMatchObject({
         provider: 'resume-route-a', model: 'model-a', reasoningEffort: 'high',
       })
     } finally {
@@ -649,7 +651,7 @@ describe('shipped TUI preset composition', () => {
     try {
       const execute = (agent: Agent, name: string, callId: string) => ctx.tools.execute({
         signal: new AbortController().signal,
-        callId: CallId(callId),
+        callId: ToolCallId(callId),
         name: 'workflow',
         arguments: {
           script: 'return 1',
@@ -667,9 +669,9 @@ describe('shipped TUI preset composition', () => {
       expect(deliveredSessions.has(agentA.agent.session)).toBe(true)
       expect(deliveredSessions.has(agentB.agent.session)).toBe(true)
       expect([...currentProjection.values()].map(row => row.name)).toEqual(['current-workflow'])
-      expect([...foldWorkflowSessionEvents(agentA.agent.session.events).values()].map(row => row.name))
+      expect([...foldWorkflowSessionEvents(agentA.agent.session.snapshotEvents()).values()].map(row => row.name))
         .toEqual(['current-workflow'])
-      expect([...foldWorkflowSessionEvents(agentB.agent.session.events).values()].map(row => row.name))
+      expect([...foldWorkflowSessionEvents(agentB.agent.session.snapshotEvents()).values()].map(row => row.name))
         .toEqual(['foreign-workflow'])
     } finally {
       offDispatch()
@@ -705,7 +707,7 @@ describe('shipped TUI preset composition', () => {
         status: 'completed',
         agentsStarted: 0,
       }])
-      expect([...foldWorkflowSessionEvents(current.agent.session.events).values()].map(row => row.name))
+      expect([...foldWorkflowSessionEvents(current.agent.session.snapshotEvents()).values()].map(row => row.name))
         .toEqual(['current-history'])
     } finally {
       await resumed?.handle.dispose()
@@ -760,15 +762,15 @@ describe('shipped TUI preset composition', () => {
     const created = await createTuiAgent(ctx, workspace)
     const queue = new SessionPresetQueue()
     try {
-      const selections = ['minimal', 'code', 'standard'].map(id => queue.run(created.agent.id, async () => {
+      const selections = ['minimal', 'ptc', 'standard'].map(id => queue.run(created.agent.id, async () => {
         const preset = await ctx.agentPresets.recompose(created.agent.ctx, id)
         created.agent.session.append('agent-preset/selected', { agentPreset: preset.id })
         return preset.id
       }))
 
-      await expect(Promise.all(selections)).resolves.toEqual(['minimal', 'code', 'standard'])
+      await expect(Promise.all(selections)).resolves.toEqual(['minimal', 'ptc', 'standard'])
       expect(ctx.agentPresets.composedPreset(created.agent.ctx)).toBe('standard')
-      expect(resolveSessionPreset(created.agent.session)).toBe('standard')
+      expect(recordedPreset(created.agent.session.header, created.agent.session.snapshotEvents())).toBe('standard')
       expect(commandNames(ctx, created.agent)).toEqual(expect.arrayContaining(['compact', 'plan']))
     } finally {
       await created.handle.dispose()
@@ -780,13 +782,13 @@ describe('shipped TUI preset composition', () => {
     try {
       const toolsBefore = toolNames(ctx, created.agent)
       const commandsBefore = commandNames(ctx, created.agent)
-      const eventsBefore = created.agent.session.events.length
+      const eventsBefore = created.agent.session.snapshotEvents().length
 
       await expect(ctx.agentPresets.recompose(created.agent.ctx, 'missing-preset')).rejects.toThrow()
 
       expect(toolNames(ctx, created.agent)).toEqual(toolsBefore)
       expect(commandNames(ctx, created.agent)).toEqual(commandsBefore)
-      expect(created.agent.session.events).toHaveLength(eventsBefore)
+      expect(created.agent.session.snapshotEvents()).toHaveLength(eventsBefore)
       expect(ctx.agentPresets.composedPreset(created.agent.ctx)).toBe(created.presetId)
     } finally {
       await created.handle.dispose()
@@ -800,8 +802,8 @@ describe('shipped TUI preset composition', () => {
     created.agent.session.append('agent-preset/selected', { agentPreset: selected.id })
     await created.handle.dispose()
 
-    const snapshot = await ctx.sessionPersistence.inspect(sessionId)
-    const recorded = resolveSessionPreset({ header: snapshot.meta, events: snapshot.events })
+    const snapshot = await ctx.sessionQuery.readSession(sessionId)
+    const recorded = recordedPreset(snapshot.session, snapshot.events)
     const preset = await resolveTuiPreset(ctx, recorded)
     const resumed = await ctx.agents.resume({
       resumeSessionId: SessionId(String(sessionId)),
@@ -826,8 +828,8 @@ describe('shipped TUI preset composition', () => {
     const old = await ctx.agents.create({ sessionId: oldSessionId, meta: { cwd: workspace } })
     await old.dispose()
 
-    const snapshot = await ctx.sessionPersistence.inspect(oldSessionId)
-    expect(resolveSessionPreset({ header: snapshot.meta, events: snapshot.events })).toBeUndefined()
+    const snapshot = await ctx.sessionQuery.readSession(oldSessionId)
+    expect(recordedPreset(snapshot.session, snapshot.events)).toBeUndefined()
     const preset = await resolveTuiPreset(ctx)
     const resumed = await ctx.agents.resume({
       resumeSessionId: oldSessionId,
@@ -839,7 +841,7 @@ describe('shipped TUI preset composition', () => {
       if (preset.kind === 'preset') {
         resumed.agent.session.append('agent-preset/selected', { agentPreset: preset.id })
         expect(ctx.agentPresets.composedPreset(resumed.agent.ctx)).toBe(preset.id)
-        expect(resolveSessionPreset(resumed.agent.session)).toBe(preset.id)
+        expect(recordedPreset(resumed.agent.session.header, resumed.agent.session.snapshotEvents())).toBe(preset.id)
       }
     } finally {
       await resumed.dispose()

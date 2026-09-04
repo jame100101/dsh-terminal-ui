@@ -52,6 +52,16 @@ for (const status of ['In progress', 'In review']) {
 if (typeof config.lifecycleActor !== 'string' || !config.lifecycleActor) {
   throw new Error('config.lifecycleActor 未设置')
 }
+if (typeof config.priorityField !== 'string' || !config.priorityField) {
+  throw new Error('config.priorityField 未设置')
+}
+if (typeof config.startDateField !== 'string' || !config.startDateField) {
+  throw new Error('config.startDateField 未设置')
+}
+if (typeof config.projectTimeZone !== 'string' || !config.projectTimeZone) {
+  throw new Error('config.projectTimeZone 未设置')
+}
+Intl.DateTimeFormat('en-US', { timeZone: config.projectTimeZone })
 
 /**
  * Return Markdown outside balanced details elements.
@@ -213,6 +223,29 @@ export function nextResolvingIssueStatus(currentStatus, command, currentStatusAc
     return target
   }
   return currentIndex >= 0 && currentIndex < targetIndex ? target : null
+}
+
+/**
+ * Convert a GitHub timestamp to a Project date in one configured time zone.
+ * @param {string} timestamp ISO timestamp.
+ * @param {string} timeZone IANA time-zone name.
+ * @returns {string} Calendar date in YYYY-MM-DD form.
+ */
+export function projectDate(timestamp, timeZone = config.projectTimeZone) {
+  const instant = new Date(timestamp)
+  if (Number.isNaN(instant.getTime())) throw new Error(`无效的 PR 创建时间：${timestamp}`)
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    })
+      .formatToParts(instant)
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  )
+  return `${parts.year}-${parts.month}-${parts.day}`
 }
 
 function stripIgnoredMarkdown(body) {
@@ -385,6 +418,10 @@ function token() {
   return value
 }
 
+function projectToken() {
+  return process.env.PROJECT_TOKEN || token()
+}
+
 async function api(path, options = {}) {
   const response = await fetch(`${process.env.GITHUB_API_URL ?? 'https://api.github.com'}${path}`, {
     ...options,
@@ -409,19 +446,25 @@ async function graphql(query, variables) {
   const result = await api('/graphql', {
     method: 'POST',
     body: JSON.stringify({ query, variables }),
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      Authorization: `Bearer ${projectToken()}`,
+      'Content-Type': 'application/json',
+    },
   })
   if (result.errors?.length) throw new Error(result.errors.map((error) => error.message).join('; '))
   return result.data
 }
 
-async function issueSnapshot(number, status = undefined) {
+/**
+ * Read one Issue together with its Project planning values.
+ * @param {number} number Same-repository Issue number.
+ * @param {string|null|undefined} status Optional known Project status.
+ * @returns {Promise<object|null>} Issue snapshot, or null when the number identifies a pull request.
+ */
+export async function issueSnapshot(number, status = undefined) {
   const issue = await api(`/repos/${config.organization}/${config.repository}/issues/${number}`)
   if (issue.pull_request) return null
-  const values = await api(
-    `/repos/${config.organization}/${config.repository}/issues/${number}/issue-field-values?per_page=100`,
-  )
-  const field = (name) => values.find((value) => value.issue_field_name === name)
+  const context = await projectContext(number)
   return {
     number,
     nodeId: issue.node_id,
@@ -430,14 +473,14 @@ async function issueSnapshot(number, status = undefined) {
     assignees: issue.assignees.map((assignee) => assignee.login),
     labels: issue.labels.map((label) => label.name),
     type: issue.type?.name ?? null,
-    priority: field(config.priorityField)?.single_select_option?.name ?? null,
-    status: status === undefined ? await projectStatus(number) : status,
+    priority: context.item?.priorityValue?.name ?? null,
+    status: status === undefined ? (context.item?.fieldValueByName?.name ?? null) : status,
     state: issue.state,
     stateReason: issue.state_reason ?? null,
   }
 }
 
-async function projectContext(number, includeStatusActor = false) {
+async function projectContext(number, includeStatusActor = false, includeStartDate = false) {
   const data = await graphql(
     `query(
       $organization: String!
@@ -445,6 +488,9 @@ async function projectContext(number, includeStatusActor = false) {
       $number: Int!
       $project: Int!
       $includeStatusActor: Boolean!
+      $includeStartDate: Boolean!
+      $priorityField: String!
+      $startDateField: String!
     ) {
       organization(login: $organization) {
         projectV2(number: $project) {
@@ -452,7 +498,19 @@ async function projectContext(number, includeStatusActor = false) {
           title
           fields(first: 50) {
             nodes {
-              ... on ProjectV2SingleSelectField { id name options { id name } }
+              ... on ProjectV2Field {
+                id
+                name
+                dataType
+                isIssueField
+              }
+              ... on ProjectV2SingleSelectField {
+                id
+                name
+                dataType
+                isIssueField
+                options { id name }
+              }
             }
           }
         }
@@ -477,6 +535,13 @@ async function projectContext(number, includeStatusActor = false) {
               fieldValueByName(name: "Status") {
                 ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
               }
+              priorityValue: fieldValueByName(name: $priorityField) {
+                ... on ProjectV2ItemFieldSingleSelectValue { name optionId }
+              }
+              startDateValue: fieldValueByName(name: $startDateField)
+                @include(if: $includeStartDate) {
+                ... on ProjectV2ItemFieldDateValue { date }
+              }
             }
           }
         }
@@ -488,6 +553,9 @@ async function projectContext(number, includeStatusActor = false) {
       number,
       project: config.projectNumber,
       includeStatusActor,
+      includeStartDate,
+      priorityField: config.priorityField,
+      startDateField: config.startDateField,
     },
   )
   const project = data.organization?.projectV2
@@ -496,24 +564,39 @@ async function projectContext(number, includeStatusActor = false) {
   if (!issue) throw new Error(`#${number} 不存在`)
   const statusField = project.fields.nodes.find((field) => field?.name === 'Status')
   if (!statusField) throw new Error('Project 缺少 Status 字段')
+  const priorityField = project.fields.nodes.find((field) => field?.name === config.priorityField)
+  if (!priorityField) throw new Error(`Project 缺少 ${config.priorityField} 字段`)
+  if (priorityField.dataType !== 'SINGLE_SELECT') {
+    throw new Error(`Project ${config.priorityField} 字段必须为 Single Select`)
+  }
+  if (priorityField.isIssueField) {
+    throw new Error(`Project ${config.priorityField} 字段必须为 Project custom field`)
+  }
+  const startDateField = includeStartDate
+    ? project.fields.nodes.find((field) => field?.name === config.startDateField)
+    : null
+  if (includeStartDate && !startDateField) {
+    throw new Error(`Project 缺少 ${config.startDateField} 字段`)
+  }
+  if (startDateField && startDateField.dataType !== 'DATE') {
+    throw new Error(`Project ${config.startDateField} 字段必须为 Date`)
+  }
+  if (startDateField?.isIssueField) {
+    throw new Error(`Project ${config.startDateField} 字段必须为 Project Date 字段`)
+  }
   const item = issue.projectItems.nodes.find((candidate) => candidate.project.id === project.id)
   const latestStatusEvent = issue.timelineItems?.nodes
     ?.filter((event) => event?.project?.id === project.id)
     .at(-1)
   const statusActor =
-    latestStatusEvent?.status === item?.fieldValueByName?.name
+    latestStatusEvent && latestStatusEvent.status === item?.fieldValueByName?.name
       ? (latestStatusEvent.actor?.login ?? null)
       : null
-  return { project, issue, statusField, item, statusActor }
+  return { project, issue, statusField, priorityField, startDateField, item, statusActor }
 }
 
-async function projectStatus(number) {
-  const context = await projectContext(number)
-  return context.item?.fieldValueByName?.name ?? null
-}
-
-async function ensureProjectItem(number) {
-  const context = await projectContext(number)
+async function ensureProjectItem(number, includeStartDate = false) {
+  const context = await projectContext(number, false, includeStartDate)
   if (context.item) return context
   const data = await graphql(
     `mutation($projectId: ID!, $contentId: ID!) {
@@ -525,8 +608,57 @@ async function ensureProjectItem(number) {
   )
   return {
     ...context,
-    item: { id: data.addProjectV2ItemById.item.id, fieldValueByName: null },
+    item: {
+      id: data.addProjectV2ItemById.item.id,
+      fieldValueByName: null,
+      priorityValue: null,
+      startDateValue: null,
+    },
   }
+}
+
+/**
+ * Initialize one Issue's Project Start Date when it is empty.
+ * @param {number} number Same-repository Issue number.
+ * @param {string} date Date in YYYY-MM-DD form.
+ * @returns {Promise<void>} Resolves after the conditional Project update.
+ */
+export async function initializeIssueStartDate(number, date) {
+  const context = await ensureProjectItem(number, true)
+  if (context.item.startDateValue?.date) return
+  await graphql(
+    `mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $date: Date!) {
+      updateProjectV2ItemFieldValue(input: {
+        projectId: $projectId,
+        itemId: $itemId,
+        fieldId: $fieldId,
+        value: {date: $date}
+      }) { projectV2Item { id } }
+    }`,
+    {
+      projectId: context.project.id,
+      itemId: context.item.id,
+      fieldId: context.startDateField.id,
+      date,
+    },
+  )
+}
+
+/**
+ * Initialize every referenced Issue from a newly opened PR.
+ * @param {{createdAt: string, references: {all: number[]}}} pull Pull-request snapshot.
+ * @param {string} action Pull-request event action.
+ * @param {(number: number, date: string) => Promise<void>} initialize Date writer.
+ * @returns {Promise<void>} Resolves after all eligible Issues are processed.
+ */
+export async function initializePullRequestStartDates(
+  pull,
+  action,
+  initialize = initializeIssueStartDate,
+) {
+  if (action !== 'opened') return
+  const date = projectDate(pull.createdAt)
+  for (const number of pull.references.all) await initialize(number, date)
 }
 
 async function updateStatus(context, status) {
@@ -631,7 +763,10 @@ async function pullRequestSnapshot(number) {
 
 async function lifecyclePullRequestSnapshot(number) {
   const pull = await api(`/repos/${config.organization}/${config.repository}/pulls/${number}`)
-  return resolvingReferencesSnapshot(number, pull)
+  return {
+    ...(await resolvingReferencesSnapshot(number, pull)),
+    createdAt: pull.created_at,
+  }
 }
 
 async function transitionResolvingIssues(pull, command) {
@@ -683,6 +818,9 @@ async function runLifecycle(eventName, event) {
     if (!command) return
     const pull = await lifecyclePullRequestSnapshot(event.pull_request.number)
     await transitionResolvingIssues(pull, command)
+    if (eventName === 'pull_request') {
+      await initializePullRequestStartDates(pull, event.action)
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 # dsh-tui current performance baseline (keyless)
 
-Recorded UTC: 2026-09-01T02:45:43.992Z
-Source: local working tree based on HEAD `dd3836946482`; TUI package `0.1.0-rc.13`.
+Recorded UTC: 2026-09-04T01:18:52.409Z
+Source: local working tree based on HEAD `703d2003c85b`; TUI package `0.1.0`.
 Runtime: win32 x64; v24.14.0.
 GC in this process: no (heapUsed is still reported)
 Generator: `packages/tui/tui/tests/perf-acceptance.spec.ts` against built artifacts and an isolated temporary `DSH_HOME`.
@@ -52,8 +52,8 @@ Windows process-table access used the parent-less fallback, so the complete eval
 
 | Turns | fold nodes | traces | resident chars | heapUsed MB |
 |---|---:|---:|---:|---:|
-| 100 | 223 | 400 | 1490322 | 20.7 |
-| 500 | 223 | 512 | 1493061 | 16.1 |
+| 100 | 223 | 400 | 1490322 | 21.8 |
+| 500 | 223 | 512 | 1493061 | 16.7 |
 
 The TUI fold stays inside 3000 nodes, the 1.5 million-character projected-node budget, and 32 KiB assistant bodies; the separately bounded trace contributes a small remainder to resident chars. This synthetic fold measurement covers the TUI projection only; it does not measure the full in-memory session event log, terminal write queues, input-parser pending data, or child processes.
 
@@ -61,11 +61,11 @@ The TUI fold stays inside 3000 nodes, the 1.5 million-character projected-node b
 
 | Metric | 2026-08-21 record | current | assessment |
 |---|---:|---:|---|
-| Fold heap, 100 turns | 17.5 MB | 20.7 MB | same range; no forced GC in either run |
-| Fold heap, 500 turns | 19.0 MB | 16.1 MB | same range; no forced GC in either run |
-| `dsh-tui --version` | 90–92 ms | 176 ms median | lower in this sample |
-| built `--help` | about 100 ms | 191 ms median | same range |
-| warm `--dump-config` | 300–600 ms | 574 ms median | inside the historical range |
+| Fold heap, 100 turns | 17.5 MB | 21.8 MB | same range; no forced GC in either run |
+| Fold heap, 500 turns | 19.0 MB | 16.7 MB | same range; no forced GC in either run |
+| `dsh-tui --version` | 90–92 ms | 180 ms median | lower in this sample |
+| built `--help` | about 100 ms | 227 ms median | same range |
+| warm `--dump-config` | 300–600 ms | 186 ms median | inside the historical range |
 
 These small differences are run-to-run observations, not proof of an optimization effect. The two records use synthetic projection work and startup paths rather than the full interactive terminal pipeline.
 
@@ -73,10 +73,10 @@ These small differences are run-to-run observations, not proof of an optimizatio
 
 | Path | median ms | p90 ms | status |
 |---|---:|---:|---:|
-| `apps/tui-cli/bin/dsh-tui.js --version` | 176 | 200 | 0 |
-| `apps/cli/lib/bin.js --help` | 191 | 213 | 0 |
-| `apps/cli/lib/bin.js --profile tui --dump-config` (isolated home, first) | 882 | 882 | 0 |
-| `apps/cli/lib/bin.js --profile tui --dump-config` (isolated home, warm) | 574 | 599 | 0 |
+| `apps/tui-cli/bin/dsh-tui.js --version` | 180 | 211 | 0 |
+| `apps/cli/lib/bin.js --help` | 227 | 234 | 0 |
+| `apps/cli/lib/bin.js --profile tui --dump-config` (isolated home, first) | 210 | 210 | 0 |
+| `apps/cli/lib/bin.js --profile tui --dump-config` (isolated home, warm) | 186 | 271 | 0 |
 
 Daily launch uses `pnpm dsh-tui` after `pnpm run build`. Source-mode `tsx` timing is outside this product baseline.
 

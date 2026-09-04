@@ -9,7 +9,7 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import { recordedPreset, resolveTuiPreset } from './preset-lifecycle'
 import { forkCutPoint, selectionFromRequestHistory } from './startup'
@@ -54,10 +54,11 @@ export async function createForkAgent(ctx: Context, input: ForkAgentInput): Prom
   return ctx.agents.create({
     sessionId: SessionId(`session-${randomUUID()}`),
     seed: input.seed,
+    inheritedEventCount: SessionLogOffset(input.seed.length),
     meta: {
       cwd: input.cwd,
       parentSession: input.parentSession,
-      seedLength: input.seed.length,
+      isSeeded: true,
       ...(preset.kind === 'preset' ? { agentPreset: preset.id } : {}),
     },
     agentOptions: {
@@ -81,7 +82,7 @@ export async function createForkAgent(ctx: Context, input: ForkAgentInput): Prom
  * @returns the persisted child id, or null when no completed turn exists.
  */
 export async function createForkArtifact(ctx: Context, input: ForkArtifactInput): Promise<SessionId | null> {
-  const events = input.source.session.events
+  const events = input.source.session.snapshotEvents()
   const cut = forkCutPoint(events, input.atSeq)
   if (cut === null) return null
   const seed = events.slice(0, cut)

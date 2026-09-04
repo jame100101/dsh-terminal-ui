@@ -32,6 +32,7 @@
           - tool-str-replace-editor
           - skill-filesystem
           - tool-skill
+          - command-goal
           - tool-goal
           - plan-mode
           - compaction-basic
@@ -48,11 +49,10 @@
           - tool-todo
           - tool-web
 
-    # Code Mode is a core execution capability, not a Web component (the
-    # headless and web-app bundles mount the same row). The `code` agent
-    # preset's tool-presentation row waits on this host-plane runtime; without
-    # it the preset cannot mount, and switching to it fails with
-    # "preset failed to mount" naming tool-presentation.
+    # PTC (`run_code`) waits on this host-plane TypeScript runtime. Without it
+    # the `ptc` preset cannot mount, and switching to it fails with
+    # "preset failed to mount" naming tool-presentation. Headless and web-app
+    # mount the same row.
     - id: code-runtime
       name: '@deepseek-ai/dsh-code-runtime-worker-thread'
 
@@ -64,22 +64,14 @@
     - id: cordis-host-runner
       name: '@deepseek-ai/dsh-cordis-host-runner'
 
-    # Durable per-message feedback sidecar (Web parity for 👍/👎): the base
-    # bundle already loads session-persistence; storage + storage-domain host
-    # the sidecar domain (the web-app rows, mirrored).
-    - id: storage
-      name: '@deepseek-ai/dsh-storage'
+    # Host-owned opt-in sampled when a new session receives its preset
+    # delegation tools. Standard/cordis presets mount tool-subagent which
+    # requires this Host-scope settings plugin.
+    - id: subagent-model-selection-settings
+      name: '@deepseek-ai/dsh-tool-subagent/model-selection-settings'
 
-    - id: storage-json
-      name: '@deepseek-ai/dsh-storage-json'
-      config:
-        root: !!js dshHomePath('storages')
-
-    - id: storage-domain
-      name: '@deepseek-ai/dsh-storage-domain'
-      config:
-        backend: json
-
+    # Durable per-message feedback sidecar (Web parity for 👍/👎). Storage
+    # domains now live on dsh-base; this surface only mounts the sidecar.
     - id: message-feedback
       name: '@deepseek-ai/dsh-message-feedback'
       config:
@@ -119,6 +111,9 @@
   disabled: true
 
 - id: tool-skill
+  disabled: true
+
+- id: command-goal
   disabled: true
 
 - id: tool-goal
@@ -167,13 +162,12 @@
   disabled: true
 
 - insert:
-    # The preset roster: the four shipped presets under `config/agent-presets/`
-    # (code/cordis/minimal/standard) plus the writable `$DSH_HOME/.agent-presets`
-    # user root (dsh-agent-presets' own default). The SHIPPED system root is an
-    # assembly fact — `apps/cli`'s composeProfile resolves it beside this app's
-    # own config and patches it in as an overlay, exactly like the web-app
-    # bundle. New sessions resolve this roster's current default unless they
-    # continue an explicit preset; resume rebuilds the newest logged selection.
+    # The preset roster: shipped compositions live in
+    # `@deepseek-ai/dsh-agent-presets/presets` (cordis/minimal/ptc/standard)
+    # and `includeShippedRoot` defaults to true. The writable user root is
+    # `$DSH_HOME/.agent-presets`. New sessions use this roster's current
+    # default unless they continue an explicit preset; resume rebuilds the
+    # newest logged selection.
     - id: agent-presets
       name: '@deepseek-ai/dsh-agent-presets'
       config:

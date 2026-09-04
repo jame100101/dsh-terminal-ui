@@ -147,7 +147,7 @@ export async function prepareTuiResume(
       // silently recompose this migrated Session under a different preset.
       handle.agent.session.append('agent-preset/selected', { agentPreset: preset.id })
     }
-    return { handle, selection, ref, reasoning, events: handle.agent.session.events }
+    return { handle, selection, ref, reasoning, events: handle.agent.session.snapshotEvents() }
   } catch (error) {
     if (handle !== undefined) {
       try {

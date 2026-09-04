@@ -46,6 +46,9 @@
       "path": "../../core/tools"
     },
     {
+      "path": "../../todo/tool-todo"
+    },
+    {
       "path": "../../settings/settings"
     },
     {
