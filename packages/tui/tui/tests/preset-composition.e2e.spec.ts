@@ -180,7 +180,7 @@ describe('shipped TUI preset composition', () => {
       expect(minimalAssembly.sections).toEqual([
         { name: 'deployment:persona', text: 'You are a helpful software engineer assistant.' },
       ])
-      expect(minimalAssembly.tools.map(tool => tool.name)).toEqual(['pwsh', 'str_replace_editor'])
+      expect(minimalAssembly.tools.map(tool => tool.name)).toEqual([process.platform === 'win32' ? 'pwsh' : 'bash', 'str_replace_editor'])
 
       const standard = await ctx.agentPresets.recompose(created.agent.ctx, 'standard')
       created.agent.session.append('agent-preset/selected', { agentPreset: standard.id })
@@ -189,7 +189,7 @@ describe('shipped TUI preset composition', () => {
       expect(await skillNames(ctx, created.agent, workspace)).toContain(localSkill)
       expect(ctx.agentPresets.composedPreset(created.agent.ctx)).toBe('standard')
       expect(recordedPreset(created.agent.session.header, created.agent.session.snapshotEvents())).toBe('standard')
-      expect(toolNames(ctx, created.agent)).toEqual(expect.arrayContaining(['pwsh', 'read', 'skill', 'write']))
+      expect(toolNames(ctx, created.agent)).toEqual(expect.arrayContaining([process.platform === 'win32' ? 'pwsh' : 'bash', 'read', 'skill', 'write']))
     } finally {
       await created.handle.dispose()
     }

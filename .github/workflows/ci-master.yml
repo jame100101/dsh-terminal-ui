@@ -1,8 +1,7 @@
 name: CI master
 
+# Upstream Harness diagnostics are opt-in in this TUI plugin repository.
 on:
-  push:
-    branches: [master]
   workflow_dispatch:
     inputs:
       suite:
@@ -14,11 +13,6 @@ on:
           - larger-runner-benchmark
           - consolidated-runner-benchmark
 
-# A master push may carry only the two self-hosted standby drills and the Wine
-# apt cache seeder; those drills outlast the interval between master merges, so
-# push is exempt from cancellation (see ci-failover-runbook). workflow_dispatch
-# keeps cancelling: a re-dispatched runner benchmark holds up to 12 larger
-# runners for 15 minutes in this same group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'push' }}
