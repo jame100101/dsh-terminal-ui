@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#快速开始"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.1"><img alt="npm RC 0.2.0-rc.1" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.1-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.2"><img alt="npm RC 0.2.0-rc.2" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.2-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#架构"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#架构"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#架构"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@
 
 <p align="center">本地优先 · 会话持久化 · 工具运行时</p>
 
-> 🚀 **推荐 RC `0.2.0-rc.1` 已发布** — `0.2.x` 是官方 DeepSeek Harness 的 out-of-tree plugin，兼容 `@deepseek-ai/dsh@0.1.2-rc.1`。Stable / npm `latest` 仍为旧版 standalone `0.1.0`。见[快速开始](#quick-start)。
+> 🚀 **推荐 RC `0.2.0-rc.2` 已发布** — `0.2.x` 是官方 DeepSeek Harness 的 out-of-tree plugin，兼容 `@deepseek-ai/dsh@0.1.2-rc.1`。Stable / npm `latest` 仍为旧版 standalone `0.1.0`。见[快速开始](#quick-start)。
 
 <p align="center">
   <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2 RC startup" width="100%">
@@ -127,7 +127,7 @@ which npm
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 dsh --profile tui
 ```
 
@@ -205,6 +205,37 @@ dsh --profile tui
 
 ## 常见故障
 
+### 从 legacy 0.1.x 迁移到 0.2.x plugin
+
+旧的全局 `@jame100101/dsh-tui@0.1.x` 包含 bundled Harness；`0.2.x` profile plugin 使用官方 Harness。Harness `0.1.2-rc.1` 的 bundle 解析优先检查 host 安装目录，再检查 profile，所以旧全局包可能遮蔽新 profile plugin，即使安装命令成功。仅凭 peer warning 不能判定是否发生此问题。
+
+检查 `npm ls -g --depth=0`、`dsh --version`，Windows 使用 `where.exe dsh` / `where.exe dsh-tui`；macOS/Linux 使用 `command -v dsh` / `command -v dsh-tui`。若存在旧全局包，只卸载该包，再执行 canonical install：
+
+```sh
+npm uninstall -g @jame100101/dsh-tui
+npm install -g @deepseek-ai/dsh@0.1.2-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh --profile tui
+```
+
+在同一个终端检查 `DSH_HOME`。默认是 `~/.dsh`，profile 位于 `~/.dsh/profiles/tui`。PowerShell 默认路径应写为 **`"$HOME\.dsh"`**，而不是 `"$HOME.dsh"`（后者会把用户名和 `.dsh` 直接拼接）。检查 profile 的 `package.json` 和 `pnpm-workspace.yaml`：bundles 应包含 `@deepseek-ai/dsh-base` 与 `@jame100101/dsh-tui`，不应再包含旧的 `@deepseek-ai/dsh-tui-app`。`dsh plugin ... list` 可能初始化缺失的 profile，并对已有 profile 执行 reconciliation，并非严格只读。
+
+若 profile 仍异常，先关闭 TUI 进程，确认 home 路径，再仅备份/重建 **tui profile**。Windows PowerShell 示例（先移除造成遮蔽的旧全局包）：
+
+```powershell
+$dshHome = if ([string]::IsNullOrWhiteSpace($env:DSH_HOME)) { Join-Path $HOME '.dsh' } else { $env:DSH_HOME }
+$dshHome = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($dshHome)
+$profileDir = Join-Path $dshHome 'profiles\tui'
+Write-Output $profileDir # 继续前确认这是目标 profile。
+if (Test-Path -LiteralPath $profileDir) {
+  Rename-Item -LiteralPath $profileDir -NewName ("tui.backup-" + [guid]::NewGuid().ToString('N'))
+}
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh --profile tui
+```
+
+保留备份以便检查自定义 profile patch，不要把旧 bundle 列表复制回来。不要删除整个 `~/.dsh`，其中还有 credentials、sessions 和其他 profiles。macOS/Linux 同样仅备份 `$DSH_HOME/profiles/tui`（默认 `$HOME/.dsh/profiles/tui`），再重新安装插件。此迁移不修改或替换官方 Harness resolver。
+
 ### `node: command not found` 或 Windows 提示 `'node' is not recognized`
 
 安装 Node.js 后重新打开终端。如果问题仍在，请确认 Node.js 已安装且安装目录位于 `PATH`：
@@ -261,10 +292,10 @@ where.exe dsh
 
 ## 发布状态
 
-`dsh-tui` `0.1.0` 是发布在 npm `latest` dist-tag 下的旧版独立发行。`0.2.0-rc.1` 是 out-of-tree plugin prerelease，按准确版本安装且不会替换 `latest`：
+`dsh-tui` `0.1.0` 是发布在 npm `latest` dist-tag 下的旧版独立发行。`0.2.0-rc.2` 是 out-of-tree plugin prerelease，按准确版本安装且不会替换 `latest`：
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 ```
 
 只有使用旧版 `0.1.0` standalone 版本线时，才使用 `npm install -g @jame100101/dsh-tui@latest`。
@@ -278,7 +309,7 @@ dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 兼容版本发布后，重新安装准确的 plugin prerelease 即可更新 `tui` profile：
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 ```
 
 ## 开发
