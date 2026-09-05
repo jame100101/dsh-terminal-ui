@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -30,8 +31,8 @@ import {
 /* oxlint-disable typescript/no-unsafe-return -- Oxlint resolves this cross-package boot fixture outside a test compiler face. */
 
 const root = fileURLToPath(new URL('../../../..', import.meta.url))
-const installAnchor = join(root, 'apps', 'cli', 'package.json')
-const basePatch = join(root, 'packages', 'bundle', 'base', 'cordis.patch.yml')
+const installAnchor = createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json')
+const basePatch = createRequire(import.meta.url).resolve('@deepseek-ai/dsh-base/cordis.patch.yml')
 const tuiPatch = join(root, 'apps', 'tui-cli', 'plugin', 'cordis.patch.yml')
 const localSkill = 'tui-preset-local-proof'
 
@@ -800,6 +801,7 @@ describe('shipped TUI preset composition', () => {
     const sessionId = created.agent.id
     const selected = await ctx.agentPresets.recompose(created.agent.ctx, 'minimal')
     created.agent.session.append('agent-preset/selected', { agentPreset: selected.id })
+    expect(await ctx.sessions.flush(created.agent.session)).toBe(true)
     await created.handle.dispose()
 
     const snapshot = await ctx.sessionQuery.readSession(sessionId)
@@ -826,6 +828,8 @@ describe('shipped TUI preset composition', () => {
   it('migrates a metadata-free old session onto the resolved default and records that fallback', async () => {
     const oldSessionId = SessionId('tui-old-session-without-preset')
     const old = await ctx.agents.create({ sessionId: oldSessionId, meta: { cwd: workspace } })
+    appendCompletedTurn(old.agent)
+    expect(await ctx.sessions.flush(old.agent.session)).toBe(true)
     await old.dispose()
 
     const snapshot = await ctx.sessionQuery.readSession(oldSessionId)

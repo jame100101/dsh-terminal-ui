@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { EventEmitter } from 'node:events'
 import { execFile } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -16,7 +17,7 @@ mkdirSync(officialProfile, { recursive: true })
 writeFileSync(join(officialProfile, 'package.json'), JSON.stringify({
   dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@jame100101/dsh-tui'] } },
 }))
-const officialDshEnv = { DSH_BIN: join(root, 'apps/cli/lib/bin.js'), DSH_HOME: officialDshHome }
+const officialDshEnv = { DSH_BIN: join(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'), '..', 'lib/bin.js'), DSH_HOME: officialDshHome }
 afterAll(() => rmSync(officialDshHome, { recursive: true, force: true }))
 /** Commander output goes nowhere in tests. */
 const silent = { stdout: { write: () => {} }, stderr: { write: () => {} } }

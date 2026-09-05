@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+pnpm run typecheck
+pnpm run verify:repo
+pnpm run test:docs

@@ -1,7 +1,7 @@
 # dsh-tui current performance baseline (keyless)
 
-Recorded UTC: 2026-09-04T01:18:52.409Z
-Source: local working tree based on HEAD `703d2003c85b`; TUI package `0.1.0`.
+Recorded UTC: 2026-09-05T10:17:17.227Z
+Source: local working tree based on HEAD `f2fddbe1cdc5`; TUI package `0.2.0-rc.1`.
 Runtime: win32 x64; v24.14.0.
 GC in this process: no (heapUsed is still reported)
 Generator: `packages/tui/tui/tests/perf-acceptance.spec.ts` against built artifacts and an isolated temporary `DSH_HOME`.
@@ -10,7 +10,7 @@ Generator: `packages/tui/tui/tests/perf-acceptance.spec.ts` against built artifa
 
 - The keyless microbench remains inside its current publish, wrap, wheel, fold-size, and startup budgets.
 - Heap inspection identified React development User Timing entries as the remaining source-launch retainer; the TUI launcher now selects production React before the dependency graph loads.
-- The latest automated Windows ConPTY/build campaign covers 30.0 minutes with a 413.8 MiB peak TUI RSS; the cumulative projection soak also passes locally.
+- The latest automated Windows ConPTY/build campaign covers not recorded with a not recorded peak TUI RSS; the cumulative projection soak also passes locally.
 
 ## Busy stream and interaction core
 
@@ -37,23 +37,23 @@ The source graph, node count, update rate, terminal geometry, automated keys, an
 
 | Metric | value |
 |---|---:|
-| Duration | 30.00 min |
-| Repeated real builds | 40 (0 failures) |
-| Input latency p95 / p99 / max | 94 / 111 / 296 ms |
-| Maximum Thinking-second stall | 560 ms |
-| Peak TUI RSS / heapUsed | 413.8 / 249.3 MiB |
-| Post-warm-up TUI RSS slope | 7.19 MiB/min |
-| Peak complete evaluator set RSS | 522.3 MiB |
-| Terminal output | 20.8 MiB |
+| Duration | not recorded |
+| Repeated real builds | not recorded |
+| Input latency p95 / p99 / max | not recorded |
+| Maximum Thinking-second stall | not recorded |
+| Peak TUI RSS / heapUsed | not recorded |
+| Post-warm-up TUI RSS slope | not recorded |
+| Peak complete evaluator set RSS | not recorded |
+| Terminal output | not recorded |
 
-Windows process-table access used the parent-less fallback, so the complete evaluator-set value includes launched root processes but not every build descendant. TUI RSS and in-child heap samples remain direct measurements.
+The process table included parent ids, so the complete evaluator-set value deduplicates the TUI, evaluator, and active build descendant trees.
 
 ## Fold heap working set (after optional GC)
 
 | Turns | fold nodes | traces | resident chars | heapUsed MB |
 |---|---:|---:|---:|---:|
-| 100 | 223 | 400 | 1490322 | 21.8 |
-| 500 | 223 | 512 | 1493061 | 16.7 |
+| 100 | 223 | 400 | 1490322 | 17.8 |
+| 500 | 223 | 512 | 1493061 | 16.3 |
 
 The TUI fold stays inside 3000 nodes, the 1.5 million-character projected-node budget, and 32 KiB assistant bodies; the separately bounded trace contributes a small remainder to resident chars. This synthetic fold measurement covers the TUI projection only; it does not measure the full in-memory session event log, terminal write queues, input-parser pending data, or child processes.
 
@@ -61,11 +61,11 @@ The TUI fold stays inside 3000 nodes, the 1.5 million-character projected-node b
 
 | Metric | 2026-08-21 record | current | assessment |
 |---|---:|---:|---|
-| Fold heap, 100 turns | 17.5 MB | 21.8 MB | same range; no forced GC in either run |
-| Fold heap, 500 turns | 19.0 MB | 16.7 MB | same range; no forced GC in either run |
-| `dsh-tui --version` | 90–92 ms | 180 ms median | lower in this sample |
-| built `--help` | about 100 ms | 227 ms median | same range |
-| warm `--dump-config` | 300–600 ms | 186 ms median | inside the historical range |
+| Fold heap, 100 turns | 17.5 MB | 17.8 MB | same range; no forced GC in either run |
+| Fold heap, 500 turns | 19.0 MB | 16.3 MB | same range; no forced GC in either run |
+| `dsh-tui --version` | 90–92 ms | 115 ms median | lower in this sample |
+| built `--help` | about 100 ms | 153 ms median | same range |
+| warm `--dump-config` | 300–600 ms | 168 ms median | inside the historical range |
 
 These small differences are run-to-run observations, not proof of an optimization effect. The two records use synthetic projection work and startup paths rather than the full interactive terminal pipeline.
 
@@ -73,10 +73,10 @@ These small differences are run-to-run observations, not proof of an optimizatio
 
 | Path | median ms | p90 ms | status |
 |---|---:|---:|---:|
-| `apps/tui-cli/bin/dsh-tui.js --version` | 180 | 211 | 0 |
-| `apps/cli/lib/bin.js --help` | 227 | 234 | 0 |
-| `apps/cli/lib/bin.js --profile tui --dump-config` (isolated home, first) | 210 | 210 | 0 |
-| `apps/cli/lib/bin.js --profile tui --dump-config` (isolated home, warm) | 186 | 271 | 0 |
+| `apps/tui-cli/bin/dsh-tui.js --version` | 115 | 130 | 0 |
+| `official dsh --help` | 153 | 156 | 0 |
+| `official dsh --profile tui --dump-config` (isolated home, first) | 165 | 165 | 0 |
+| `official dsh --profile tui --dump-config` (isolated home, warm) | 168 | 171 | 0 |
 
 Daily launch uses `pnpm dsh-tui` after `pnpm run build`. Source-mode `tsx` timing is outside this product baseline.
 

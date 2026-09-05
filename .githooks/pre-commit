@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+git diff --cached --check
+node scripts/verify-docs.mjs

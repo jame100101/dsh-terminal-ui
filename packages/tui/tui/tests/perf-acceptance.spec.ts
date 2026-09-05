@@ -1,3 +1,5 @@
+import { initProfile } from '@deepseek-ai/dsh-app-boot'
+import { createRequire } from 'node:module'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -194,7 +196,7 @@ describe('perf acceptance (keyless)', () => {
 
     const repoRoot = join(fileURLToPath(new URL('../../../../', import.meta.url)))
     const versionBin = join(repoRoot, 'apps/tui-cli/bin/dsh-tui.js')
-    const builtBin = join(repoRoot, 'apps/cli/lib/bin.js')
+    const builtBin = join(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'), '..', 'lib/bin.js')
     const packageVersion = /"version"\s*:\s*"([^"]+)"/u.exec(
       readFileSync(join(repoRoot, 'apps/tui-cli/package.json'), 'utf8'),
     )?.[1] ?? 'unknown'
@@ -210,6 +212,8 @@ describe('perf acceptance (keyless)', () => {
     let dumpWarm: SpawnMeasurement
     try {
       const env = { ...process.env, DSH_HOME: benchmarkHome }
+      initProfile(join(benchmarkHome, 'profiles/tui'), ['@deepseek-ai/dsh-base'])
+      writeFileSync(join(benchmarkHome, 'profiles/tui/cordis.patch.yml'), readFileSync(join(repoRoot, 'apps/tui-cli/plugin/cordis.patch.yml')))
       dumpFirst = measureSpawn(process.execPath, [builtBin, '--profile', 'tui', '--dump-config'], {
         env,
         runs: 1,
@@ -339,9 +343,9 @@ describe('perf acceptance (keyless)', () => {
       '| Path | median ms | p90 ms | status |',
       '|---|---:|---:|---:|',
       `| \`apps/tui-cli/bin/dsh-tui.js --version\` | ${version.medianMs.toFixed(0)} | ${version.p90Ms.toFixed(0)} | ${version.status} |`,
-      `| \`apps/cli/lib/bin.js --help\` | ${help.medianMs.toFixed(0)} | ${help.p90Ms.toFixed(0)} | ${help.status} |`,
-      `| \`apps/cli/lib/bin.js --profile tui --dump-config\` (isolated home, first) | ${dumpFirst.medianMs.toFixed(0)} | ${dumpFirst.p90Ms.toFixed(0)} | ${dumpFirst.status} |`,
-      `| \`apps/cli/lib/bin.js --profile tui --dump-config\` (isolated home, warm) | ${dumpWarm.medianMs.toFixed(0)} | ${dumpWarm.p90Ms.toFixed(0)} | ${dumpWarm.status} |`,
+      `| \`official dsh --help\` | ${help.medianMs.toFixed(0)} | ${help.p90Ms.toFixed(0)} | ${help.status} |`,
+      `| \`official dsh --profile tui --dump-config\` (isolated home, first) | ${dumpFirst.medianMs.toFixed(0)} | ${dumpFirst.p90Ms.toFixed(0)} | ${dumpFirst.status} |`,
+      `| \`official dsh --profile tui --dump-config\` (isolated home, warm) | ${dumpWarm.medianMs.toFixed(0)} | ${dumpWarm.p90Ms.toFixed(0)} | ${dumpWarm.status} |`,
       '',
       'Daily launch uses `pnpm dsh-tui` after `pnpm run build`. Source-mode `tsx` timing is outside this product baseline.',
       '',
