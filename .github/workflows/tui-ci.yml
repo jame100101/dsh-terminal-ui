@@ -33,4 +33,9 @@ jobs:
       - name: Client build and typecheck
         run: pnpm run build:lib:client
       - name: TUI and launcher tests
-        run: pnpm exec vitest run packages/tui apps/tui-cli/tests
+        run: pnpm test
+      - name: Repository closure and bilingual docs
+        run: |
+          pnpm run verify:repo
+          pnpm run test:docs
+          pnpm run typecheck

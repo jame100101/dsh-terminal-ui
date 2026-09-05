@@ -1,6 +1,0 @@
-- listitem:
-  - button "ui-settings, 已启用":
-    - strong: ui-settings
-    - img "运行中"
-    - text: 已启用
-    - img

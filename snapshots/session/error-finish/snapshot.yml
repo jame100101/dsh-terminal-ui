@@ -1,9 +1,0 @@
-version: 1
-scenario: error-finish
-profile: headless
-composition: default
-recording: authored
-header:
-  class: default
-replay:
-  override: true

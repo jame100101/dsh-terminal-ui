@@ -285,19 +285,20 @@ dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 
 <a id="run-from-source"></a>
 
-克隆仓库并安装 workspace 依赖：
+本仓库现在是 standalone out-of-tree plugin repo，不再 vendoring/syncing 完整 Harness 源码。后续 Harness 更新采用 dependency upgrade + adapter compatibility，而不是 upstream merge。
 
 ```sh
 git clone https://github.com/jame100101/dsh-terminal-ui.git
 cd dsh-terminal-ui
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build
+pnpm run typecheck
 pnpm run test
+pnpm run verify:repo
+pnpm run dsh-tui:pack-plugin
 ```
 
-主要 TUI 源码位于 `packages/tui/tui`，CLI 组装位于 `apps/tui-cli`。在本地环境已配置好时，可使用 `pnpm dsh --profile tui` 进行源码 smoke run。
-
-文档修改应同时更新 `README.md` 和 `README.zh.md`。产品代码、runtime 行为、package 版本、npm dist-tags、release 和 tag 与本 README-only 指南分开管理。
+TUI 源码位于 `packages/tui/tui`；`apps/tui-cli` 保存薄 launcher、bundle patch、打包脚本与官方 clean-room 验证器。构建结果通过官方 dsh 安装本地 tarball 验证，不运行仓库内的 Harness CLI。中英文文档同步维护。
 
 ## 架构
 
@@ -319,4 +320,4 @@ wrapper 负责转换启动参数并运行 `dsh --profile tui`。TUI 插件将 ap
 
 如需逐项比较 Web 前端，请参阅 **[TUI-WEB-COMPARISON.md](TUI-WEB-COMPARISON.md)**。
 
-参阅 [docs/architecture.zh.md](docs/architecture.zh.md) 了解仓库架构，参阅 [packages/README.zh.md](packages/README.zh.md) 了解包分组。
+参阅 [docs/architecture.zh.md](docs/architecture.zh.md) 了解仓库架构，参阅 [packages/README.zh.md](https://github.com/jame100101/dsh-terminal-ui/blob/f2fddbe1cdc56762a2bf14a5a657db11c7d26bbf/packages/README.zh.md) 了解包分组。

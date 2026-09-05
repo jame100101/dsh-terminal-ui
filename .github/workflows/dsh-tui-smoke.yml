@@ -19,7 +19,7 @@ concurrency:
 
 env:
   # CI runs must never report to the production telemetry endpoint baked
-  # into apps/cli/cordis.yml (AppCLIEntry disables the row when set).
+  # into official dsh (disabled for this keyless verifier).
   DSH_TELEMETRY_DISABLED: '1'
 
 jobs:
@@ -64,4 +64,5 @@ jobs:
         run: |
           TGZ="$(find "$RUNNER_TEMP" -maxdepth 1 -name '*.tgz' -print -quit)"
           test -n "$TGZ" || { echo "::error::no tarball found in $RUNNER_TEMP"; exit 1; }
+          node scripts/audit-tarball.mjs "$TGZ"
           node apps/tui-cli/scripts/verify-official-plugin.mjs "$TGZ"

@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
@@ -131,12 +132,12 @@ describe('plugin-mode launcher compatibility', () => {
   })
 
   it('reads the workspace dsh version from its JS bin', () => {
-    const version = readDshVersionFromBin(join(root, 'apps/cli/lib/bin.js'))
+    const version = readDshVersionFromBin(join(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'), '..', 'lib/bin.js'))
     expect(version).toBe('0.1.2-rc.1')
   })
 
   it('honors DSH_BIN and rejects an incompatible bin', () => {
-    const js = join(root, 'apps/cli/lib/bin.js')
+    const js = join(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'), '..', 'lib/bin.js')
     expect(resolveOfficialDshBin({ DSH_BIN: js })).toBe(js)
     expect(() => resolveOfficialDshBin({ DSH_BIN: join(root, 'apps/tui-cli/bin/dsh-tui.js') }))
       .toThrow(/compatible dsh/u)

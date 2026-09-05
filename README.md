@@ -283,19 +283,20 @@ dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
 
 <a id="run-from-source"></a>
 
-Clone the repository and install workspace dependencies:
+This is a standalone out-of-tree plugin repo. It no longer vendors or synchronizes full Harness source. Future Harness updates use dependency upgrades plus adapter compatibility tests, not upstream merges.
 
 ```sh
 git clone https://github.com/jame100101/dsh-terminal-ui.git
 cd dsh-terminal-ui
-pnpm install
+pnpm install --frozen-lockfile
 pnpm run build
+pnpm run typecheck
 pnpm run test
+pnpm run verify:repo
+pnpm run dsh-tui:pack-plugin
 ```
 
-The main TUI source is under `packages/tui/tui`. The CLI assembly lives under `apps/tui-cli`. Use `pnpm dsh --profile tui` for a source checkout smoke run when the required local environment is configured.
-
-Documentation changes should update both `README.md` and `README.zh.md`. Product code, runtime behavior, package versions, npm dist-tags, releases, and tags are separate from this README-only guide.
+TUI source lives in `packages/tui/tui`; `apps/tui-cli` owns the thin launcher, bundle patch, packaging and official clean-room verifier. Validate the local tarball through official dsh rather than a repository-local Harness CLI. Maintain English and Chinese docs together.
 
 ## Architecture
 
@@ -317,4 +318,4 @@ The wrapper translates launch flags and starts `dsh --profile tui`. The TUI plug
 
 For a feature-by-feature comparison with the Web frontend, see **[TUI-WEB-COMPARISON.md](TUI-WEB-COMPARISON.md)**.
 
-See [docs/architecture.md](docs/architecture.md) for the repository architecture and [packages/README.md](packages/README.md) for package groups.
+See [docs/architecture.md](docs/architecture.md) for plugin architecture.

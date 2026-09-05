@@ -1,0 +1,3 @@
+# Confirmed bilingual content hashes; pnpm test:docs --write
+english: 7ec74cb4cb7559055ed9aa5930319f50132d5c89531fb68cc8bc1d06500b07c6
+chinese: 627d409d71fa1552744a85ff899e8747d2db89f4c08450cce8b61c76efa36da1
