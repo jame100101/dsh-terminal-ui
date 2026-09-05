@@ -6,7 +6,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0"><img alt="npm 0.1.0" src="https://img.shields.io/badge/NPM-0.1.0-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.1"><img alt="npm RC 0.2.0-rc.1" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.1-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#architecture"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#architecture"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#architecture"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,15 +15,11 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Local-first · Session persistence · Tool runtime</p>
 
-> 🚀 **Stable release `0.1.0`** — the first stable npm release includes bounded long-session rendering, responsive input and history navigation, persistent sessions, per-session presets, plugin hot apply, DeepSeek session-cost estimates, and session-owned resume and workflow projections. See [Quick Start](#quick-start).
+> 🚀 **Recommended RC `0.2.0-rc.1` is published** — `0.2.x` is an official DeepSeek Harness out-of-tree plugin, compatible with `@deepseek-ai/dsh@0.1.2-rc.1`. Stable / npm `latest` remains the legacy standalone `0.1.0`. See [Quick Start](#quick-start).
 
 <p align="center">
-  <img src="assets/tui-session-panel.png" alt="dsh-tui Windows startup screenshot" width="46%">
-  <img src="assets/tui-session-chat.png" alt="dsh-tui Windows transcript screenshot" width="46%">
-</p>
-<p align="center">
-  <img src="assets/tui-session-ubuntu-startup.png" alt="dsh-tui Ubuntu startup screenshot" width="46%">
-  <img src="assets/tui-session-ubuntu-chat.png" alt="dsh-tui Ubuntu chat screenshot" width="46%">
+  <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2 RC startup" width="100%">
+  <img src="assets/tui-rc-chat.png" alt="dsh-tui 0.2 RC conversation" width="100%">
 </p>
 
 `dsh-tui` is a **local terminal assistant** for the DeepSeek Harness agent runtime — a Claude Code-style CLI with a React 19 + Ink 7 interface: thinking shimmer, streaming replies, tool cards, permissions, slash-command palette, persistent sessions, and settings panels.

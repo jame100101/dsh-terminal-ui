@@ -1,18 +1,8 @@
-# Pack the vendored framework sequence: the nine rescoped Cordis packages under
-# vendor/, each on its own version line. This sequence releases independently of
-# dsh and of the native packages.
-#
-# Pack runs without credentials on every pull request and master push.
-# Publication is a manual workflow_dispatch of release-vendor-publish.yml from a
-# vendor-* tag; a vendor release can carry several versions, so each package has
-# its own tag.
 name: Release (vendor)
 
+# Upstream Harness diagnostics are opt-in in this TUI plugin repository.
 on:
-  pull_request:
-  push:
-    branches: [master]
-  workflow_dispatch:
+  workflow_dispatch: null
 
 permissions:
   contents: read

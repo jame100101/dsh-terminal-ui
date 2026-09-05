@@ -1,7 +1,9 @@
 name: CI
 
+# Upstream Harness diagnostics are opt-in in this TUI plugin repository.
 on:
-  pull_request:
+  workflow_dispatch: null
+
 permissions:
   contents: read
 

@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#快速开始"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.1.0"><img alt="npm 0.1.0" src="https://img.shields.io/badge/NPM-0.1.0-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.1"><img alt="npm RC 0.2.0-rc.1" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.1-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#架构"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#架构"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#架构"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,15 +15,11 @@
 
 <p align="center">本地优先 · 会话持久化 · 工具运行时</p>
 
-> 🚀 **稳定版 `0.1.0`** — 首个 npm 稳定版包含有界长会话渲染、响应及时的输入与历史浏览、持久会话、逐会话 preset、插件热应用、DeepSeek 会话费用估算，以及会话隔离的恢复与 workflow 投影。请从[快速开始](#quick-start)开始。
+> 🚀 **推荐 RC `0.2.0-rc.1` 已发布** — `0.2.x` 是官方 DeepSeek Harness 的 out-of-tree plugin，兼容 `@deepseek-ai/dsh@0.1.2-rc.1`。Stable / npm `latest` 仍为旧版 standalone `0.1.0`。见[快速开始](#quick-start)。
 
 <p align="center">
-  <img src="assets/tui-session-panel.png" alt="dsh-tui Windows 启动截图" width="46%">
-  <img src="assets/tui-session-chat.png" alt="dsh-tui Windows 会话记录截图" width="46%">
-</p>
-<p align="center">
-  <img src="assets/tui-session-ubuntu-startup.png" alt="dsh-tui Ubuntu 启动截图" width="46%">
-  <img src="assets/tui-session-ubuntu-chat.png" alt="dsh-tui Ubuntu 会话截图" width="46%">
+  <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2 RC startup" width="100%">
+  <img src="assets/tui-rc-chat.png" alt="dsh-tui 0.2 RC conversation" width="100%">
 </p>
 
 `dsh-tui` 是 DeepSeek Harness agent runtime 的**本地终端助手**，提供类似 Claude Code 的 CLI 和 React 19 + Ink 7 界面，包含思考动画、流式回复、工具卡片、权限、斜杠命令面板、持久会话和设置面板。

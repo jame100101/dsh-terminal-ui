@@ -39,3 +39,7 @@ Production packaging contains the TUI build, bilingual package documentation, bu
 ## Testing
 
 `apps/tui-cli/scripts/verify-official-plugin.mjs` installs official dsh outside the repository, creates a fresh `DSH_HOME`, installs the packed plugin, checks the two profile bundles and package portability, asserts Harness package paths and Cordis identity, verifies the Ink marker and shared React path, and boots direct dsh plus launcher invocations through explicit `DSH_BIN` and npm's PATH entry under a PTY. Cross-platform CI runs this verifier and the focused launcher tests on Windows, Linux, and macOS. The TUI composition suite uses the out-of-tree patch for preset, model route, jobs, and workflow regressions.
+
+## Repository CI
+
+Automatic pull-request and main checks cover the TUI/plugin: host compilation, client typechecking, TUI and launcher tests, and six-platform official-plugin clean rooms. Upstream Harness release, Python, native sandbox, provider and real-API workflows remain opt-in diagnostics; they depend on upstream infrastructure or credentials and do not define this plugin's release verdict. Issue/project policy and Cloudflare preview automation are absent. Existing upstream CI notes retain their Harness-specific rationale rather than governing this fork.

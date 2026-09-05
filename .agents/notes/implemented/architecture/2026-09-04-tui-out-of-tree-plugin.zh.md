@@ -39,3 +39,7 @@ Production package 只包含 TUI build、双语 package documentation、bundle p
 ## Testing
 
 `apps/tui-cli/scripts/verify-official-plugin.mjs` 会在仓库外安装 official dsh、创建 fresh `DSH_HOME`、安装 packed plugin、检查两个 profile bundle 与 package portability、断言 Harness package path 和 Cordis identity、验证 Ink marker 与共享 React path，并在 PTY 中启动 direct dsh、显式 `DSH_BIN` launcher 和 npm PATH entry launcher。Cross-platform CI 会在 Windows、Linux 和 macOS 上运行该 verifier 与 focused launcher test。TUI composition suite 使用 out-of-tree patch 覆盖 preset、model route、jobs 和 workflow regression。
+
+## 仓库 CI
+
+自动 pull-request 和 main 检查覆盖 TUI/plugin：host 编译、client 类型检查、TUI 与 launcher 测试，以及六平台 official-plugin clean room。上游 Harness 发布、Python、native sandbox、provider 和 real-API workflow 保留为按需诊断；它们依赖上游基础设施或凭据，不定义此 plugin 的发布判定。Issue/project policy 和 Cloudflare preview 自动化不在本仓库运行。现有上游 CI Agent Note 保留 Harness 专属依据，不作为此 fork 的 CI 规则。

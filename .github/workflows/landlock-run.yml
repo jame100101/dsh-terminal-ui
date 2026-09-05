@@ -1,28 +1,8 @@
-# CI for the landlock-run packages under native/landlock-run. A separate
-# workflow from ci.yml keeps the native OS/architecture matrix independent of
-# the harness Node matrix. Release assembly and publication use the companion
-# Landlock Run Release workflow.
 name: Landlock Run
 
+# Upstream Harness diagnostics are opt-in in this TUI plugin repository.
 on:
-  pull_request:
-    paths:
-      - '.github/workflows/landlock-run.yml'
-      - '.github/workflows/landlock-run-release.yml'
-      - 'native/landlock-run/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-  push:
-    branches: [master]
-    paths:
-      - '.github/workflows/landlock-run.yml'
-      - '.github/workflows/landlock-run-release.yml'
-      - 'native/landlock-run/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-  workflow_dispatch:
+  workflow_dispatch: null
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

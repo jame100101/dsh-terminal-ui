@@ -6,15 +6,9 @@ name: dsh-tui cross-platform smoke
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
   pull_request:
-    paths:
-      - '.github/workflows/dsh-tui-smoke.yml'
-      - 'apps/**'
-      - 'packages/tui/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
-      - 'pnpm-workspace.yaml'
-      - 'scripts/**'
 
 permissions:
   contents: read

@@ -18,7 +18,7 @@ Ordinary subscribed pull-request events remain forward-only implementation signa
 
 The status projection resolves only exact same-repository `Fixes`, `Closes`, or `Resolves` references. It does not alter terminal statuses, add an Issue with no Project status, depend on PR metadata validity, query `reviewDecision`, reconstruct review rounds, look up pull requests from Issues, or run a scheduled reconciler. [Project-local Issue planning fields](2026-09-02-project-local-issue-planning-fields.md) own the separate date initialization for every same-repository Issue reference.
 
-[Issue lifecycle](../../../../.github/workflows/issue-lifecycle.yml) remains unsubscribed from `pull_request.ready_for_review`; neither event command depends on that action. [Issue policy](../../../../.github/workflows/issue-policy.yml) retains `ready_for_review` because it owns required-check enforcement when a human pull request enters review.
+[Issue lifecycle](https://github.com/jame100101/dsh-terminal-ui/blob/77678ba72876f2dd7d556f5980a974ec1c8623de/.github/workflows/issue-lifecycle.yml) remains unsubscribed from `pull_request.ready_for_review`; neither event command depends on that action. [Issue policy](https://github.com/jame100101/dsh-terminal-ui/blob/77678ba72876f2dd7d556f5980a974ec1c8623de/.github/workflows/issue-policy.yml) retains `ready_for_review` because it owns required-check enforcement when a human pull request enters review.
 
 ## Verification
 

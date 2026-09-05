@@ -1,15 +1,8 @@
-# Sandbox CI: the keyless real-kernel confinement proofs. This master-only
-# reference stays outside the pull-request verdict; rationale lives in
-# .agents/notes/implemented/process/2026-07-21-serial-cross-platform-ci-reference.md.
-# A separate workflow from ci.yml because the axis is different — these jobs
-# fan out over OS×runner (kernel capabilities), not node versions. The Landlock
-# launcher is built from native/landlock-run on each Landlock leg and installed
-# from the same tarballs the main-repository release workflow publishes.
 name: Sandbox
 
+# Upstream Harness diagnostics are opt-in in this TUI plugin repository.
 on:
-  push:
-    branches: [master]
+  workflow_dispatch: null
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
