@@ -43,3 +43,5 @@ Production package 只包含 TUI build、双语 package documentation、bundle p
 ## 仓库 CI
 
 自动 pull-request 和 main 检查覆盖 TUI/plugin：host 编译、client 类型检查、TUI 与 launcher 测试，以及六平台 official-plugin clean room。上游 Harness 发布、Python、native sandbox、provider 和 real-API workflow 保留为按需诊断；它们依赖上游基础设施或凭据，不定义此 plugin 的发布判定。Issue/project policy 和 Cloudflare preview 自动化不在本仓库运行。现有上游 CI Agent Note 保留 Harness 专属依据，不作为此 fork 的 CI 规则。
+
+交互式 Ink fixture 为模拟 TTY stream 显式请求交互渲染，不依赖 CI 环境检测。Preset 断言遵循实际平台选择：Windows 使用 PowerShell，其他平台使用 bash。Preset Loader 集成测试前先构建 client runtime 产物。
