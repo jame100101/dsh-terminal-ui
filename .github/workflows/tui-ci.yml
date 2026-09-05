@@ -30,7 +30,12 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Host build and typecheck
         run: pnpm run build:lib:host
-      - name: Client typecheck
-        run: pnpm run typecheck:contracts-ready
+      - name: Client build and typecheck
+        run: pnpm run build:lib:client
       - name: TUI and launcher tests
-        run: pnpm exec vitest run packages/tui apps/tui-cli/tests
+        run: pnpm exec vitest run packages/tui apps/tui-cli/tests --exclude packages/tui/tui/tests/ink-output-arbiter.spec.ts
+      - name: Interactive Ink terminal fixtures
+        # Ink suppresses incremental terminal output in CI mode; this suite owns fake TTY streams.
+        env:
+          CI: 'false'
+        run: pnpm exec vitest run packages/tui/tui/tests/ink-output-arbiter.spec.ts
