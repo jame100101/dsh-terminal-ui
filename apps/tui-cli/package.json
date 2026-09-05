@@ -1,7 +1,7 @@
 {
   "name": "@jame100101/dsh-tui",
   "description": "Out-of-tree terminal UI plugin and thin launcher for the official DeepSeek Harness",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0-rc.2",
   "private": true,
   "publishConfig": {
     "access": "public"

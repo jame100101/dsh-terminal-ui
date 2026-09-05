@@ -71,7 +71,7 @@ describe('assemblePlugin', () => {
       peerDependencies?: Record<string, string>
     }
     expect(manifest.name).toBe('@jame100101/dsh-tui')
-    expect(manifest.version).toBe('0.2.0-rc.1')
+    expect(manifest.version).toBe('0.2.0-rc.2')
     expect(manifest.private).not.toBe(true)
     expect(manifest.repository).toEqual({
       type: 'git',

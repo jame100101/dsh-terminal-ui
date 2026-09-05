@@ -6,7 +6,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.1"><img alt="npm RC 0.2.0-rc.1" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.1-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.2"><img alt="npm RC 0.2.0-rc.2" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.2-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#architecture"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#architecture"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#architecture"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Local-first · Session persistence · Tool runtime</p>
 
-> 🚀 **Recommended RC `0.2.0-rc.1` is published** — `0.2.x` is an official DeepSeek Harness out-of-tree plugin, compatible with `@deepseek-ai/dsh@0.1.2-rc.1`. Stable / npm `latest` remains the legacy standalone `0.1.0`. See [Quick Start](#quick-start).
+> 🚀 **Recommended RC `0.2.0-rc.2` is published** — `0.2.x` is an official DeepSeek Harness out-of-tree plugin, compatible with `@deepseek-ai/dsh@0.1.2-rc.1`. Stable / npm `latest` remains the legacy standalone `0.1.0`. See [Quick Start](#quick-start).
 
 <p align="center">
   <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2 RC startup" width="100%">
@@ -125,7 +125,7 @@ Install the compatible official Harness, add the published plugin to a `tui` pro
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 dsh --profile tui
 ```
 
@@ -203,6 +203,37 @@ Exit codes: `0` means success, `1` a runtime failure, `2` a usage error, and `13
 
 ## Troubleshooting
 
+### Migrating from legacy 0.1.x to the 0.2.x plugin
+
+The legacy global `@jame100101/dsh-tui@0.1.x` bundles Harness; the `0.2.x` profile plugin uses official Harness. With Harness `0.1.2-rc.1`, bundle resolution checks the host installation before the profile. An old global package can therefore shadow the new profile plugin even after a successful install. Peer warnings alone do not identify this failure.
+
+Check `npm ls -g --depth=0`, `dsh --version`, and (Windows) `where.exe dsh` / `where.exe dsh-tui`; on macOS/Linux use `command -v dsh` / `command -v dsh-tui`. If the legacy global package is present, remove that package only, then repeat the canonical install:
+
+```sh
+npm uninstall -g @jame100101/dsh-tui
+npm install -g @deepseek-ai/dsh@0.1.2-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh --profile tui
+```
+
+Check `DSH_HOME` in the same terminal. Its default is `~/.dsh`; the profile is `~/.dsh/profiles/tui`. In PowerShell the default is **`"$HOME\.dsh"`**, not `"$HOME.dsh"` (the latter concatenates the username and `.dsh`). Inspect the profile's `package.json` and `pnpm-workspace.yaml`: bundles should contain `@deepseek-ai/dsh-base` and `@jame100101/dsh-tui`, not the legacy `@deepseek-ai/dsh-tui-app`. `dsh plugin ... list` may initialize a missing profile and reconcile an existing one; it is not strictly read-only.
+
+If the profile remains broken, close TUI processes, confirm the home path, and back up/rebuild **only the tui profile**. Windows PowerShell example (after removing any shadowing legacy global package):
+
+```powershell
+$dshHome = if ([string]::IsNullOrWhiteSpace($env:DSH_HOME)) { Join-Path $HOME '.dsh' } else { $env:DSH_HOME }
+$dshHome = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($dshHome)
+$profileDir = Join-Path $dshHome 'profiles\tui'
+Write-Output $profileDir # Confirm this is the intended profile before continuing.
+if (Test-Path -LiteralPath $profileDir) {
+  Rename-Item -LiteralPath $profileDir -NewName ("tui.backup-" + [guid]::NewGuid().ToString('N'))
+}
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh --profile tui
+```
+
+Keep the backup for reviewing custom profile patches; do not copy the old bundle list back. Never delete the entire `~/.dsh`: it also holds credentials, sessions and other profiles. On macOS/Linux, similarly back up only `$DSH_HOME/profiles/tui` (default `$HOME/.dsh/profiles/tui`) before reinstalling the plugin. This migration does not patch or replace the official Harness resolver.
+
 ### `node: command not found` or Windows says `'node' is not recognized`
 
 Reopen the terminal after installing Node.js. If the problem remains, verify that Node.js is installed and that its installation directory is on `PATH`:
@@ -259,10 +290,10 @@ Prefer nvm or another user-level Node.js installation so npm's global prefix is 
 
 ## Release Status
 
-`dsh-tui` `0.1.0` is the legacy standalone release published under npm's `latest` dist-tag. `0.2.0-rc.1` is the out-of-tree plugin prerelease and installs by exact version without replacing `latest`:
+`dsh-tui` `0.1.0` is the legacy standalone release published under npm's `latest` dist-tag. `0.2.0-rc.2` is the out-of-tree plugin prerelease and installs by exact version without replacing `latest`:
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 ```
 
 Use `npm install -g @jame100101/dsh-tui@latest` only for the legacy `0.1.0` standalone line.
@@ -276,7 +307,7 @@ The persistent-shell prompt alignment described above belongs to official Harnes
 Reinstall the exact plugin prerelease to update the `tui` profile after a compatible release:
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.1
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 ```
 
 ## Development

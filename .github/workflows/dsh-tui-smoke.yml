@@ -49,7 +49,7 @@ jobs:
         run: pnpm run build:lib:host
 
       - name: Focused launcher and packaging tests
-        run: pnpm exec vitest run apps/tui-cli/tests/assemble-plugin.spec.ts apps/tui-cli/tests/translate.spec.ts
+        run: pnpm exec vitest run apps/tui-cli/tests/assemble-plugin.spec.ts apps/tui-cli/tests/translate.spec.ts apps/tui-cli/tests/legacy-migration.spec.ts
 
       - name: Assemble the plugin
         run: pnpm --filter @jame100101/dsh-tui run assemble-plugin
