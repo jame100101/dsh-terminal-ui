@@ -5404,5 +5404,11 @@
     "scripts/audit-tarball.spec.ts",
     ".githooks/pre-commit",
     ".githooks/pre-push"
-  ]
+  ],
+  "inventoryCounts": {
+    "packageManifests": 277,
+    "compatibilityFixtureManifests": 7,
+    "retainedWorkspaceManifests": 2,
+    "removedPackageManifests": 275
+  }
 }
