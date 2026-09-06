@@ -188,7 +188,7 @@ async function main() {
   assert(!JSON.stringify(profileManifest).includes('@deepseek-ai/dsh-tui-app'), 'profile includes the bundled TUI app')
   const installedPlugin = join(profile, 'node_modules', '@jame100101', 'dsh-tui')
   const pluginManifest = readJson(join(installedPlugin, 'package.json'))
-  assert(pluginManifest.version === '0.2.0-rc.2', `installed plugin ${String(pluginManifest.version)}`)
+  assert(pluginManifest.version === '0.2.0', `installed plugin ${String(pluginManifest.version)}`)
   assert(pluginManifest.private !== true, 'staged plugin is private')
   assert(pluginManifest.repository?.url === 'git+https://github.com/jame100101/dsh-terminal-ui.git', 'repository metadata differs')
   assert(pluginManifest.engines?.node === '^22.19.0 || >=24.0.0', 'Node engine range differs')

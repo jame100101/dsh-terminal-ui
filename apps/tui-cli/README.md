@@ -7,15 +7,15 @@ English | [中文](README.zh.md)
 ## Version lines
 
 - `0.1.x` is the legacy standalone package. The published `0.1.0` tarball contains a bundled Harness runtime.
-- `0.2.x` is the out-of-tree plugin line. `0.2.0-rc.2` requires and is tested with `@deepseek-ai/dsh@0.1.2-rc.1`.
+- `0.2.x` is the out-of-tree plugin line. `0.2.0` requires and is tested with `@deepseek-ai/dsh@0.1.2-rc.1`.
 
-## Install the 0.2 release candidate
+## Install the 0.2.0 stable plugin
 
 Install the compatible official Harness, add the published plugin to a fresh or existing `tui` profile, and launch that profile:
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -54,7 +54,7 @@ If no compatible official Harness is present, the launcher names the required pa
 The clean-room verifier installs official Harness outside this repository, creates an isolated `DSH_HOME`, installs the packed plugin, checks package identity and patched Ink resolution, and boots direct dsh plus launcher paths using explicit `DSH_BIN` and npm's PATH entry under a PTY:
 
 ```sh
-node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-rc.2.tgz
+node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0.tgz
 ```
 
 It leaves the temporary install and `DSH_HOME` in place and prints both paths for inspection.

@@ -7,15 +7,15 @@
 ## 版本线
 
 - `0.1.x` 是旧版独立包。已发布的 `0.1.0` tarball 包含 bundled Harness runtime。
-- `0.2.x` 是 out-of-tree 插件版本线。`0.2.0-rc.2` 要求并已使用 `@deepseek-ai/dsh@0.1.2-rc.1` 验证。
+- `0.2.x` 是 out-of-tree 插件版本线。`0.2.0` 要求并已使用 `@deepseek-ai/dsh@0.1.2-rc.1` 验证。
 
-## 安装 0.2 release candidate
+## 安装 0.2.0 stable plugin
 
 安装兼容的官方 Harness，把已发布插件加入新的或已有的 `tui` profile，然后启动该 profile：
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -54,7 +54,7 @@ dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 Clean-room verifier 会在仓库外安装官方 Harness、创建隔离的 `DSH_HOME`、安装 packed plugin、检查包 identity 和 patched Ink 解析，并在 PTY 中分别通过 direct dsh、显式 `DSH_BIN` launcher 和 npm PATH entry launcher 启动：
 
 ```sh
-node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0-rc.2.tgz
+node apps/tui-cli/scripts/verify-official-plugin.mjs ./jame100101-dsh-tui-0.2.0.tgz
 ```
 
 验证器会保留临时安装和 `DSH_HOME`，并输出两个路径供检查。

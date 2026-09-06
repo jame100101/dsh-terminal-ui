@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#快速开始"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.2"><img alt="npm RC 0.2.0-rc.2" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.2-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0"><img alt="npm stable 0.2.0" src="https://img.shields.io/badge/NPM_STABLE-0.2.0-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#架构"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#架构"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#架构"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@
 
 <p align="center">本地优先 · 会话持久化 · 工具运行时</p>
 
-> 🚀 **推荐 RC `0.2.0-rc.2` 已发布** — `0.2.x` 是官方 DeepSeek Harness 的 out-of-tree plugin，兼容 `@deepseek-ai/dsh@0.1.2-rc.1`。Stable / npm `latest` 仍为旧版 standalone `0.1.0`。见[快速开始](#quick-start)。
+> 🚀 **推荐 stable `0.2.0`** — `0.2.x` 是官方 DeepSeek Harness 的 out-of-tree plugin，兼容 `@deepseek-ai/dsh@0.1.2-rc.1`。`0.2.0` 是当前 stable out-of-tree Harness plugin；`0.1.0` 是 legacy standalone。见[快速开始](#quick-start)。
 
 <p align="center">
   <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2 RC startup" width="100%">
@@ -121,13 +121,13 @@ which npm
 
 如果登录 shell 是 zsh，请将 `source ~/.bashrc` 换成 `source ~/.zshrc`。如果系统已有旧版 apt 或系统 Node.js，请先升级或选择满足要求的版本。
 
-### 2. 安装 0.2 release candidate
+### 2. 安装 0.2.0 stable plugin
 
 安装兼容的官方 Harness，把已发布插件加入 `tui` profile，然后启动该 profile：
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -214,7 +214,7 @@ dsh --profile tui
 ```sh
 npm uninstall -g @jame100101/dsh-tui
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -230,7 +230,7 @@ Write-Output $profileDir # 继续前确认这是目标 profile。
 if (Test-Path -LiteralPath $profileDir) {
   Rename-Item -LiteralPath $profileDir -NewName ("tui.backup-" + [guid]::NewGuid().ToString('N'))
 }
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -292,13 +292,13 @@ where.exe dsh
 
 ## 发布状态
 
-`dsh-tui` `0.1.0` 是发布在 npm `latest` dist-tag 下的旧版独立发行。`0.2.0-rc.2` 是 out-of-tree plugin prerelease，按准确版本安装且不会替换 `latest`：
+`dsh-tui` `0.2.0` 是 npm `latest` dist-tag 下的当前 stable out-of-tree Harness plugin。`0.1.0` 是 legacy standalone。按准确版本安装 stable plugin：
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 ```
 
-只有使用旧版 `0.1.0` standalone 版本线时，才使用 `npm install -g @jame100101/dsh-tui@latest`。
+只有使用旧版 `0.1.0` standalone 版本线时，才使用 `npm install -g @jame100101/dsh-tui@0.1.0`。
 
 ## 维护
 
@@ -306,10 +306,10 @@ dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
 
 上面提到的持久 Shell prompt 对齐属于官方 Harness。该插件只添加终端界面，不替换这项实现。
 
-兼容版本发布后，重新安装准确的 plugin prerelease 即可更新 `tui` profile：
+兼容版本发布后，重新安装准确的 plugin 版本 即可更新 `tui` profile：
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 ```
 
 ## 开发

@@ -6,7 +6,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0-rc.2"><img alt="npm RC 0.2.0-rc.2" src="https://img.shields.io/badge/NPM_RC-0.2.0--rc.2-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.0"><img alt="npm stable 0.2.0" src="https://img.shields.io/badge/NPM_STABLE-0.2.0-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#architecture"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#architecture"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#architecture"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,7 +15,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Local-first · Session persistence · Tool runtime</p>
 
-> 🚀 **Recommended RC `0.2.0-rc.2` is published** — `0.2.x` is an official DeepSeek Harness out-of-tree plugin, compatible with `@deepseek-ai/dsh@0.1.2-rc.1`. Stable / npm `latest` remains the legacy standalone `0.1.0`. See [Quick Start](#quick-start).
+> 🚀 **Recommended stable `0.2.0`** — `0.2.x` is an official DeepSeek Harness out-of-tree plugin, compatible with `@deepseek-ai/dsh@0.1.2-rc.1`. `0.2.0` is the current stable out-of-tree Harness plugin; `0.1.0` is legacy standalone. See [Quick Start](#quick-start).
 
 <p align="center">
   <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2 RC startup" width="100%">
@@ -119,13 +119,13 @@ which npm
 
 Use `source ~/.zshrc` instead when the login shell is zsh. If the host already has an older apt or system Node.js, upgrade or select a supported version before continuing.
 
-### 2. Install the 0.2 release candidate
+### 2. Install the 0.2.0 stable plugin
 
 Install the compatible official Harness, add the published plugin to a `tui` profile, and launch that profile:
 
 ```sh
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -212,7 +212,7 @@ Check `npm ls -g --depth=0`, `dsh --version`, and (Windows) `where.exe dsh` / `w
 ```sh
 npm uninstall -g @jame100101/dsh-tui
 npm install -g @deepseek-ai/dsh@0.1.2-rc.1
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -228,7 +228,7 @@ Write-Output $profileDir # Confirm this is the intended profile before continuin
 if (Test-Path -LiteralPath $profileDir) {
   Rename-Item -LiteralPath $profileDir -NewName ("tui.backup-" + [guid]::NewGuid().ToString('N'))
 }
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 dsh --profile tui
 ```
 
@@ -290,13 +290,13 @@ Prefer nvm or another user-level Node.js installation so npm's global prefix is 
 
 ## Release Status
 
-`dsh-tui` `0.1.0` is the legacy standalone release published under npm's `latest` dist-tag. `0.2.0-rc.2` is the out-of-tree plugin prerelease and installs by exact version without replacing `latest`:
+`dsh-tui` `0.2.0` is the current stable out-of-tree Harness plugin under npm's `latest` dist-tag. `0.1.0` is legacy standalone. Install the stable plugin by exact version:
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 ```
 
-Use `npm install -g @jame100101/dsh-tui@latest` only for the legacy `0.1.0` standalone line.
+Use `npm install -g @jame100101/dsh-tui@0.1.0` only for the legacy `0.1.0` standalone line.
 
 ## Maintenance
 
@@ -304,10 +304,10 @@ Session data and local configuration are stored under the user's DSH data direct
 
 The persistent-shell prompt alignment described above belongs to official Harness. This plugin adds the terminal interface without replacing that implementation.
 
-Reinstall the exact plugin prerelease to update the `tui` profile after a compatible release:
+Reinstall the exact plugin version to update the `tui` profile after a compatible release:
 
 ```sh
-dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0-rc.2
+dsh plugin --profile tui add @jame100101/dsh-tui@0.2.0
 ```
 
 ## Development
