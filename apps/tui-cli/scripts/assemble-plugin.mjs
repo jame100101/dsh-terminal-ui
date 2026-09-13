@@ -20,7 +20,7 @@ const wrapperRequire = createRequire(join(pkgDir, 'package.json'))
 const workspaceManifest = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
 const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
-const HARNESS = '0.1.2-rc.1'
+const HARNESS = '0.1.5-rc.2'
 const INK_PATCH = 'patches/ink@7.1.1.patch'
 const PEERS = {
   '@deepseek-ai/cordis': '4.0.2',

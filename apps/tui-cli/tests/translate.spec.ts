@@ -135,7 +135,7 @@ describe('resolveDshBinPath', () => {
 
   it('reports the required official package when no dsh is configured', () => {
     expect(() => resolveDshBinPath({ PATH: '' }))
-      .toThrow(/install @deepseek-ai\/dsh@0\.1\.2-rc\.1 or set DSH_BIN/u)
+      .toThrow(/install @deepseek-ai\/dsh@0\.1\.5-rc\.1 or set DSH_BIN/u)
   })
 })
 
@@ -237,7 +237,7 @@ describe('POSIX symlink resolution', () => {
     try {
       const officialRoot = join(dir, 'lib/node_modules/@deepseek-ai/dsh')
       mkdirSync(join(officialRoot, 'lib'), { recursive: true })
-      writeFileSync(join(officialRoot, 'package.json'), JSON.stringify({ version: '0.1.2-rc.1' }))
+      writeFileSync(join(officialRoot, 'package.json'), JSON.stringify({ version: '0.1.5-rc.1' }))
       const officialJs = join(officialRoot, 'lib/bin.js')
       writeFileSync(officialJs, '#!/usr/bin/env node\n')
       const officialBinDir = join(dir, 'bin')

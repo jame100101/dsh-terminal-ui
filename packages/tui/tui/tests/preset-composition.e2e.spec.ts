@@ -1,3 +1,4 @@
+import { readTuiSession } from '../src/session-read'
 import { createRequire } from 'node:module'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -94,7 +95,7 @@ async function bootTuiComposition(home: string): Promise<Context> {
 }
 
 async function resumeColdTuiSession(ctx: Context, sessionId: SessionId) {
-  const snapshot = await ctx.sessionQuery.readSession(sessionId)
+  const snapshot = await readTuiSession(ctx.sessionQuery, sessionId)
   return prepareTuiResume(
     ctx,
     sessionId,
@@ -179,9 +180,10 @@ describe('shipped TUI preset composition', () => {
       expect(recordedPreset(created.agent.session.header, created.agent.session.snapshotEvents())).toBe('minimal')
       const minimalAssembly = await ctx.systemPrompt.assemble({ scope: created.agent })
       expect(minimalAssembly.sections).toEqual([
-        { name: 'deployment:persona', text: 'You are a helpful software engineer assistant.' },
+        { name: 'deployment:persona-prefix', text: 'You are a helpful software engineer assistant.' },
       ])
-      expect(minimalAssembly.tools.map(tool => tool.name)).toEqual([process.platform === 'win32' ? 'pwsh' : 'bash', 'str_replace_editor'])
+      // Official 0.1.5 minimal preset is explicitly single-shell; standard retains file tools.
+      expect(minimalAssembly.tools.map(tool => tool.name)).toEqual([process.platform === 'win32' ? 'pwsh' : 'bash'])
 
       const standard = await ctx.agentPresets.recompose(created.agent.ctx, 'standard')
       created.agent.session.append('agent-preset/selected', { agentPreset: standard.id })
@@ -238,7 +240,7 @@ describe('shipped TUI preset composition', () => {
       expect(childId).not.toBeNull()
       if (childId === null) throw new Error('expected completed parent turn to produce a fork')
       expect(ctx.agents.get(childId)).toBeUndefined()
-      const cold = await ctx.sessionQuery.readSession(childId)
+      const cold = await readTuiSession(ctx.sessionQuery, childId)
       expect(cold.session).toMatchObject({
         agentPreset: parent.presetId,
         parentSession: parent.agent.id,
@@ -265,7 +267,7 @@ describe('shipped TUI preset composition', () => {
       const childId = await createForkArtifact(ctx, { source: parent.agent, cwd: workspace })
       expect(childId).not.toBeNull()
       if (childId === null) throw new Error('expected completed parent turn to produce a fork')
-      const cold = await ctx.sessionQuery.readSession(childId)
+      const cold = await readTuiSession(ctx.sessionQuery, childId)
       expect(cold.session.agentPreset).toBe('minimal')
       child = await resumeColdTuiSession(ctx, childId)
       expect(ctx.agentPresets.composedPreset(child.handle.agent.ctx)).toBe('minimal')
@@ -445,7 +447,7 @@ describe('shipped TUI preset composition', () => {
         model: 'model-b',
         reasoningEffort: ReasoningEffortId('low'),
       }
-      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      const snapshot = await readTuiSession(ctx.sessionQuery, targetId)
       resumed = await prepareTuiResume(
         ctx,
         targetId,
@@ -489,7 +491,7 @@ describe('shipped TUI preset composition', () => {
     const current = await createTuiAgent(ctx, workspace, 'minimal')
     const mount = vi.spyOn(ctx.agentPresets, 'mount').mockRejectedValueOnce(new Error('resume mount failed for test'))
     try {
-      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      const snapshot = await readTuiSession(ctx.sessionQuery, targetId)
       await expect(prepareTuiResume(
         ctx,
         targetId,
@@ -525,7 +527,7 @@ describe('shipped TUI preset composition', () => {
     const current = await createTuiAgent(ctx, workspace, 'minimal')
     const currentSelection = { ...current.ref.current }
     try {
-      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      const snapshot = await readTuiSession(ctx.sessionQuery, targetId)
       await expect(prepareTuiResume(
         ctx,
         targetId,
@@ -545,7 +547,7 @@ describe('shipped TUI preset composition', () => {
     const target = await createTuiAgent(ctx, workspace, 'standard')
     const targetId = target.agent.id
     await persistAndDisposeTuiAgent(ctx, target)
-    const snapshot = await ctx.sessionQuery.readSession(targetId)
+    const snapshot = await readTuiSession(ctx.sessionQuery, targetId)
     const offAdapter = ctx.llm.registerAdapter(['legacy-deployment-provider'], new MockAdapter([], {
       efforts: [{ id: ReasoningEffortId('low'), name: 'Low' }],
       defaultEffort: ReasoningEffortId('low'),
@@ -591,7 +593,7 @@ describe('shipped TUI preset composition', () => {
       throw new Error('unreachable resume completion')
     })
     try {
-      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      const snapshot = await readTuiSession(ctx.sessionQuery, targetId)
       const controller = new AbortController()
       const pending = prepareTuiResume(
         ctx,
@@ -695,7 +697,7 @@ describe('shipped TUI preset composition', () => {
     current.agent.session.append('tool-workflow/run-start', { runId: currentRun, name: 'current-history' })
     let resumed: Awaited<ReturnType<typeof prepareTuiResume>> | undefined
     try {
-      const snapshot = await ctx.sessionQuery.readSession(targetId)
+      const snapshot = await readTuiSession(ctx.sessionQuery, targetId)
       resumed = await prepareTuiResume(
         ctx,
         targetId,
@@ -804,7 +806,7 @@ describe('shipped TUI preset composition', () => {
     expect(await ctx.sessions.flush(created.agent.session)).toBe(true)
     await created.handle.dispose()
 
-    const snapshot = await ctx.sessionQuery.readSession(sessionId)
+    const snapshot = await readTuiSession(ctx.sessionQuery, sessionId)
     const recorded = recordedPreset(snapshot.session, snapshot.events)
     const preset = await resolveTuiPreset(ctx, recorded)
     const resumed = await ctx.agents.resume({
@@ -832,7 +834,7 @@ describe('shipped TUI preset composition', () => {
     expect(await ctx.sessions.flush(old.agent.session)).toBe(true)
     await old.dispose()
 
-    const snapshot = await ctx.sessionQuery.readSession(oldSessionId)
+    const snapshot = await readTuiSession(ctx.sessionQuery, oldSessionId)
     expect(recordedPreset(snapshot.session, snapshot.events)).toBeUndefined()
     const preset = await resolveTuiPreset(ctx)
     const resumed = await ctx.agents.resume({

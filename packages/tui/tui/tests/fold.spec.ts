@@ -168,17 +168,17 @@ describe('session fold', () => {
   it('folds Code Mode sub-dispatches as indented child tool rows', () => {
     const state = foldAll([
       event('tool/call', { turn: 1, step: 1, callId: 'root', name: 'run_code', arguments: '{}' }, 1, 10),
-      event('tool/code-dispatch-start', {
+      event('tool/ptc-dispatch-start', {
         rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:1', name: 'web_search', arguments: { query: 'x' },
       }, 2, 20),
-      event('tool/code-dispatch', {
+      event('tool/ptc-dispatch', {
         rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:1', name: 'web_search',
         arguments: { query: 'x' }, isError: false, content: [text('hits')],
       }, 3, 30),
-      event('tool/code-dispatch-start', {
+      event('tool/ptc-dispatch-start', {
         rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:2', name: 'read', arguments: { path: 'a.ts' },
       }, 4, 40),
-      event('tool/code-dispatch', {
+      event('tool/ptc-dispatch', {
         rootCallId: 'root', parentCallId: 'root', subCallId: 'root:code:2', name: 'read',
         arguments: { path: 'a.ts' }, isError: true, content: [text('missing')],
       }, 5, 50),

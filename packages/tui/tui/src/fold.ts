@@ -10,11 +10,11 @@
  * @module @deepseek-ai/dsh-tui/src/fold
  */
 
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { expandAssistantStream, type ContentBlock, type StreamChunk } from '@deepseek-ai/dsh-llm'
 // Empty type imports carry declaration merges: compaction extends the session
 // event vocabulary with `compaction/*`, commands with `command/run`/`done`,
 // llm-retry with `llm/retry`, plan-mode with `plan/mode`, goal with
-// `goal/change`, tool-todo with `todo/write`, tools with `tool/code-dispatch*`.
+// `goal/change`, tool-todo with `todo/write`, tools with `tool/ptc-dispatch*`.
 import type {} from '@deepseek-ai/dsh-compaction'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-llm-retry'
@@ -27,6 +27,9 @@ import type { FoldState, GoalRow, SessionStats, TuiNode, ToolStatus } from './ty
 import { compactResultCard } from './card-project'
 import { deepSeekCostUsd } from './deepseek-cost'
 import { formatMs } from './plain'
+
+/** Local projection input for transient frames; never appended to a Session. */
+export type FoldEvent = SessionEvent | { type: 'assistant/chunk'; seq: number; time: number; data: { chunk: StreamChunk } }
 
 /** Tool-result text cap: rows stay display-sized even for giant outputs. */
 export const MAX_TOOL_TEXT = 4000
@@ -522,7 +525,15 @@ export async function foldFromLogYielding(
  * @param scratch - private per-stream bookkeeping (timing, tool starts).
  * @returns the fold state after this event.
  */
-export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldScratch = createScratch()): FoldState {
+export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScratch = createScratch()): FoldState {
+  // Durable settlement is authoritative for replay and live delivery alike.
+  // Replace the transient body before expanding, rather than appending it twice.
+  if ((event.type === 'assistant/message' || event.type === 'assistant/attempt') && event.data.stream !== undefined) {
+    state = { ...state, live: null }
+    for (const entry of expandAssistantStream(event.data.stream)) {
+      state = applyEvent(state, { type: 'assistant/chunk', seq: event.seq, time: entry.time, data: { chunk: entry.chunk } }, scratch)
+    }
+  }
   // Lazy copy: `nodes`/`trace` keep their identity until an event actually
   // appends or replaces a row. Streaming `assistant/chunk` events therefore
   // publish referentially-stable arrays, which the renderer's memoization
@@ -607,6 +618,15 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
         scratch.step.firstChunkTime ??= event.time
         scratch.step.lastChunkTime = event.time
       }
+      break
+    }
+    case 'assistant/attempt': {
+      if (live?.think) {
+        nodes = writableNodes(nodes, scratch)
+        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)))
+      }
+      if (live?.text) nodes = appendNode(nodes, { kind: 'assistant', id: event.seq, text: live.text, messageId: '', interrupted: true }, scratch)
+      live = null
       break
     }
     case 'assistant/message': {
@@ -862,7 +882,7 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       }
       break
     }
-    case 'tool/code-dispatch-start': {
+    case 'tool/ptc-dispatch-start': {
       nodes = appendNode(nodes, {
         kind: 'tool',
         id: event.seq,
@@ -880,7 +900,7 @@ export function applyEvent(state: FoldState, event: SessionEvent, scratch: FoldS
       traces = appendTrace(traces, trace(event.seq, `tool ${event.data.name}`), scratch)
       break
     }
-    case 'tool/code-dispatch': {
+    case 'tool/ptc-dispatch': {
       const callId = String(event.data.subCallId)
       const text = blocksText(event.data.content, MAX_TOOL_TEXT)
       const status: ToolStatus = event.data.isError ? 'error' : 'done'

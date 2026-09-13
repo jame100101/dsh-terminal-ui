@@ -1,3 +1,4 @@
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -21,7 +22,7 @@ async function withSidecar(
 
 /** Minimal session lifecycle header. */
 function header(id: string, createdAt: number, cwd?: string): SessionHeader {
-  return { version: 0, id: SessionId(id), createdAt, isSeeded: false, ...(cwd === undefined ? {} : { cwd }) }
+  return { version: SESSION_FORMAT_VERSION, id: SessionId(id), createdAt, isSeeded: false, ...(cwd === undefined ? {} : { cwd }) }
 }
 
 describe('SessionRecencyStore', () => {

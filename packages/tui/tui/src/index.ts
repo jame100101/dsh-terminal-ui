@@ -1,3 +1,4 @@
+import { readTuiSession } from './session-read'
 /**
  * @deepseek-ai/dsh-tui — the in-process terminal surface over the dsh core.
  * Creates one process-wide Agent through the core registry, folds its
@@ -15,6 +16,7 @@
  * @module @deepseek-ai/dsh-tui
  */
 
+import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, dirname, extname, join, resolve } from 'node:path'
@@ -364,7 +366,7 @@ async function loadSessionRows(ctx: Context, liveRows: readonly SessionEntry[]):
 function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): void {
   const tools = ctx.get('tools')
   if (tools === undefined) return
-  if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
+  if (event.type === 'tool/call' || event.type === 'tool/ptc-dispatch-start') {
     const node = fold.nodes[fold.nodes.length - 1]
     if (node === undefined || node.kind !== 'tool') return
     const definition = tools.get(event.data.name)
@@ -388,7 +390,7 @@ function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): vo
       isError: decoded.isError,
       ...(event.data.meta === undefined ? {} : { meta: event.data.meta }),
     }
-  } else if (event.type === 'tool/code-dispatch') {
+  } else if (event.type === 'tool/ptc-dispatch') {
     callId = String(event.data.subCallId)
     result = { content: event.data.content, isError: event.data.isError }
   } else {
@@ -652,6 +654,20 @@ function subscribe(
   }
   const uiPublish = createUiPublishScheduler(() => { publish(true) })
   const off = ctx.on('internal/dispatch', (_mode, eventName, args) => {
+    if (eventName === 'agent/assistant-stream') {
+      const payload = (args as unknown[])[0] as { agent: Agent; frame: AssistantStreamFrame }
+      if (payload.agent !== surface.agent) return
+      const frame = payload.frame
+      if (frame.type === 'chunk') {
+        surface.fold = applyEvent(surface.fold, { type: 'assistant/chunk', seq: -1, time: frame.time, data: { chunk: frame.chunk } }, surface.scratch)
+        uiPublish.request(false)
+      } else if (frame.type === 'start' || frame.outcome.kind === 'abandoned') {
+        surface.fold = { ...surface.fold, live: null }
+        uiPublish.dispose()
+        publish()
+      }
+      return
+    }
     if (eventName === 'session/event') {
       // Only the surface's own session feeds the fold: a foreign agent's
       // events (a leaked lifecycle or a fork racing a switch) must never
@@ -660,7 +676,7 @@ function subscribe(
       if (session !== surface.agent.session) return
       const event = (args as unknown[])[1] as SessionEvent
       // presentResult needs the running row's args; applyEvent drops them.
-      if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
+      if (event.type === 'tool/result' || event.type === 'tool/ptc-dispatch') {
         enrichToolCards(ctx, event, surface.fold)
       }
       // Workflow rows are owned by the durable event stream of this exact
@@ -676,7 +692,7 @@ function subscribe(
       }
       const previousFold = surface.fold
       surface.fold = applyEvent(surface.fold, event, surface.scratch)
-      if (event.type === 'tool/call' || event.type === 'tool/code-dispatch-start') {
+      if (event.type === 'tool/call' || event.type === 'tool/ptc-dispatch-start') {
         enrichToolCards(ctx, event, surface.fold)
         const node = surface.fold.nodes[surface.fold.nodes.length - 1]
         if (node?.kind === 'tool') {
@@ -1219,7 +1235,7 @@ async function boot(
     }
     try {
       const images = await encodeTuiCommandImages(ctx.attachments, surface.pendingAttachments)
-      const execution = await commands.execute(commandAgent, text, images, new AbortController().signal)
+      const execution = await commands.execute(commandAgent, text, images.map(image => ({ type: 'image' as const, ...image })), new AbortController().signal)
       if (execution !== undefined) {
         surface.pendingAttachments = []
         publishPendingImages()
@@ -1233,12 +1249,12 @@ async function boot(
   }
   const foldHooks = {
     before(event: SessionEvent, state: FoldState): void {
-      if (event.type === 'tool/result' || event.type === 'tool/code-dispatch') {
+      if (event.type === 'tool/result' || event.type === 'tool/ptc-dispatch') {
         enrichToolCards(ctx, event, state)
       }
     },
     after(event: SessionEvent, state: FoldState, replayScratch: FoldScratch): void {
-      if (event.type !== 'tool/call' && event.type !== 'tool/code-dispatch-start') return
+      if (event.type !== 'tool/call' && event.type !== 'tool/ptc-dispatch-start') return
       enrichToolCards(ctx, event, state)
       const node = state.nodes[state.nodes.length - 1]
       if (node?.kind === 'tool') {
@@ -1348,7 +1364,7 @@ async function boot(
       return `${uiText('恢复失败', 'Resume failed')}: session query service is not loaded`
     }
     try {
-      const read = await query.readSession(SessionId(id))
+      const read = await readTuiSession(query, SessionId(id))
       snapshot = { header: read.session, events: read.events }
     } catch (error) {
       if (gen === resumeGeneration) {
@@ -1604,7 +1620,7 @@ async function boot(
         if (query === undefined) { fail(ctx, new Error('会话查询服务未加载，无法恢复会话')); return 'exit' }
         let resolution: ResumeResolution
         try {
-          resolution = await resolveResumeTarget(query, intent.base.query)
+          resolution = await resolveResumeTarget({ readSession: id => readTuiSession(query, id), listSessions: () => query.listSessions(), readTitleSnapshots: ids => query.readTitleSnapshots(ids) }, intent.base.query)
         } catch (error) {
           fail(ctx, error)
           return 'exit'

@@ -17,12 +17,15 @@ for (const path of manifests) {
     for (const [name, version] of Object.entries(manifest[field] ?? {})) {
       assert(!/^(workspace|file|link):/.test(version), `${path}: ${name} uses ${version}`)
       if (name.startsWith('@deepseek-ai/dsh') && name !== '@deepseek-ai/dsh-tui') {
-        assert.equal(version, '0.1.2-rc.1', `${name} version drift`)
+        assert.equal(version, name === '@deepseek-ai/dsh' ? '0.1.5-rc.1' : '0.1.5-rc.2', `${name} version drift`)
       }
       declared.add(name)
     }
   }
 }
+// Catch stale auto-installed peers after a Harness upgrade, not only direct pins.
+const lock = readFileSync(resolve(root, 'pnpm-lock.yaml'), 'utf8')
+assert(!/@deepseek-ai\/dsh[^\s'"]*@0\.1\.[0-4](?:[.-])/.test(lock), 'lockfile contains pre-0.1.5 Harness runtime')
 const rootManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 assert.deepEqual(rootManifest.workspaces, ['packages/tui/tui', 'apps/tui-cli'])
 for (const path of ['tsconfig.base.json', 'tsconfig.json', 'tsconfig.client.json', 'packages/tui/tui/tsconfig.json']) {

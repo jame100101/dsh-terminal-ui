@@ -5,7 +5,7 @@
  * @module @deepseek-ai/dsh-tui/src/ui-publish
  */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { FoldEvent } from './fold'
 
 /** Target UI publish interval for coalesced stream chunks (~25 FPS). */
 export const STREAM_UI_PUBLISH_MS = 40
@@ -16,7 +16,7 @@ export const STREAM_UI_PUBLISH_MS = 40
  * @param event - the session event just folded.
  * @returns whether the UI publish may be delayed.
  */
-export function shouldCoalesceSessionEvent(event: SessionEvent): boolean {
+export function shouldCoalesceSessionEvent(event: FoldEvent): boolean {
   if (event.type !== 'assistant/chunk') return false
   const chunk = event.data.chunk
   return chunk.type === 'text-delta' || chunk.type === 'reasoning-delta'

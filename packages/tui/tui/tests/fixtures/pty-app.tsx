@@ -1,3 +1,4 @@
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { runInk } from '../../src/render'
 import { createTuiStore } from '../../src/store'
 import type { TuiHost } from '../../src/render'
@@ -30,7 +31,7 @@ const nodes: TuiNode[] = Array.from({ length: nodeCount }, (_, index) => ({
 }))
 
 const initial = {
-  version: 0,
+  version: SESSION_FORMAT_VERSION,
   nodes,
   trace: [],
   todos: [],

@@ -10,7 +10,7 @@ import { COMPATIBLE_DSH_VERSIONS, isCompatibleDshVersion, readDshVersionFromBin,
 
 const root = join(import.meta.dirname, '..', '..', '..')
 
-function writeDshPackage(packageRoot: string, version = '0.1.2-rc.1', binName = 'bin.js') {
+function writeDshPackage(packageRoot: string, version = '0.1.5-rc.1', binName = 'bin.js') {
   mkdirSync(join(packageRoot, 'lib'), { recursive: true })
   writeFileSync(join(packageRoot, 'package.json'), `${JSON.stringify({ name: '@deepseek-ai/dsh', version })}\n`)
   writeFileSync(join(packageRoot, 'lib', binName), '#!/usr/bin/env node\n')
@@ -71,7 +71,7 @@ describe('assemblePlugin', () => {
       peerDependencies?: Record<string, string>
     }
     expect(manifest.name).toBe('@jame100101/dsh-tui')
-    expect(manifest.version).toBe('0.2.0')
+    expect(manifest.version).toBe('0.2.1')
     expect(manifest.private).not.toBe(true)
     expect(manifest.repository).toEqual({
       type: 'git',
@@ -85,7 +85,7 @@ describe('assemblePlugin', () => {
     expect(manifest.dependencies?.ink).toBe('7.1.1')
     expect(manifest.dependencies?.['react-reconciler']).toBe('^0.33.0')
     expect(manifest.bundledDependencies).toEqual(['ink'])
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-agent']).toBe('0.1.2-rc.1')
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-agent']).toBe('0.1.5-rc.2')
     expect(existsSync(join(destination, 'lib/index.js'))).toBe(true)
     expect(existsSync(join(destination, 'lib/types'))).toBe(false)
     expect(existsSync(join(destination, 'lib/tsconfig.tsbuildinfo'))).toBe(false)
@@ -125,15 +125,15 @@ describe('assemblePlugin', () => {
 
 describe('plugin-mode launcher compatibility', () => {
   it('accepts only the documented dsh RC line', () => {
-    expect(COMPATIBLE_DSH_VERSIONS).toEqual(['0.1.2-rc.1'])
-    expect(isCompatibleDshVersion('0.1.2-rc.1')).toBe(true)
+    expect(COMPATIBLE_DSH_VERSIONS).toEqual(['0.1.5-rc.1'])
+    expect(isCompatibleDshVersion('0.1.5-rc.1')).toBe(true)
     expect(isCompatibleDshVersion('0.1.0')).toBe(false)
     expect(isCompatibleDshVersion('0.2.0')).toBe(false)
   })
 
   it('reads the workspace dsh version from its JS bin', () => {
     const version = readDshVersionFromBin(join(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'), '..', 'lib/bin.js'))
-    expect(version).toBe('0.1.2-rc.1')
+    expect(version).toBe('0.1.5-rc.1')
   })
 
   it('honors DSH_BIN and rejects an incompatible bin', () => {
@@ -147,7 +147,7 @@ describe('plugin-mode launcher compatibility', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'dsh-path-js-'))
     try {
       const compatible = join(fixture, 'compatible')
-      const compatibleJs = writeDshPackage(compatible, '0.1.2-rc.1', 'dsh.js')
+      const compatibleJs = writeDshPackage(compatible, '0.1.5-rc.1', 'dsh.js')
       expect(resolveOfficialDshBin({ PATH: join(compatible, 'lib') })).toBe(realpathSync(compatibleJs))
 
       const incompatible = join(fixture, 'incompatible')

@@ -7,35 +7,7 @@
  */
 
 import stringWidth from 'string-width'
-
-/**
- * The 52-by-19 whale canvas. Full blocks paint solid body cells; upper and
- * lower half blocks preserve the reference silhouette at twice the vertical
- * cell resolution. Leading ASCII spaces are coordinates within the canvas,
- * so rows are never trimmed, dedented, centered independently, or reflowed.
- */
-export const WHALE_ART_RAW: string = `                      ▄▄▄▄▄▄       ▄█
-         ▄▄▄██████████████▀       ▄███▄           ▄
-      ▄███████████████████▄       ███████▄  ▄▄▄▄▄███
-    ▄███████████████████████▄▄     ███████▄████████
-   ████████████████████████████▄   ▀██████████████▀
-  ███████████████████████████████▄   ▀██████████▀
- ██████████████████████████████████▄  ██████▀▀
- ███        ▀▀█████████████▀▀▀█████████████▀
-████▄           ▀████████████▄ ▀███████████
- ████              ▀██████████   ▀█████████
- ████▄               █████████▄▄ ▄████████
- █████▄               ▀██████████████████
-  █████▄                ████████████████▀
-   ██████        ▄▄      ▀████████████▀
-    ▀█████▄      ████▄    ▀██████████▀
-     ▀███████▄▄   ██████▄   ▀████████▄▄▄
-       ▀▀██████████████████▄▄▄███████████
-          ▀███████████████████▀    ▀▀▀▀
-              ▀▀▀███████▀▀▀▀`
-
-/** The raw whale art split into immutable canvas rows. */
-export const WHALE_ART: readonly string[] = Object.freeze(WHALE_ART_RAW.split('\n'))
+import { WHALE_PIXELS } from './whale-pixels'
 
 /** DeepSeek brand blue shared by the whale and wordmark. */
 export const WHALE_COLOR = '#4D6BFE'
@@ -50,6 +22,8 @@ export const TITLE_MAIN_COLOR = WHALE_COLOR
 export interface BannerRun {
   text: string
   color: string
+  backgroundColor?: string
+  exactColor?: boolean
 }
 
 /** One precomputed banner row. */
@@ -58,6 +32,28 @@ export interface BannerRow {
   /** The row's cell width for centering. */
   width: number
 }
+
+/** Precompute glyph runs once; outside pixels retain the terminal background. */
+export const WHALE_ROWS: readonly BannerRow[] = Object.freeze(Array.from({ length: WHALE_PIXELS.length / 2 }, (_, y) => {
+  const runs: BannerRun[] = []
+  const color = (pixel: string) => pixel
+  for (let x = 0; x < 52; x++) {
+    const top = WHALE_PIXELS[y * 2]![x]!
+    const bottom = WHALE_PIXELS[y * 2 + 1]![x]!
+    const run: BannerRun = top === '.' && bottom === '.'
+      ? { text: ' ', color: WHALE_COLOR, exactColor: true }
+      : top === bottom ? { text: '█', color: color(top), exactColor: true }
+        : top === '.' ? { text: '▄', color: color(bottom), exactColor: true }
+          : bottom === '.' ? { text: '▀', color: color(top), exactColor: true }
+            : { text: '▀', color: color(top), backgroundColor: color(bottom), exactColor: true }
+    const previous = runs.at(-1)
+    if (previous?.color === run.color && previous.backgroundColor === run.backgroundColor) previous.text += run.text
+    else runs.push(run)
+  }
+  return { runs, width: 52 }
+}))
+export const WHALE_ART: readonly string[] = Object.freeze(WHALE_ROWS.map(row => row.runs.map(run => run.text).join('')))
+export const WHALE_ART_RAW = WHALE_ART.join('\n')
 
 /** The precomputed single-row `DEEPSEEK HARNESS` wordmark. */
 export const TITLE_ROWS: readonly BannerRow[] = Object.freeze([{
@@ -86,7 +82,7 @@ function centerRow(runs: readonly BannerRun[], rowWidth: number, contentWidth: n
   const pad = Math.max(0, Math.floor((contentWidth - rowWidth) / 2))
   const first = runs[0]
   if (first === undefined) return [{ text: ' '.repeat(pad), color: '' }]
-  return [{ text: `${' '.repeat(pad)}${first.text}`, color: first.color }, ...runs.slice(1)]
+  return [{ text: ' '.repeat(pad), color: '' }, ...runs]
 }
 
 /** One rendered banner line entering the transcript. */
@@ -104,7 +100,10 @@ export interface WelcomeBannerLine {
  */
 function appendWhale(lines: WelcomeBannerLine[], contentWidth: number): void {
   const pad = Math.max(0, Math.floor((contentWidth - WHALE_WIDTH) / 2))
-  for (const art of WHALE_ART) lines.push({ text: `${' '.repeat(pad)}${art}`, color: WHALE_COLOR })
+  for (const row of WHALE_ROWS) {
+    const runs = [{ text: ' '.repeat(pad), color: '' }, ...row.runs]
+    lines.push({ text: runs.map(run => run.text).join(''), runs })
+  }
 }
 
 /**

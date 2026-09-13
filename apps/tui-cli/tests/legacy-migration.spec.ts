@@ -27,7 +27,7 @@ it('documents official installation-first shadowing and recovery without a resol
   const write = (path: string, data: unknown) => writeFileSync(path, JSON.stringify(data))
   try {
     for (const dir of [globalPackage, localPackage, join(host, '..')]) mkdirSync(dir, { recursive: true })
-    write(host, { name: '@deepseek-ai/dsh', version: '0.1.2-rc.1' })
+    write(host, { name: '@deepseek-ai/dsh', version: '0.1.5-rc.1' })
     write(join(globalPackage, 'package.json'), { name, version: '0.1.0' })
     write(join(localPackage, 'package.json'), { name, version: '0.2.0-rc.2', dsh: { bundle: { patch: './cordis.patch.yml' } } })
     write(join(profile, 'package.json'), { dependencies: { [name]: '0.2.0-rc.2' }, dsh: { profile: { bundles: ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-tui-app'] } } })

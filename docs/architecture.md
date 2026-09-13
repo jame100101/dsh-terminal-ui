@@ -4,7 +4,7 @@ English | [中文](architecture.zh.md)
 
 ## Summary
 
-This standalone out-of-tree plugin repository owns the terminal interface. Official `@deepseek-ai/dsh@0.1.2-rc.1` owns agents, tools, presets, session persistence, jobs and workflows.
+This standalone out-of-tree plugin repository owns the terminal interface. Official `@deepseek-ai/dsh@0.1.5-rc.1` owns agents, tools, presets, session persistence, jobs and workflows.
 
 ## Composition
 
@@ -21,3 +21,11 @@ Vitest resolves public const-enum declarations with the TypeScript checker befor
 ## Maintenance
 
 This repository does not vendor or synchronize full Harness source. A future Harness update changes dependencies and adapter compatibility evidence, not an upstream merge. The [dependency audit](dependency-audit.json) records every baseline package and directory classification. The [extraction decision](../.agents/notes/implemented/architecture/2026-09-05-standalone-plugin-repo.md) owns the rationale.
+
+## Local latest compatibility notes
+
+The adapter consumes public `agent/assistant-stream` frames only for the active Agent. Durable assistant settlements replace transient text and expand their embedded stream for deterministic replay; transient frames are never appended to Session storage. Nested tool cards use the current `tool/ptc-dispatch*` events. The projection cache version changes with these semantics.
+
+The development lockfile is regenerated when upgrading Harness, including auto-installed peers. Repository closure rejects pre-0.1.5 Harness entries so the JSONL backend cannot bind to a stale persistence API. The welcome whale uses static antialiased blue/white cells; the one-cell `❯` prefix and deduplicated counters do not change input handling.
+
+Official CLI compatibility remains `@deepseek-ai/dsh@0.1.5-rc.1`. Its npm ranges currently select Harness subpackages `0.1.5-rc.2`; development dependencies and plugin peers match that graph. Cold fork reads use public `observeSession`, copy the immutable cut, and dispose the lease, avoiding the seed-construction path of `readSession`. The official `minimal` preset now exposes only its persistent shell; the standard preset retains file tools.

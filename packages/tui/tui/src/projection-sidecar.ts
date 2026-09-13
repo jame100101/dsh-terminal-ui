@@ -16,7 +16,7 @@ import type { FoldState, GoalRow, LiveBuffer, PlanState, SessionStats, TodoItem,
 /** On-disk document version. Raise when the file wrapper changes. */
 export const SIDECAR_FORMAT_VERSION = 1
 /** Fold projection version. Raise when TuiNode/FoldState fields change. */
-export const PROJECTION_VERSION = 2
+export const PROJECTION_VERSION = 3
 /** Refuse to persist a sidecar larger than this. */
 export const MAX_SIDECAR_BYTES = 4_000_000
 /** Oldest projection files dropped after a successful write. */

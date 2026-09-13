@@ -1,3 +1,5 @@
+import { WHALE_ART } from '../src/welcome-banner'
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 /**
  * Ground-truth render tests against the Ink 7 App: the root Box fills the
  * terminal (so Ink always takes its whole-screen clear path and interleaved
@@ -236,7 +238,7 @@ class Screen {
 
 /** 1-based row of the composer input line in the last frame. */
 function composerInputRow(lines: string[]): number {
-  const index = lines.findIndex(line => line.trimStart().startsWith('›'))
+  const index = lines.findIndex(line => line.trimStart().startsWith('❯'))
   if (index === -1) throw new Error(`composer input row not found in ${JSON.stringify(lines.slice(-12))}`)
   return index + 1
 }
@@ -273,7 +275,7 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
     costUsd: 0,
   }
   const store = createTuiStore({
-    version: 0,
+    version: SESSION_FORMAT_VERSION,
     nodes,
     trace: [],
     todos: [],
@@ -373,10 +375,15 @@ describe('Ink 7 full-screen render', () => {
   it('fills the terminal exactly and anchors the caret through Ink’s own cursor suffix', async () => {
     const { capture, unmount, type } = await mount()
     try {
+      // The reference whale is 20 rows (previously 19); reserve one more row
+      // to test the complete banner and wordmark rather than its short-screen fallback.
+      capture.rows = ROWS + 1
+      capture.emit('resize')
+      await type('')
       const lines = lastFrameLines(capture)
-      expect(frameRows(lines)).toBe(ROWS)
+      expect(frameRows(lines)).toBe(ROWS + 1)
       // The first-load whale banner: fixed-canvas half-block art + compact wordmark.
-      expect(lines.some(line => line.includes('▄▄▄██████████████▀'))).toBe(true) // whale silhouette
+      expect(lines.some(line => line.includes(WHALE_ART.find(row => row.trim().length > 10)!.trim()))).toBe(true) // whale silhouette
       expect(lines.some(line => line.includes('D E E P S E E K'))).toBe(true) // wordmark
       expect(lines.some(line => line.includes('session session-abc12345'))).toBe(true) // full session id in the header
       // Full blocks in ordinary chrome remain ordinary text. Only the private
@@ -389,7 +396,7 @@ describe('Ink 7 full-screen render', () => {
       const inputRow = composerInputRow(lines)
       expect(frameRows(lines) - 1 - suffix.moveUp).toBe(inputRow - 1)
       // ansi-escapes' cursorTo is 1-based (it emits x + 1): the caret at
-      // 0-based column 2 (after the left-shifted '›' prompt) renders as column 3.
+      // 0-based column 2 (after the left-shifted '❯' prompt) renders as column 3.
       expect(suffix.column).toBe(3)
       // Typing moves the caret with the text (after 'ab': 0-based 4 → 5).
       await type('ab')
@@ -582,7 +589,7 @@ describe('Ink 7 full-screen render', () => {
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
       expect(lines.some(line => line.includes('▸ /clear'))).toBe(true)
-      expect(lines.some(line => line.includes('›/'))).toBe(true)
+      expect(lines.some(line => line.includes('❯/'))).toBe(true)
       // No stray CSI tail leaked into the composer as text.
       expect(lines.some(line => line.includes('[B'))).toBe(false)
     } finally {
@@ -976,7 +983,7 @@ describe('Ink 7 full-screen render', () => {
       await type('b')
       expect(rates).toEqual([])
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('› gb'))).toBe(true)
+      expect(lines.some(line => line.includes('❯ gb'))).toBe(true)
     } finally {
       unmount()
     }
@@ -1014,7 +1021,7 @@ describe('Ink 7 full-screen render', () => {
       expect(lines.some(line => line.includes('must stay hidden'))).toBe(false)
       await type('\r')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›/review-code'))).toBe(true)
+      expect(lines.some(line => line.includes('❯/review-code'))).toBe(true)
       await type('check this')
       await type('\r')
       expect(submitted).toEqual(['/review-code check this'])
@@ -1397,7 +1404,7 @@ describe('Ink 7 full-screen render', () => {
       // 150 cells wrap onto at least two composer rows; a truncated
       // single-line input could only ever render one row of ≥40 `a`s.
       expect(lines.filter(line => line.includes('a'.repeat(40))).length).toBeGreaterThanOrEqual(2)
-      expect(lines.some(line => line.includes('a'.repeat(40)) && line.trimStart().startsWith('›'))).toBe(true)
+      expect(lines.some(line => line.includes('a'.repeat(40)) && line.trimStart().startsWith('❯'))).toBe(true)
       // Every wrap row shares the prompt-indented budget, so line 0 cannot
       // clip the last glyphs of a full wrap (those glyphs would vanish from
       // both paint and a drag copy).
@@ -1450,7 +1457,7 @@ describe('Ink 7 full-screen render', () => {
       await mounted.type(`\x1b[<0;${endColumn + 2};${row}m`)
       const layout = selectComposerLayout(draft, draft.length, composerWrapWidth(COLUMNS), 5)
       const rows = mounted.capture.screenLines().slice(row - 1, row - 1 + layout.visibleLines.length)
-      expect(rows[0]).toContain(`›${layout.visibleLines[0]}`)
+      expect(rows[0]).toContain(`❯${layout.visibleLines[0]}`)
       for (let index = 1; index < rows.length; index += 1) {
         expect(rows[index]).toContain(` ${layout.visibleLines[index]}`)
       }
@@ -1709,28 +1716,28 @@ describe('Ink 7 full-screen render', () => {
       // ↑ recalls the newest submission into the composer.
       await type('\x1b[A')
       let lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›second task'))).toBe(true)
+      expect(lines.some(line => line.includes('❯second task'))).toBe(true)
       // A nonempty draft owns ↑/↓ as caret motion, so a second ↑ stays on
       // the recalled line instead of walking to `first task`.
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›second task'))).toBe(true)
-      expect(lines.some(line => line.includes('›first task'))).toBe(false)
+      expect(lines.some(line => line.includes('❯second task'))).toBe(true)
+      expect(lines.some(line => line.includes('❯first task'))).toBe(false)
       // Ctrl+L empties the composer and keeps the history cursor, so the
       // next ↑ on an empty draft walks one further back.
       await type('\x0c')
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›first task'))).toBe(true)
+      expect(lines.some(line => line.includes('❯first task'))).toBe(true)
       // ↓ walks forward again; past the newest it restores the empty draft.
       await type('\x0c')
       await type('\x1b[B')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›second task'))).toBe(true)
+      expect(lines.some(line => line.includes('❯second task'))).toBe(true)
       await type('\x0c')
       await type('\x1b[B')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›second task'))).toBe(false)
+      expect(lines.some(line => line.includes('❯second task'))).toBe(false)
       // The recalled line submits like any other input.
       await type('\x1b[A')
       await type('\r')
@@ -1753,13 +1760,13 @@ describe('Ink 7 full-screen render', () => {
       expect(lastCursorSuffix(capture.output).column).toBe(8)
       await type('\x1b[A')
       let lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›hello'))).toBe(true)
+      expect(lines.some(line => line.includes('❯hello'))).toBe(true)
       await type('\r')
       await type('keep')
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('›keep'))).toBe(true)
-      expect(lines.some(line => line.includes('›hello'))).toBe(false)
+      expect(lines.some(line => line.includes('❯keep'))).toBe(true)
+      expect(lines.some(line => line.includes('❯hello'))).toBe(false)
     } finally {
       unmount()
     }
@@ -2163,7 +2170,7 @@ describe('Ink 7 full-screen render', () => {
       // composer row itself must show the draft.
       await type('/')
       const afterSlash = lastFrameLines(capture)
-      const composerRows = afterSlash.filter(line => line.trimStart().startsWith('›'))
+      const composerRows = afterSlash.filter(line => line.trimStart().startsWith('❯'))
       expect(composerRows.length).toBeGreaterThan(0)
       expect(composerRows.at(-1)).toContain('/')
       // Budgeted rows: title + hint + (height - 2) items, clamped to the
@@ -2402,7 +2409,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\x01')
       await type('x')
       const lines = capture.screenLines()
-      const composer = lines.find(line => line.includes('›'))
+      const composer = lines.find(line => line.includes('❯'))
       expect(composer).toBeDefined()
       expect(composer).toContain('x')
       expect(composer).not.toContain('hello')

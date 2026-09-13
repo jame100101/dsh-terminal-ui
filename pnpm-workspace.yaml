@@ -10,7 +10,8 @@ peerDependencyRules:
 
 allowBuilds:
   esbuild: true
-  '@deepseek-ai/dsh-subprocess-local@0.1.2-rc.1': true
+  '@deepseek-ai/dsh-subprocess-local@0.1.5-rc.1': true
+  '@deepseek-ai/dsh-subprocess-local@0.1.5-rc.2': true
   lefthook: false
   node-pty: true
   koffi: true

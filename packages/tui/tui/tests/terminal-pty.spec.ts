@@ -112,12 +112,12 @@ function screenLines(terminal: InstanceType<typeof xtermHeadless.Terminal>): str
 }
 
 function caretIsOnComposer(terminal: InstanceType<typeof xtermHeadless.Terminal>): boolean {
-  const composerRow = screenLines(terminal).findIndex(line => line.trimStart().startsWith('›'))
+  const composerRow = screenLines(terminal).findIndex(line => line.trimStart().startsWith('❯'))
   return composerRow >= 0 && terminal.buffer.active.cursorY === composerRow
 }
 
 function composerTopRow(lines: readonly string[]): number {
-  const promptRow = lines.findIndex(line => line.trimStart().startsWith('›'))
+  const promptRow = lines.findIndex(line => line.trimStart().startsWith('❯'))
   if (promptRow >= 0) return promptRow
   const separators = lines
     .map((line, index) => ({ line: line.trim(), index }))

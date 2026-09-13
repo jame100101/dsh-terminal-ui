@@ -1350,7 +1350,7 @@ const Transcript = React.memo(function Transcript(props: {
               <Text wrap="truncate" {...(color !== undefined ? { color } : {})} bold={line.bold === true} dimColor={dim}>
                 {painted.runs !== undefined && painted.runs.length > 0
                   ? painted.runs.map((run, runIndex) => (
-                    <Text key={runIndex} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
+                    <Text key={runIndex} {...(run.backgroundColor !== undefined ? { backgroundColor: run.backgroundColor } : {})} bold={run.bold === true} underline={run.underline === true} dimColor={run.dim === true}
                       {...run.color !== undefined
                         ? { color: run.exactColor === true ? run.color : themed(run.color, props.theme, 'white') }
                         : run.code === true
@@ -1577,7 +1577,7 @@ function fitDisplayText(value: string, width: number): string {
 /** Cap on composer lines: overflowing text wraps, never steals the frame. */
 const MAX_COMPOSER_LINES = 5
 /** Prompt on wrap line 0; later wrap rows use the same cell budget. */
-const COMPOSER_PROMPT = '›'
+const COMPOSER_PROMPT = '❯'
 const COMPOSER_INDENT = ' '
 
 /** One composer wrap row: a 1-cell prefix plus already-wrapped text. */
@@ -2001,7 +2001,7 @@ function NativeCursor({ x, y }: { x: number; y: number }): null {
   return null
 }
 
-/** The composer: a separator, the `›` prompt, and the wrapping input. */
+/** The composer: a separator, the `❯` prompt, and the wrapping input. */
 const Composer = React.memo(function Composer(props: {
   draft: string
   onDraftChange: (value: string) => void
@@ -2136,11 +2136,9 @@ function StatusBar(props: {
       : `${copy.idle}${historyPaused}${planLabel}`
   const effortLabel = snapshot.reasoning.effort ?? copy.effortOff
   const effortText = `${copy.effort} ${effortLabel}`
-  const rightRest = ` · ${copy.turn} ${snapshot.stats.turns} · ↑${snapshot.stats.tokens.input} ↓${snapshot.stats.tokens.output} Σ${snapshot.stats.tokens.input + snapshot.stats.tokens.output + snapshot.stats.tokens.cacheRead + snapshot.stats.tokens.cacheWrite + snapshot.stats.tokens.reasoning} tok`
-  // Narrow windows drop the right-side counters instead of wrapping them
-  // onto the strip row below.
+  // Counters are shown once in the stats strip; narrow windows drop effort.
   const showRight = props.width >= 52
-  const leftBudget = Math.max(4, props.width - 2 - (showRight ? stringWidth(effortText) + stringWidth(rightRest) + 1 : 0))
+  const leftBudget = Math.max(4, props.width - 2 - (showRight ? stringWidth(effortText) + 1 : 0))
   const leftColor = statusActivityColor(snapshot.busy, props.theme)
   return (
     <Box flexDirection="column">
@@ -2150,7 +2148,6 @@ function StatusBar(props: {
         {showRight ? (
           <Box>
             <Text dimColor>{effortText}</Text>
-            <Text dimColor>{rightRest}</Text>
           </Box>
         ) : null}
       </Box>

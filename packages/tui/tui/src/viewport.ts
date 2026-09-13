@@ -41,7 +41,7 @@ export interface TranscriptLine {
   shimmerSince?: number
   /** Grok prompt-block fill (`bg = light`): a gray bar behind user rows. */
   background?: boolean
-  runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string; exactColor?: boolean }[]
+  runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string; backgroundColor?: string; exactColor?: boolean }[]
   /** Node whose disclosure arrow owns this header line. */
   disclosureNodeId?: number
   /** Thinking arrows toggle the global display; other arrows toggle one node. */

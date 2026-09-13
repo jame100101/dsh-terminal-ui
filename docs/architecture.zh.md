@@ -4,7 +4,7 @@
 
 ## 概述
 
-本仓库是独立的 out-of-tree plugin 仓库，负责终端界面。官方 `@deepseek-ai/dsh@0.1.2-rc.1` 负责 Agent、工具、presets、会话持久化、jobs 和 workflows。
+本仓库是独立的 out-of-tree plugin 仓库，负责终端界面。官方 `@deepseek-ai/dsh@0.1.5-rc.1` 负责 Agent、工具、presets、会话持久化、jobs 和 workflows。
 
 ## 组合方式
 
@@ -21,3 +21,11 @@ Vitest 在单文件转译前，通过 TypeScript checker 解析公开声明中�
 ## 维护
 
 本仓库不 vendoring 或同步完整 Harness 源码。后续 Harness 更新采用 dependency upgrade 与 adapter compatibility 验证，而非 upstream merge。[依赖审计](dependency-audit.json) 记录基线所有 package 与目录分类。[提取决策](../.agents/notes/implemented/architecture/2026-09-05-standalone-plugin-repo.zh.md) 说明取舍。
+
+## 本地 latest 兼容说明
+
+Adapter 仅接收当前 Agent 的 public `agent/assistant-stream` 帧。持久 assistant 结算替换临时文本，并展开内嵌 stream 保证回放一致；临时帧不会写入 Session 存储。嵌套工具卡使用当前 `tool/ptc-dispatch*` 事件，projection cache 版本随语义变更更新。
+
+升级 Harness 时重新解析开发锁文件，包括自动安装的 peer。仓库闭包检查拒绝 0.1.5 之前的 Harness 条目，避免 JSONL 后端绑定旧 persistence API。欢迎鲸鱼使用静态抗锯齿蓝白像素；单格 `❯` 提示符及统计去重不改变输入处理。
+
+官方 CLI 兼容版本仍为 `@deepseek-ai/dsh@0.1.5-rc.1`。其 npm 范围当前选择 Harness 子包 `0.1.5-rc.2`，开发依赖与插件 peer 对齐此依赖图。冷 fork 读取使用 public `observeSession`，复制不可变快照后释放 lease，避开 `readSession` 的 seed 构造路径。官方 `minimal` preset 现在只提供持久 shell，standard 保留文件工具。

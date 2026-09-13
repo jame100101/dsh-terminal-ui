@@ -1,3 +1,4 @@
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -21,7 +22,7 @@ async function withDir(run: (directory: string) => Promise<void>): Promise<void>
 }
 
 function header(id: string, createdAt: number): SessionHeader {
-  return { version: 0, id: SessionId(id), createdAt, isSeeded: false, cwd: '/work' }
+  return { version: SESSION_FORMAT_VERSION, id: SessionId(id), createdAt, isSeeded: false, cwd: '/work' }
 }
 
 function idleFold(nodes: FoldState['nodes'] = []): FoldState {

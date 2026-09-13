@@ -1,3 +1,4 @@
+import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { describe, expect, it } from 'vitest'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -87,7 +88,7 @@ describe('durable workflow projection', () => {
     const childId = SessionId('workflow-child')
     const parent = Session.create(parentId)
     const child = Session.create(childId, undefined, {
-      version: 0,
+      version: SESSION_FORMAT_VERSION,
       id: childId,
       createdAt: 2,
       isSeeded: false,
