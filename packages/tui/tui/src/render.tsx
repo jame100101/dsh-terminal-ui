@@ -540,6 +540,15 @@ export function themed(color: string | undefined, theme: 'dark' | 'light', fallb
   return mapped
 }
 
+/** Keep the font-independent scrollbar fill local to macOS. */
+export function scrollbarCellStyle(thumb: boolean, theme: 'dark' | 'light', platform: string = process.platform): {
+  color?: string; backgroundColor?: string; dimColor?: boolean
+} {
+  if (platform !== 'darwin') return { dimColor: !thumb, ...(thumb ? { color: themed('cyan', theme, 'cyan') } : {}) }
+  const fill = thumb ? themed('cyan', theme, 'cyan') : theme === 'dark' ? '#808080' : '#b0b0b0'
+  return { color: fill, backgroundColor: fill }
+}
+
 /**
  * Resolve one transcript line's foreground without remapping exact TrueColor.
  * @param line - transcript foreground intent.
@@ -1399,7 +1408,7 @@ const Transcript = React.memo(function Transcript(props: {
           ? Array.from({ length: Math.max(1, props.height) }, (_, index) => {
             const thumb = index >= scrollbar.thumbTop && index < scrollbar.thumbTop + scrollbar.thumbHeight
             return (
-              <Text key={index} dimColor={!thumb} {...(thumb ? { color: themed('cyan', props.theme, 'cyan') } : {})}>
+              <Text key={index} {...scrollbarCellStyle(thumb, props.theme)}>
                 {SCROLLBAR_ANCHOR_GLYPH}
               </Text>
             )

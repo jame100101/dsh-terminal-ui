@@ -68,7 +68,7 @@ async function waitFor(check, timeoutMs = 2_000) {
   throw new Error('ConPTY response timed out')
 }
 
-await waitFor(() => terminal.buffer.active.type === 'alternate' && screen().some(line => line.trimStart().startsWith('›')), 10_000)
+await waitFor(() => terminal.buffer.active.type === 'alternate' && screen().some(line => line.trimStart().startsWith('❯')), 10_000)
 const started = Date.now()
 const inputLatencies = []
 const samples = []
@@ -142,10 +142,10 @@ try {
   while (Date.now() - started < durationMs) {
     const sentAt = Date.now()
     pty.write('z')
-    await waitFor(() => screen().some(line => line.trimStart().startsWith('›') && line.includes('z')))
+    await waitFor(() => screen().some(line => line.trimStart().startsWith('❯') && line.includes('z')))
     inputLatencies.push(Date.now() - sentAt)
     pty.write('\x7f')
-    await waitFor(() => screen().some(line => line.trimStart().startsWith('›') && !line.includes('z')))
+    await waitFor(() => screen().some(line => line.trimStart().startsWith('❯') && !line.includes('z')))
     if (iteration % 8 === 0) {
       pty.write('\x1b[5~')
       await delay(50)

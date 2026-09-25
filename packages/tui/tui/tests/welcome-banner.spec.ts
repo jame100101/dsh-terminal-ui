@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest'
 import stringWidth from 'string-width'
+import { WHALE_PIXELS } from '../src/whale-pixels'
 import {
   BANNER_HEIGHT, TITLE_MAIN_COLOR, TITLE_ROWS, TITLE_TEXT, TITLE_WIDTH, WHALE_ART, WHALE_ART_RAW, WHALE_COLOR, WHALE_WIDTH,
   welcomeBanner,
 } from '../src/welcome-banner'
 
 describe('white-interior whale', () => {
+  it('backs every solid pixel cell with its exact color without filling exterior cells', () => {
+    for (const [y, row] of welcomeBanner(56, 20).entries()) {
+      const cells = row.runs!.slice(1).flatMap(run => [...run.text].map(text => ({ ...run, text })))
+      for (const [x, cell] of cells.entries()) {
+        const top = WHALE_PIXELS[y * 2]![x]!
+        const bottom = WHALE_PIXELS[y * 2 + 1]![x]!
+        if (top === bottom && top !== '.') expect(cell.backgroundColor).toBe(top)
+        if (top === '.' || bottom === '.') expect(cell.backgroundColor).toBeUndefined()
+      }
+    }
+  })
   it('keeps a fixed 52-column, 20-row half-cell canvas with explicit white regions', () => {
     expect(WHALE_ART).toHaveLength(20)
     expect(Object.isFrozen(WHALE_ART)).toBe(true)

@@ -49,7 +49,7 @@ function spawnFixture(columns: number, rows: number, env: Record<string, string>
     rows,
     cwd: process.cwd(),
     name: 'xterm-256color',
-    env: { ...process.env, CI: 'false', NODE_ENV: 'production', TERM: 'xterm-256color', ...env },
+    env: { ...process.env, CI: 'false', NODE_ENV: 'production', TERM: 'xterm-256color', FORCE_COLOR: '3', ...env },
   })
   activePtys.add(pty)
   let output = ''
@@ -145,7 +145,15 @@ function expectScrollbarColumn(
   let scrollbarRows = 0
   for (let row = 0; row < terminal.rows; row += 1) {
     const line = buffer.getLine(buffer.viewportY + row)
-    if (line?.getCell(scrollbarColumn)?.getChars() === '█') scrollbarRows += 1
+    const cell = line?.getCell(scrollbarColumn)
+    if (cell && (process.platform === 'darwin' ? cell.getChars() === ' ' && !cell.isBgDefault() : cell.getChars() === '█')) {
+      scrollbarRows += 1
+      // Exercise actual ANSI colors; non-TTY render fixtures strip them.
+      // A foreground glyph alone leaves stripes with macOS font leading.
+      expect(cell.isBgDefault()).toBe(process.platform !== 'darwin')
+      expect(cell.getChars()).toBe(process.platform === 'darwin' ? ' ' : '█')
+      if (process.platform === 'darwin') expect(cell.getBgColor()).toBe(cell.getFgColor())
+    }
     expect((line?.getCell(safetyColumn)?.getChars() ?? '').trim()).toBe('')
   }
   // ConPTY reserializes the child screen before node-pty emits it, so the
@@ -162,7 +170,6 @@ describe('production TUI through a real PTY', () => {
     await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
     await harness.send('')
     expectCaretOnComposer(harness.terminal)
-    expect(screenLines(harness.terminal).slice(4).filter(line => line.trimEnd().endsWith('█')).length).toBeGreaterThan(3)
     expectScrollbarColumn(harness.terminal, 80)
 
     for (const input of [
@@ -201,8 +208,6 @@ describe('production TUI through a real PTY', () => {
     expectCaretOnComposer(harness.terminal, resizedCaretLine)
 
     await harness.write('\x1b[5~')
-    const gutterRows = screenLines(harness.terminal).slice(4).filter(line => line.trimEnd().endsWith('█'))
-    expect(gutterRows.length).toBeGreaterThan(3)
     expectScrollbarColumn(harness.terminal, 100)
     await harness.write('\x1b[<0;100;5M')
     await harness.write('\x1b[<32;100;14M')
@@ -214,7 +219,6 @@ describe('production TUI through a real PTY', () => {
     await harness.resize(40, 18)
     const narrowCaretLine = selectComposerLayout(resizedDraft, resizedDraft.length, composerWrapWidth(40), 5).caretLine
     expectCaretOnComposer(harness.terminal, narrowCaretLine)
-    expect(screenLines(harness.terminal).slice(4).filter(line => line.trimEnd().endsWith('█')).length).toBeGreaterThan(3)
     expectScrollbarColumn(harness.terminal, 40)
     await harness.resize(100, 30)
     expectCaretOnComposer(harness.terminal, resizedCaretLine)

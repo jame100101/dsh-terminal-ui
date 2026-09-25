@@ -4,7 +4,7 @@
 
 ## 概述
 
-本仓库是独立的 out-of-tree plugin 仓库，负责终端界面。官方 `@deepseek-ai/dsh@0.1.5-rc.1` 负责 Agent、工具、presets、会话持久化、jobs 和 workflows。
+本仓库是独立的 out-of-tree plugin 仓库，负责终端界面。官方 `@deepseek-ai/dsh@0.1.5-rc.3` 负责 Agent、工具、presets、会话持久化、jobs 和 workflows。
 
 ## 组合方式
 
@@ -28,4 +28,8 @@ Adapter 仅接收当前 Agent 的 public `agent/assistant-stream` 帧。持久 a
 
 升级 Harness 时重新解析开发锁文件，包括自动安装的 peer。仓库闭包检查拒绝 0.1.5 之前的 Harness 条目，避免 JSONL 后端绑定旧 persistence API。欢迎鲸鱼使用静态抗锯齿蓝白像素；单格 `❯` 提示符及统计去重不改变输入处理。
 
-官方 CLI 兼容版本仍为 `@deepseek-ai/dsh@0.1.5-rc.1`。其 npm 范围当前选择 Harness 子包 `0.1.5-rc.2`，开发依赖与插件 peer 对齐此依赖图。冷 fork 读取使用 public `observeSession`，复制不可变快照后释放 lease，避开 `readSession` 的 seed 构造路径。官方 `minimal` preset 现在只提供持久 shell，standard 保留文件工具。
+官方 CLI 兼容版本为 `@deepseek-ai/dsh@0.1.5-rc.3`。其 npm 范围当前选择 Harness 子包 `0.1.5-rc.3`，开发依赖与插件 peer 对齐此依赖图。冷 fork 读取使用 public `observeSession`，复制不可变快照后释放 lease，避开 `readSession` 的 seed 构造路径。官方 `minimal` preset 现在只提供持久 shell，standard 保留文件工具。
+
+欢迎鲸鱼保留 52 × 20 半格画布和透明轮廓；实心单元格同时绘制相同前景色和背景色，覆盖 macOS 字体行间隙。macOS 滚动条在原有绝对定位列采用同样处理，两种主题均使用较暗轨道；Windows/Linux 保留原有低亮度轨道及主题滑块颜色。图案仍为预计算，不增加计时器、图像依赖或整屏重绘。
+
+macOS 的 Ink 输出器将带背景色的滚动条标记输出为背景色空格，消除块状字形的边缘溢出。原有绝对列、颜色样式和几何位置保持不变。Windows/Linux 保留逐字节一致的块状字形输出，macOS 无颜色模式保留可见的块状回退。平台参数化测试覆盖安装后的输出器，PTY 测试验证填色单元格和空白安全列。

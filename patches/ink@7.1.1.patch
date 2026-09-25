@@ -983,7 +983,7 @@ diff --git a/build/output.js b/build/output.js
 index c763b7763c5fc133c7fbb53c54c466cdf51c282b..a512d3e987ada1f0b2693fd8b79b178162264f00 100644
 --- a/build/output.js
 +++ b/build/output.js
-@@ -196,6 +196,17 @@ export default class Output {
+@@ -196,6 +196,21 @@ export default class Output {
              .map(line => {
              // See https://github.com/vadimdemedes/ink/pull/564#issuecomment-1637022742
              const lineWithoutEmptyItems = line.filter(item => item !== undefined);
@@ -994,7 +994,11 @@ index c763b7763c5fc133c7fbb53c54c466cdf51c282b..a512d3e987ada1f0b2693fd8b79b1781
 +                // measure an earlier Unicode glyph differently from string-width;
 +                // absolute positioning keeps scrollbar cells in their Yoga column.
 +                const beforeRightEdge = styledCharsToString(lineWithoutEmptyItems.slice(0, anchoredColumn)).trimEnd();
-+                const anchoredGlyph = styledCharsToString([{ ...anchoredCell, value: '█' }]);
++                // macOS block glyphs can overhang the cell even with a matching
++                // background. Use only the cell fill when it is actually present;
++                // keep monochrome output and Windows/Linux bytes unchanged.
++                const filledSpace = process.platform === 'darwin' && anchoredCell.styles.some(style => style.endCode === '\u001B[49m');
++                const anchoredGlyph = styledCharsToString([{ ...anchoredCell, value: filledSpace ? ' ' : '█' }]);
 +                const positionedRightEdge = `\u001B[${anchoredColumn + 1}G${anchoredGlyph}`;
 +                return beforeRightEdge + positionedRightEdge;
 +            }

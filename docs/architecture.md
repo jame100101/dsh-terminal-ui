@@ -4,7 +4,7 @@ English | [中文](architecture.zh.md)
 
 ## Summary
 
-This standalone out-of-tree plugin repository owns the terminal interface. Official `@deepseek-ai/dsh@0.1.5-rc.1` owns agents, tools, presets, session persistence, jobs and workflows.
+This standalone out-of-tree plugin repository owns the terminal interface. Official `@deepseek-ai/dsh@0.1.5-rc.3` owns agents, tools, presets, session persistence, jobs and workflows.
 
 ## Composition
 
@@ -28,4 +28,8 @@ The adapter consumes public `agent/assistant-stream` frames only for the active 
 
 The development lockfile is regenerated when upgrading Harness, including auto-installed peers. Repository closure rejects pre-0.1.5 Harness entries so the JSONL backend cannot bind to a stale persistence API. The welcome whale uses static antialiased blue/white cells; the one-cell `❯` prefix and deduplicated counters do not change input handling.
 
-Official CLI compatibility remains `@deepseek-ai/dsh@0.1.5-rc.1`. Its npm ranges currently select Harness subpackages `0.1.5-rc.2`; development dependencies and plugin peers match that graph. Cold fork reads use public `observeSession`, copy the immutable cut, and dispose the lease, avoiding the seed-construction path of `readSession`. The official `minimal` preset now exposes only its persistent shell; the standard preset retains file tools.
+Official CLI compatibility is `@deepseek-ai/dsh@0.1.5-rc.3`. Its npm ranges currently select Harness subpackages `0.1.5-rc.3`; development dependencies and plugin peers match that graph. Cold fork reads use public `observeSession`, copy the immutable cut, and dispose the lease, avoiding the seed-construction path of `readSession`. The official `minimal` preset now exposes only its persistent shell; the standard preset retains file tools.
+
+The welcome whale keeps its 52 × 20 half-cell canvas and transparent silhouette. Solid cells paint matching foreground/background colors to cover font leading on macOS. On macOS, the scrollbar uses the same technique in its existing anchored column, with a muted track in both themes; Windows/Linux keep the original dim track and themed thumb. Art remains precomputed; no timers, image dependencies, or full-frame redraws are added.
+
+On macOS, the Ink serializer emits a background-colored space for a colored scrollbar marker, eliminating block-font edge overhang. The original absolute column, style and geometry remain intact. Windows/Linux retain their exact block-glyph output, and monochrome macOS keeps the visible block fallback. Platform-table tests exercise the installed serializer, with PTY tests checking the painted cell and blank safety column.

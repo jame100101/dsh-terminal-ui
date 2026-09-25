@@ -42,7 +42,9 @@ export const WHALE_ROWS: readonly BannerRow[] = Object.freeze(Array.from({ lengt
     const bottom = WHALE_PIXELS[y * 2 + 1]![x]!
     const run: BannerRun = top === '.' && bottom === '.'
       ? { text: ' ', color: WHALE_COLOR, exactColor: true }
-      : top === bottom ? { text: '█', color: color(top), exactColor: true }
+      // Paint the cell background too: macOS fonts can leave leading around
+      // block glyphs. Keep half-cell edges transparent and the raster unchanged.
+      : top === bottom ? { text: '█', color: color(top), backgroundColor: color(top), exactColor: true }
         : top === '.' ? { text: '▄', color: color(bottom), exactColor: true }
           : bottom === '.' ? { text: '▀', color: color(top), exactColor: true }
             : { text: '▀', color: color(top), backgroundColor: color(bottom), exactColor: true }

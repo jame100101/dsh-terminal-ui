@@ -1,0 +1,22 @@
+# macOS cell fills and npm latest compatibility
+
+- Resolve the official npm channel, not the newest GitHub prerelease: checked 2026-09-25, `latest` is dsh 0.1.5-rc.3; `next` is 0.1.7-rc.2. Pin the host, public Harness development packages and production peers to 0.1.5-rc.3. Keep Cordis 4.0.2 and patched Ink 7.1.1; no vendored Harness or source imports.
+- Re-resolve both the repository and hidden pnpm lockfiles after clearing generated workspace-state metadata. Old auto-installed rc.2 peers must not survive; repository closure now checks for them.
+- Preserve the whale raster, half-cell silhouette, 52-column/20-row dimensions, centering and fallback. Give solid cells a matching background so font leading cannot expose horizontal gaps. Retain transparent exterior half cells.
+- Give the scrollbar foreground and background the same fill, keeping its existing private marker, absolute-column serializer, drag geometry and one-column width. Use distinct muted track colors in dark/light themes. No extra frames, timers, image libraries or new rendering path.
+- Verify cell background attributes in the real PTY emulator, since non-TTY frame tests strip ANSI colors. Retain preset, resume/fork, jobs ownership, workflow isolation and performance assertions.
+- Local tarball only; no publication, tag changes or release changes. The user will accept the native terminal appearance.
+
+Local evidence: build, typecheck, verify:repo, test:docs and exact-tarball audit passed. Full suite: 49 files, 526 passed / 3 Windows-only skipped. Official clean room passed direct + both launcher paths, Cordis/Harness identities and shared React. Tarball: 278035 bytes, SHA256 38b33d267534e14036ba6b663cb3bcb1d4015dcfacc8bfa1ba539fa7fcac756f. macOS PTY: 60 seconds, 3000 nodes, 444 input samples, p95 23 ms / max 34 ms, no campaign error. No long-duration leak guarantee or Windows/Linux matrix claim. Corrected the performance probe to the existing chevron; forced color only in the PTY fixture so inherited NO_COLOR cannot disable the color assertions. Native Terminal preview opened with user-authorized AppleScript; existing user profiles untouched.
+
+## macOS right-edge correction
+
+User acceptance found residual right-edge serration: the matching background still had a full-block font glyph painted over it. Only for darwin and an active ANSI background style, the existing Ink marker serializer now substitutes a space. Keep CHA anchoring, colors, widths and all Windows/Linux output bytes unchanged; monochrome output keeps its visible block. Do not rewrite ordinary whale/transcript block characters. Installed-serializer platform tests cover named/256/RGB fills, monochrome fallbacks and ordinary blocks; actual macOS PTY tests check colored spaces, dragging, resizing, busy input and exit cleanup. No renderer layout or scheduling change. Native acceptance resumes a stable copy of the prior acceptance history in a separate temporary profile, without copying locks or credentials or submitting a new model turn.
+
+The renderer also scopes matching foreground/background fills to macOS; Windows/Linux retain the original dim track and cyan/blue thumb styles. The top-left brandGlyph and Apple Terminal fallback remain unchanged. Platform-style and brand fallback assertions cover this preservation.
+
+Final right-edge revision evidence: build, typecheck, verify:repo, documentation checks, tarball audit and official clean-room verification passed. Full suite: 50 files, 537 passed / 3 Windows-only skipped. Final tarball: 278281 bytes, SHA256 c241b9220c380b7358e92bd45c15e51792117a3909520152d8057792aa248085. The right-edge patch completed a 60-second/3000-node PTY load run with p95 23 ms, p99 24 ms, max 59 ms and no campaign error. Final native Terminal window 1212 loaded the copied history successfully. Windows/Linux native visual acceptance was not run locally.
+
+## 0.2.2 release preparation
+
+The user explicitly authorized npm publication, a new tag and GitHub Release, plus commit/push. Advance the plugin to 0.2.2 and update both installation guides to the exact rc.3 host. Include scrollbar/whale regression tests in the existing Windows/Linux/macOS smoke matrix. Publish only the audited, clean-room-tested staged tarball after the source commit is pushed and CI passes; create a fresh v0.2.2 tag at that source commit. Never retarget an existing tag. Initial credential checks found npm, gh and Git HTTPS authentication unavailable, so registry and remote publication remain pending authentication and CI.
