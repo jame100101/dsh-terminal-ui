@@ -1,9 +1,10 @@
 /** Check bilingual documents and local links; --write records confirmed hashes. */
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
-const pairs = ['README', 'apps/tui-cli/README', 'packages/tui/tui/README', 'docs/architecture', '.agents/notes/implemented/architecture/2026-09-04-tui-out-of-tree-plugin', '.agents/notes/implemented/architecture/2026-09-05-standalone-plugin-repo']
+const pairs = ['README', 'apps/tui-cli/README', 'packages/tui/tui/README', 'docs/architecture']
 let links = 0
 for (const pair of pairs) {
   const digest = {}
@@ -25,3 +26,10 @@ for (const pair of pairs) {
   else assert.equal(readFileSync(sidecar, 'utf8').replaceAll('\r\n', '\n'), record, `${pair}: bilingual record stale`)
 }
 console.log(JSON.stringify({ status: 'PASS', pairs: pairs.length, localLinks: links }))
+
+const allowedMarkdown = new Set(["AGENTS.md", "CLAUDE.md", "README.md", "README.zh.md", "TUI-WEB-COMPARISON.md", "apps/tui-cli/README.md", "apps/tui-cli/README.zh.md", "docs/architecture.md", "docs/architecture.zh.md", "packages/tui/tui/README.md", "packages/tui/tui/README.zh.md"])
+for (const path of execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8' }).trim().split('\n')) {
+  if (!existsSync(path)) continue
+  assert(!path.endsWith('.md') || allowedMarkdown.has(path), `Agent document must stay outside Git: ${path}`)
+  assert(!/^(?:docs\/.*(?:acceptance|evidence|implementation-progress|release-readiness)|evaluation\/tui\/acceptance-ledger)/.test(path), `Acceptance record must stay outside Git: ${path}`)
+}

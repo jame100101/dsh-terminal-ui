@@ -24,3 +24,8 @@ export function busyStarFrame(tick: number): { glyph: string; color: string } {
     color: 'yellow',
   }
 }
+
+/** Explicit accessibility/degraded-terminal preference; no effect on host execution. */
+export function terminalReducedMotion(env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  return env.DSH_TUI_REDUCED_MOTION === '1' || env.TERM === 'dumb'
+}

@@ -1,3 +1,5 @@
+import { MAX_FOLD_NODES, MAX_TRACE } from './projection-limits'
+export { MAX_FOLD_NODES, MAX_TRACE } from './projection-limits'
 /**
  * Pure session-log → transcript fold for the dsh terminal surface. Applying
  * the same event prefix always produces the same node/trace/stats sequence
@@ -27,6 +29,7 @@ import type { FoldState, GoalRow, SessionStats, TuiNode, ToolStatus } from './ty
 import { compactResultCard } from './card-project'
 import { deepSeekCostUsd } from './deepseek-cost'
 import { formatMs } from './plain'
+import { fallbackToolLabel } from './tool-label'
 
 /** Local projection input for transient frames; never appended to a Session. */
 export type FoldEvent = SessionEvent | { type: 'assistant/chunk'; seq: number; time: number; data: { chunk: StreamChunk } }
@@ -41,14 +44,10 @@ export const MAX_USER_TEXT = 8_192
 export const MAX_THINK_TEXT = 4_000
 /** Injected-context body cap. */
 export const MAX_CONTEXT_TEXT = 4_000
-/** Newest transcript rows the fold retains (matches the render window). */
-export const MAX_FOLD_NODES = 3_000
 /** Soft cap on projected node+trace+live characters; oldest rows drop first. */
 export const MAX_FOLD_CHARS = 1_500_000
 /** Events processed between `setImmediate` yields during resume replay. */
 export const FOLD_YIELD_EVERY = 400
-/** Newest trajectory lines the fold retains. */
-export const MAX_TRACE = 512
 /** Status-row text cap. */
 const MAX_STATUS_TEXT = 400
 /** Goal objective preview cap for the status row. */
@@ -72,8 +71,31 @@ function capBody(text: string, cap: number): string {
  * @param state - a folded transcript.
  * @returns retained character count.
  */
+const presentationCharCache = new WeakMap<object, number>()
+/** Compact presentations are immutable; count their strings once, including local diff previews. */
+function presentationResidentChars(value: unknown): number {
+  if (typeof value === 'string') return value.length
+  if (value === null || typeof value !== 'object') return 0
+  const cached = presentationCharCache.get(value)
+  if (cached !== undefined) return cached
+  const seen = new WeakSet<object>()
+  const pending: unknown[] = [value]
+  let total = 0
+  while (pending.length > 0) {
+    const item = pending.pop()
+    if (typeof item === 'string') total += item.length
+    else if (item !== null && typeof item === 'object' && !seen.has(item)) {
+      seen.add(item)
+      pending.push(...Object.values(item))
+    }
+  }
+  presentationCharCache.set(value, total)
+  return total
+}
+
 function nodeResidentChars(node: TuiNode): number {
   if (node.kind === 'tool') return node.detail.length + node.text.length + node.callId.length + node.name.length
+    + presentationResidentChars(node.callCard) + presentationResidentChars(node.resultCard)
   if (node.kind === 'retry') return node.retryId.length + node.provider.length
   if (node.kind === 'deliverables') return node.paths.reduce((sum, path) => sum + path.length, 0)
   if ('text' in node) return node.text.length
@@ -129,7 +151,14 @@ export function initialState(): FoldState {
  * @param cap - stop accumulating once the result reaches this many characters (0 = no cap).
  * @returns the joined text.
  */
-function blocksText(blocks: readonly ContentBlock[] | undefined, cap: number): string {
+interface LegacyToolResultBlock {
+  type: 'tool-result'
+  toolCallId: string
+  isError?: boolean
+  content: readonly ContentBlock[]
+}
+
+function blocksText(blocks: readonly (ContentBlock | LegacyToolResultBlock)[] | undefined, cap: number): string {
   if (blocks === undefined) return ''
   let out = ''
   for (const block of blocks) {
@@ -188,12 +217,17 @@ export function decodeToolResult(event: SessionEvent): {
   content: ContentBlock[]
 } | null {
   if (event.type !== 'tool/result') return null
-  const content = event.data.message.content
-  const block = content.find(entry => entry.type === 'tool-result')
+  const message = event.data.message
+  if (message.role === 'tool') {
+    return { callId: String(message.toolCallId), isError: message.isError === true, content: [...message.content] }
+  }
+  // Read-only compatibility for pre-0.2 stored projections; Harness owns migration.
+  const content: readonly (ContentBlock | LegacyToolResultBlock)[] = message.content
+  const block = content.find((entry): entry is LegacyToolResultBlock => entry.type === 'tool-result')
   return {
-    callId: block?.type === 'tool-result' ? String(block.toolCallId) : '',
-    isError: block?.type === 'tool-result' && block.isError === true,
-    content,
+    callId: block === undefined ? '' : String(block.toolCallId),
+    isError: block?.isError === true,
+    content: block === undefined ? [...message.content] : [...block.content],
   }
 }
 
@@ -224,7 +258,7 @@ function lastRetryChain(nodes: readonly TuiNode[], retryId: string): number {
  * message entry). Durations accumulate across appended segments so the row
  * carries the whole block's thinking time (0.1s display precision).
  */
-function flushThink(nodes: TuiNode[], id: number, text: string, durationMs: number): void {
+function flushThink(nodes: TuiNode[], id: number, text: string, durationMs: number, renderId?: number): void {
   for (let index = nodes.length - 1; index >= 0; index--) {
     const node = nodes[index]
     if (node === undefined) continue
@@ -239,7 +273,7 @@ function flushThink(nodes: TuiNode[], id: number, text: string, durationMs: numb
       return
     }
   }
-  nodes.push({ kind: 'think', id, text: capBody(text, MAX_THINK_TEXT), durationMs })
+  nodes.push({ kind: 'think', id, text: capBody(text, MAX_THINK_TEXT), durationMs, ...(renderId === undefined ? {} : { renderId }) })
 }
 
 /** Producer label for a non-user message source. */
@@ -274,6 +308,7 @@ interface PricingRoute {
 
 /** The committed-step usage sample folded into the totals. */
 interface TokenUsageSample {
+  cacheReported: boolean
   input: number
   output: number
   cacheRead: number
@@ -303,6 +338,10 @@ function commitStep(stats: SessionStats, step: StepState): SessionStats {
       cacheWrite: stats.tokens.cacheWrite + step.usage.cacheWrite,
       reasoning: stats.tokens.reasoning + step.usage.reasoning,
     },
+    latestUsage: step.usage?.cacheReported ? {
+      input: step.usage.input, output: step.usage.output, cacheRead: step.usage.cacheRead,
+      cacheWrite: step.usage.cacheWrite, reasoning: step.usage.reasoning,
+    } : null,
     costUsd: stats.costUsd + stepCost,
   }
 }
@@ -312,6 +351,8 @@ export interface FoldScratch {
   step: StepState | null
   /** Latest logged request route, retained across steps in one replay. */
   requestRoute: PricingRoute | null
+  /** Durable attempt boundary retained when transient stream-start clears the buffer. */
+  attemptRenderId?: number
   toolStarts: Map<string, number>
   /** Compact call presentations retained until their matching result. */
   toolCallCards: Map<string, unknown>
@@ -529,7 +570,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
   // Durable settlement is authoritative for replay and live delivery alike.
   // Replace the transient body before expanding, rather than appending it twice.
   if ((event.type === 'assistant/message' || event.type === 'assistant/attempt') && event.data.stream !== undefined) {
-    state = { ...state, live: null }
+    state = { ...state, live: { text: '', think: '', thinkSince: null, renderId: state.live?.renderId ?? scratch.attemptRenderId ?? event.seq } }
     for (const entry of expandAssistantStream(event.data.stream)) {
       state = applyEvent(state, { type: 'assistant/chunk', seq: event.seq, time: entry.time, data: { chunk: entry.chunk } }, scratch)
     }
@@ -548,6 +589,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
   let compaction = state.compaction
   switch (event.type) {
     case 'turn/start': {
+      delete scratch.attemptRenderId
       traces = appendTrace(traces, trace(event.seq, `turn ${event.data.turn} start`), scratch)
       scratch.toolCallCards.clear()
       scratch.turnProduced = []
@@ -573,7 +615,8 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
       break
     }
     case 'step/start': {
-      live = { text: '', think: '', thinkSince: null }
+      scratch.attemptRenderId = event.seq
+      live = { text: '', think: '', thinkSince: null, renderId: event.seq }
       scratch.step = {
         startTime: event.time,
         firstChunkTime: null,
@@ -595,7 +638,9 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
       break
     }
     case 'assistant/chunk': {
-      if (live === null) live = { text: '', think: '', thinkSince: null }
+      if (live === null) live = { text: '', think: '', thinkSince: null,
+        ...(scratch.attemptRenderId !== undefined ? { renderId: scratch.attemptRenderId } : event.seq >= 0 ? { renderId: event.seq } : {}),
+      }
       const chunk = event.data.chunk
       if (chunk.type === 'text-delta') {
         if (live.text.length < MAX_ASSISTANT_TEXT) {
@@ -623,21 +668,22 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
     case 'assistant/attempt': {
       if (live?.think) {
         nodes = writableNodes(nodes, scratch)
-        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)))
+        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)), live.renderId)
       }
-      if (live?.text) nodes = appendNode(nodes, { kind: 'assistant', id: event.seq, text: live.text, messageId: '', interrupted: true }, scratch)
+      if (live?.text) nodes = appendNode(nodes, { kind: 'assistant', id: event.seq, ...(live.renderId === undefined ? {} : { renderId: live.renderId }), text: live.text, messageId: '', interrupted: true }, scratch)
       live = null
       break
     }
     case 'assistant/message': {
       if (live !== null && live.think !== '') {
         nodes = writableNodes(nodes, scratch)
-        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)))
+        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)), live.renderId)
       }
       const text = blocksText(event.data.message.content, MAX_ASSISTANT_TEXT)
       nodes = appendNode(nodes, {
         kind: 'assistant',
         id: event.seq,
+        ...(live?.renderId === undefined ? {} : { renderId: live.renderId }),
         text,
         messageId: event.data.message.id,
         ...(event.data.interrupted === true ? { interrupted: true as const } : {}),
@@ -654,7 +700,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
       // flush it as a settled think row so it renders before the tool rows.
       if (live !== null && live.think !== '') {
         nodes = writableNodes(nodes, scratch)
-        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)))
+        flushThink(nodes, event.seq, live.think, Math.max(0, event.time - (live.thinkSince ?? event.time)), live.renderId)
         live = { ...live, think: '', thinkSince: null }
       }
       nodes = appendNode(nodes, {
@@ -663,6 +709,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
         callId: String(event.data.callId),
         name: event.data.name,
         detail: `${event.data.name} ${previewArgs(event.data.arguments)}`,
+        displayTitle: fallbackToolLabel(event.data.name, parseArgsLenient(event.data.arguments)),
         status: 'running',
         text: '',
         args: parseArgsLenient(event.data.arguments),
@@ -741,6 +788,12 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
     }
     case 'turn/end': {
       const reason = event.data.reason
+      for (let index = 0; index < nodes.length; index += 1) {
+        const row = nodes[index]
+        if (row?.kind !== 'retry' || row.turn !== event.data.turn || row.started || row.terminal) continue
+        nodes = writableNodes(nodes, scratch)
+        nodes[index] = { ...row, retryAt: 0, terminal: reason.kind === 'aborted' ? 'cancelled' : reason.kind === 'error' ? 'failed' : 'finished' }
+      }
       traces = appendTrace(traces, trace(event.seq, `turn ${event.data.turn} end (${reason.kind})`), scratch)
       // The per-turn tail: LLM wall time, tool wall time, and average TTFT
       // for this turn, mirroring the Web turn-tail statistics.
@@ -828,6 +881,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
       break
     }
     case 'llm/retry-started': {
+      scratch.attemptRenderId = event.seq
       const chainIndex = lastRetryChain(nodes, event.data.retryId)
       const prior = nodes[chainIndex]
       if (prior !== undefined && prior.kind === 'retry') {
@@ -890,6 +944,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
         name: event.data.name,
         parentCallId: String(event.data.parentCallId),
         detail: `${event.data.name} ${previewUnknownArgs(event.data.arguments)}`,
+        displayTitle: fallbackToolLabel(event.data.name, event.data.arguments),
         status: 'running',
         text: '',
         args: event.data.arguments,
@@ -945,6 +1000,7 @@ export function applyEvent(state: FoldState, event: FoldEvent, scratch: FoldScra
     }
     case 'compaction/end': {
       compaction = false
+      stats = { ...stats, latestUsage: null }
       nodes = appendNode(nodes, { kind: 'status', id: event.seq, error: false, text: 'compacted' }, scratch)
       break
     }
@@ -979,7 +1035,7 @@ export function anchorRetry(state: FoldState, event: SessionEvent, now: number =
   if (event.type !== 'llm/retry') return
   const chainIndex = lastRetryChain(state.nodes, event.data.retryId)
   const node = state.nodes[chainIndex]
-  if (node !== undefined && node.kind === 'retry') {
+  if (node !== undefined && node.kind === 'retry' && node.terminal === undefined) {
     // Replace the element without copying the array: the renderer's settled
     // memo depends on the array identity (stable across the lazy-copy fold),
     // so the next shimmer/countdown recompute picks the anchored row up.
@@ -996,6 +1052,7 @@ function usageOf(usage: {
   reasoningTokens?: number
 }): TokenUsageSample {
   return {
+    cacheReported: usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined,
     input: usage.inputTokens ?? 0,
     output: usage.outputTokens ?? 0,
     cacheRead: usage.cacheReadTokens ?? 0,

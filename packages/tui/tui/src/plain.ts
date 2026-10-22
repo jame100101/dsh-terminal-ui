@@ -8,6 +8,7 @@
 import { marked } from 'marked'
 import stringWidth from 'string-width'
 import { sanitizeTerminalText } from './sanitize'
+import { redactDisplayNode, redactDisplayText } from './display-redaction'
 import type { SessionStats, TuiNode } from './types'
 
 /** One inline run with terminal styling intents. */
@@ -15,6 +16,9 @@ export interface MdRun {
   text: string
   bold?: boolean
   code?: boolean
+  italic?: boolean
+  strikethrough?: boolean
+  diffChange?: 'add' | 'remove'
   underline?: boolean
   dim?: boolean
 }
@@ -38,6 +42,7 @@ interface InlineToken {
 
 /** One GFM table cell. */
 interface TableCell {
+  tokens?: InlineToken[]
   text?: string
   raw?: string
 }
@@ -69,8 +74,10 @@ function inlineRuns(tokens: readonly InlineToken[] | undefined): MdRun[] {
           visit(token.tokens ?? [], { ...style, bold: true })
           break
         case 'em':
+          visit(token.tokens ?? [], { ...style, italic: true })
+          break
         case 'del':
-          visit(token.tokens ?? [], { ...style, dim: true })
+          visit(token.tokens ?? [], { ...style, strikethrough: true })
           break
         case 'link':
           visit(token.tokens ?? [], { ...style, underline: true })
@@ -121,75 +128,54 @@ function runsText(runs: readonly MdRun[]): string {
   return runs.map(run => run.text).join('')
 }
 
-/** Fit one cell value into `width` cells, truncating the tail with `…`. */
-function fitCell(value: string, width: number): string {
-  const safe = sanitizeTerminalText(stripInline(value))
-  if (width < 1) return ''
-  if (stringWidth(safe) <= width) return safe
-  // Reserve one cell for the ellipsis so the truncated cell never outgrows
-  // its column (the CJK truncation boundary otherwise adds a cell).
-  const budget = Math.max(1, width - 1)
-  let out = ''
-  let used = 0
-  for (const character of safe) {
-    const next = Math.max(1, stringWidth(character))
-    if (used + next > budget) break
-    out += character
-    used += next
-  }
-  return `${out}…`
-}
-
-/** Pad a cell value to `width` cells per its alignment. */
-function padCell(value: string, width: number, align: 'left' | 'center' | 'right'): string {
-  const gap = Math.max(0, width - stringWidth(value))
-  if (align === 'right') return `${' '.repeat(gap)}${value}`
-  if (align === 'center') {
-    const left = Math.floor(gap / 2)
-    return `${' '.repeat(left)}${value}${' '.repeat(gap - left)}`
-  }
-  return `${value}${' '.repeat(gap)}`
-}
-
-/**
- * Render one GFM table as an aligned `│` grid: a cyan header row, a `├─┼─┤`
- * separator, then the body rows. Column widths come from display widths
- * (CJK-safe), capped so the whole grid fits `maxWidth` cells; oversized
- * columns shrink longest-first and their cells truncate with `…`.
- */
+/** Style first, then measure/wrap. Padding and borders never inherit cell styles. */
 function tableLines(table: { header: TableCell[]; rows: TableCell[][]; align?: (string | null)[] }, maxWidth: number): MdLine[] {
-  const align: Array<'left' | 'center' | 'right'> = (table.align ?? []).map(value =>
-    value === 'center' ? 'center' : value === 'right' ? 'right' : 'left')
-  const header = table.header.map(cell => fitCell(stripInline(cell.text ?? cell.raw ?? ''), Infinity))
-  const rows = table.rows.map(row => row.map(cell => fitCell(stripInline(cell.text ?? cell.raw ?? ''), Infinity)))
+  const cellRuns = (cell: TableCell | undefined): MdRun[] => inlineRuns(cell?.tokens ?? marked.Lexer.lexInline(cell?.text ?? cell?.raw ?? '') as InlineToken[])
+    .map(run => ({ ...run, text: sanitizeTerminalText(run.text) }))
+  const header = table.header.map(cellRuns)
+  const rows = table.rows.map(row => header.map((_, column) => cellRuns(row[column])))
   const columns = header.length
-  if (columns === 0) return []
-  const natural = Array.from({ length: columns }, () => 0)
-  for (let column = 0; column < columns; column++) {
-    natural[column] = stringWidth(header[column] ?? '')
-    for (const row of rows) natural[column] = Math.max(natural[column] ?? 0, stringWidth(row[column] ?? ''))
+  if (!columns) return []
+  const budget = Math.max(3, Math.floor(maxWidth) - 4)
+  const cellWidth = (runs: MdRun[]): number => Math.max(0, ...runsText(runs).split('\n').map(text => stringWidth(text)))
+  const widths = header.map((label, column) => Math.max(3, cellWidth(label), ...rows.map(row => cellWidth(row[column]!))))
+  let total = widths.reduce((a, b) => a + b, 0) + 3 * columns + 1
+  while (total > budget && widths.some(width => width > 3)) {
+    const widest = widths.indexOf(Math.max(...widths))
+    widths[widest]!--; total--
   }
-  // Border overhead: `│ ` + ` │` per column plus the trailing `│`.
-  const overhead = columns * 3 + 1
-  const available = Math.max(columns * 3 + 1, Math.floor(maxWidth))
-  const widths = [...natural]
-  let total = widths.reduce((sum, width) => sum + width, 0) + overhead
-  while (total > available) {
-    const widest = widths.reduce((best, width, index) => width > (widths[best] ?? 0) ? index : best, 0)
-    const widestValue = widths[widest]
-    if (widestValue === undefined || widestValue <= 1) break
-    widths[widest] = widestValue - 1
-    total -= 1
+  const wrapped = [header, ...rows].map(row => row.map((runs, column) => wrapRuns(runs, widths[column]!, '')))
+  if (total > budget || wrapped.some(row => row.some(cell => cell.length > 4))) {
+    const out: MdLine[] = []
+    rows.forEach((row, index) => {
+      if (index) out.push({ text: '─'.repeat(Math.min(budget, 40)), color: 'gray' })
+      row.forEach((value, column) => {
+        const label = runsText(header[column]!) || `Column ${column + 1}`
+        out.push(...wrapRuns([{ text: `${label}: `, bold: true }, ...value], budget, ''))
+      })
+    })
+    return out.length ? out : header.flatMap(label => wrapRuns(label, budget, ''))
   }
-  const trim = (cell: string, column: number): string => padCell(fitCell(cell, widths[column] ?? 0), widths[column] ?? 0, align[column] ?? 'left')
-  const rowLine = (cells: readonly string[]): string =>
-    `│ ${cells.map((cell, column) => trim(cell, column)).join(' │ ')} │`
-  const out: MdLine[] = [{ text: rowLine(header), color: 'cyan' }]
-  out.push({
-    text: `├${widths.map(width => '─'.repeat(width + 2)).join('┼')}┤`,
-    color: 'gray',
+  const border = (left: string, middle: string, right: string): MdLine => ({ text: left + widths.map(width => '─'.repeat(width + 2)).join(middle) + right, color: 'gray' })
+  const out: MdLine[] = [border('┌', '┬', '┐')]
+  wrapped.forEach((row, rowIndex) => {
+    const height = Math.max(1, ...row.map(cell => cell.length))
+    for (let y = 0; y < height; y++) {
+      const runs: MdRun[] = [{ text: '│ ' }]
+      row.forEach((cell, column) => {
+        const offset = Math.floor((height - cell.length) / 2)
+        const line = cell[y - offset]
+        const gap = Math.max(0, widths[column]! - stringWidth(line?.text ?? ''))
+        const alignment = rowIndex === 0 ? 'center' : table.align?.[column]
+        const left = alignment === 'right' ? gap : alignment === 'center' ? Math.floor(gap / 2) : 0
+        runs.push({ text: ' '.repeat(left) }, ...(line?.runs ?? []).map(run => rowIndex === 0 ? { ...run, bold: true } : run),
+          { text: ' '.repeat(gap - left) + (column === columns - 1 ? ' │' : ' │ ') })
+      })
+      out.push({ text: runsText(runs), runs })
+    }
+    if (rowIndex < wrapped.length - 1) out.push(border('├', '┼', '┤'))
   })
-  for (const row of rows) out.push({ text: rowLine(row) })
+  out.push(border('└', '┴', '┘'))
   return out
 }
 
@@ -210,52 +196,46 @@ export interface WrappedRunLine {
  * @returns the wrapped lines.
  */
 export function wrapRuns(runs: readonly MdRun[], width: number, prefix: string): WrappedRunLine[] {
+  const source = prefix ? [{ text: prefix }, ...runs] : runs
+  const text = runsText(source)
+  const ranges: Array<{ start: number; end: number; run: MdRun }> = []
+  let offset = 0
+  for (const run of source) { ranges.push({ start: offset, end: offset + run.text.length, run }); offset += run.text.length }
   const lines: WrappedRunLine[] = []
-  let current: MdRun[] = []
-  let currentWidth = 0
-  const flush = (): void => {
-    if (current.length > 0) {
-      lines.push({ text: runsText(current), runs: current })
-      current = []
-      currentWidth = 0
+  let current: MdRun[] = [], used = 0, cursor = 0
+  const flush = (): void => { lines.push({ text: runsText(current), runs: current }); current = []; used = 0 }
+  // Segment the joined text, not individual style runs: a style boundary may fall inside an emoji/combining sequence.
+  for (const { segment, index } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+    if (segment === '\n' || segment === '\r\n') { flush(); continue }
+    const cells = stringWidth(segment)
+    if (used > 0 && used + cells > Math.max(1, width)) flush()
+    while (cursor < ranges.length && ranges[cursor]!.end <= index) cursor++
+    const style: Omit<MdRun, 'text'> = {}
+    for (let n = cursor; n < ranges.length && ranges[n]!.start < index + segment.length; n++) {
+      const { text: _text, ...part } = ranges[n]!.run
+      Object.assign(style, part)
     }
+    const previous = current.at(-1)
+    if (previous && previous.bold === style.bold && previous.code === style.code && previous.italic === style.italic
+      && previous.strikethrough === style.strikethrough && previous.underline === style.underline && previous.dim === style.dim && previous.diffChange === style.diffChange) previous.text += segment
+    else current.push({ ...style, text: segment })
+    used += cells
   }
-  const push = (text: string, style: Omit<MdRun, 'text'>): void => {
-    let buffer = ''
-    const emit = (): void => {
-      if (buffer !== '') {
-        current.push({ ...style, text: buffer })
-        buffer = ''
-      }
-    }
-    for (const character of text) {
-      const characterWidth = Math.max(1, stringWidth(character))
-      if (currentWidth + characterWidth > width) {
-        emit()
-        flush()
-      }
-      buffer += character
-      currentWidth += characterWidth
-    }
-    emit()
-  }
-  if (prefix !== '') push(prefix, {})
-  for (const run of runs) push(run.text, run)
-  flush()
+  if (current.length) flush()
   return lines
 }
 
 /**
  * Client-anchored retry countdown: whole seconds until the anchored wait
- * ends, rounded up with a 1s floor. Returns null once the row settled or was
+ * ends, rounded up. Returns null once the deadline passed, the row settled or was
  * never anchored (replayed history, pure-fold states).
  * @param retryAt - epoch ms the wait ends.
  * @param now - current epoch ms.
  * @returns remaining seconds or null.
  */
 export function retryCountdownSeconds(retryAt: number, now: number): number | null {
-  if (retryAt <= 0) return null
-  return Math.max(1, Math.ceil((retryAt - now) / 1000))
+  if (retryAt <= 0 || now >= retryAt) return null
+  return Math.ceil((retryAt - now) / 1000)
 }
 
 /**
@@ -269,6 +249,7 @@ export function retryCountdownSeconds(retryAt: number, now: number): number | nu
  * @returns the structural lines.
  */
 export function markdownLines(source: string, maxWidth: number = Number.POSITIVE_INFINITY): MdLine[] {
+  source = redactDisplayText(source)
   const out: MdLine[] = []
   const startBlock = (): void => {
     if (out.length > 0 && out[out.length - 1]?.text !== '') out.push({ text: '' })
@@ -288,7 +269,7 @@ export function markdownLines(source: string, maxWidth: number = Number.POSITIVE
           ? [{ text: stripInline(token.text) }]
           : inlineRuns(inlineTokens)
         for (const line of splitRuns(runs)) {
-          out.push({ text: runsText(line), runs: line, color: token.depth <= 2 ? 'cyan' : 'magenta' })
+          out.push({ text: runsText(line), runs: line.map(run => ({ ...run, bold: true, ...(token.depth === 1 ? { italic: true, underline: true } : {}) })) })
         }
         break
       }
@@ -307,13 +288,24 @@ export function markdownLines(source: string, maxWidth: number = Number.POSITIVE
         break
       case 'list': {
         startBlock()
-        for (const item of token.items) {
-          const body = item.text === '' && item.tokens !== undefined
-            ? (item.tokens as { type: string; text?: string; raw?: string }[])
-              .map(inner => inner.type === 'text' ? (inner.text ?? '') : (inner.raw ?? '')).join(' ')
-            : item.text
-          out.push({ text: `• ${stripInline(body)}` })
+        const listRows = (list: typeof token, depth: number): void => {
+          for (const [index, item] of list.items.entries()) {
+            const bullet = `${'  '.repeat(depth)}${list.ordered ? `${Number(list.start) + index}.` : '-'} `
+            let first = true
+            for (const child of item.tokens ?? []) {
+              if (child.type === 'list') { listRows(child, depth + 1); continue }
+              if (child.type === 'space') continue
+              const value = child as { text?: string; tokens?: InlineToken[] }
+              const runs = inlineRuns(value.tokens ?? marked.Lexer.lexInline(value.text ?? '') as InlineToken[])
+              for (const row of splitRuns(runs)) {
+                const prefix = first ? bullet : ' '.repeat(bullet.length)
+                out.push({ text: prefix + runsText(row), runs: [{ text: prefix }, ...row] })
+                first = false
+              }
+            }
+          }
         }
+        listRows(token, 0)
         break
       }
       case 'table':
@@ -380,6 +372,7 @@ export function localizeFoldStatus(text: string, locale: 'zh' | 'en'): string {
  * @returns the plain line(s).
  */
 export function renderNodePlain(node: TuiNode, locale: 'zh' | 'en' = 'zh'): string {
+  node = redactDisplayNode(node)
   switch (node.kind) {
     case 'user':
       return `▸ ${node.text}`
@@ -422,7 +415,7 @@ export function renderNodePlain(node: TuiNode, locale: 'zh' | 'en' = 'zh'): stri
 export function renderAssistantResultPlain(nodes: readonly TuiNode[]): string {
   return nodes
     .filter(node => node.kind === 'assistant')
-    .map(node => node.text)
+    .map(node => redactDisplayText(node.text))
     .filter(text => text !== '')
     .join('\n')
     .trimEnd()

@@ -23,9 +23,15 @@ import type {
   WebSearchResultView,
 } from '@deepseek-ai/dsh-tools/presentation'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { projectFileDelta } from './diff-project'
+import { sanitizeTerminalText } from './sanitize'
+import { wordDiffSpans, type WordSpan } from './word-diff'
 
 /** One colored line of a projected card. */
 export interface CardLine {
+  diffKind?: 'add' | 'remove'
+  changes?: WordSpan[]
+  changeTextLength?: number
   text: string
   color?: 'green' | 'red' | 'yellow' | 'cyan' | 'gray' | 'magenta'
 }
@@ -39,7 +45,13 @@ const MAX_CARD_PAYLOAD = 4000
 
 /** Truncate one over-long source line so wrapping stays bounded. */
 function capLine(text: string): string {
-  return text.length <= MAX_CARD_LINE_LENGTH ? text : `${text.slice(0, MAX_CARD_LINE_LENGTH)}…`
+  if (text.length <= MAX_CARD_LINE_LENGTH) return text
+  let prefix = ''
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)) {
+    if (prefix.length + segment.length > MAX_CARD_LINE_LENGTH) break
+    prefix += segment
+  }
+  return `${prefix}…`
 }
 
 /** Flatten harness content blocks into plain text (tool-result blocks recurse). */
@@ -48,7 +60,11 @@ function blocksText(blocks: readonly ContentBlock[] | undefined): string {
   let out = ''
   for (const block of blocks) {
     if (block.type === 'text') out += block.text
-    else if (block.type === 'tool-result') out += blocksText(block.content)
+    else {
+      // Legacy persisted presentations may still contain the pre-0.2 nested result shape.
+      const legacy = block as unknown as { type: string; content?: readonly ContentBlock[] }
+      if (legacy.type === 'tool-result') out += blocksText(legacy.content)
+    }
   }
   return out
 }
@@ -59,12 +75,70 @@ function lines(text: string, cap = MAX_CARD_LINES): CardLine[] {
   return split.slice(0, cap).map(line => ({ text: capLine(line) }))
 }
 
-/** Color one +/- diff line. */
-function diffLine(text: string): CardLine {
-  if (text.startsWith('+') && !text.startsWith('+++')) return { text, color: 'green' }
-  if (text.startsWith('-') && !text.startsWith('---')) return { text, color: 'red' }
-  if (text.startsWith('@@')) return { text, color: 'cyan' }
-  return { text, color: 'gray' }
+/** Local bounded projection survives payload compaction; it is not a host diff format. */
+type PreviewCard = { tuiDiffPreview?: { version: 1; rows: CardLine[] } }
+function projectDiffCard(view: DiffCallView | DiffResultView, pending: boolean): CardLine[] {
+  const cached = (view as PreviewCard).tuiDiffPreview
+  if (cached?.version === 1) return cached.rows
+  const out: CardLine[] = [{ text: pending ? 'Pending tool preview' : 'Tool result snapshot', color: 'gray' },
+    { text: 'Line numbers relative to supplied text; not Git workspace diff', color: 'gray' }]
+  let omitted = false
+  const push = (line: CardLine): void => {
+    if (out.length >= MAX_CARD_LINES - 1) { omitted = true; return }
+    if (line.text.length > MAX_CARD_LINE_LENGTH) omitted = true
+    out.push({ ...line, text: capLine(line.text) })
+  }
+  for (const file of view.diffs) {
+    if (out.length >= MAX_CARD_LINES - 1) { omitted = true; break }
+    push({ text: `── ${file.path}`, color: 'gray' })
+    const delta = projectFileDelta(file)
+    if (delta.incomplete) {
+      const reason = delta.incomplete === 'before-image' ? 'prior content unavailable (create or overwrite)'
+        : delta.incomplete === 'binary' ? 'binary content' : 'comparison budget exceeded'
+      push({ text: `Preview incomplete: ${reason}; no inferred additions/deletions`, color: 'yellow' })
+      if (delta.incomplete === 'before-image') {
+        // An absent before-image is not proof of file creation; show neutral proposed content.
+        const sample = file.newText.slice(0, MAX_CARD_PAYLOAD)
+        const rows = sample === '' ? [] : sample.split('\n')
+        if (file.newText.length > MAX_CARD_PAYLOAD || rows.length > 80) omitted = true
+        rows.slice(0, 80).forEach((text, index) => push({ text: `  · ${index + 1} │ ${text}`, color: 'gray' }))
+      }
+      continue
+    }
+    push({ text: `+${delta.added} -${delta.removed} · ${delta.lineEndings}`, color: 'gray' })
+    const digits = String(Math.max(1, ...delta.hunks.flatMap(hunk => [hunk.oldStart + hunk.oldCount, hunk.newStart + hunk.newCount]))).length
+    const number = (value: number | undefined): string => String(value ?? '·').padStart(digits)
+    for (const hunk of delta.hunks) {
+      push({ text: `@@ -${hunk.oldStart},${hunk.oldCount} +${hunk.newStart},${hunk.newCount} @@`, color: 'cyan' })
+      const wordSpans = new Map<number, WordSpan[]>()
+      for (let start = 0; start < hunk.lines.length;) {
+        if (hunk.lines[start]!.kind !== 'remove') { start++; continue }
+        let middle = start
+        while (hunk.lines[middle]?.kind === 'remove') middle++
+        let end = middle
+        while (hunk.lines[end]?.kind === 'add') end++
+        for (let pair = 0; pair < Math.min(middle - start, end - middle); pair++) {
+          const change = wordDiffSpans(sanitizeTerminalText(hunk.lines[start + pair]!.text), sanitizeTerminalText(hunk.lines[middle + pair]!.text))
+          if (change) { wordSpans.set(start + pair, change.before); wordSpans.set(middle + pair, change.after) }
+        }
+        start = end
+      }
+      for (const [index, line] of hunk.lines.entries()) {
+        const sign = line.kind === 'add' ? '+' : line.kind === 'remove' ? '-' : ' '
+        const prefix = `${sign} ${number(line.oldLine)} ${number(line.newLine)} │ `
+        const source = prefix + sanitizeTerminalText(line.text)
+        if (source.length > MAX_CARD_LINE_LENGTH) omitted = true
+        const text = capLine(source)
+        const changes = wordSpans.get(index)?.map(span => ({ start: span.start + prefix.length, end: Math.min(text.length - (text.endsWith('…') ? 1 : 0), span.end + prefix.length) })).filter(span => span.start < span.end)
+        push({ ...(line.kind === 'add' || line.kind === 'remove' ? { diffKind: line.kind } : {}), text,
+          ...(changes?.length ? { changes, changeTextLength: text.length } : {}),
+          color: line.kind === 'add' ? 'green' : line.kind === 'remove' ? 'red' : 'gray' })
+        if (line.noNewline) push({ text: '\\ No newline at end of supplied text', color: 'gray' })
+      }
+    }
+  }
+  if (omitted) out.push({ text: 'Preview incomplete: display limit; inspect original tool record', color: 'yellow' })
+  return out
 }
 
 /**
@@ -85,13 +159,7 @@ export function projectCallCard(view: ToolCallView | null, fallbackDetail: strin
       return out
     }
     case 'diff': {
-      const diff = view as DiffCallView
-      const out: CardLine[] = []
-      for (const file of diff.diffs) {
-        out.push({ text: `── ${file.path}${file.oldText === null ? ' (new)' : ''}`, color: 'gray' })
-        for (const line of lines(file.newText).slice(0, 80)) out.push(diffLine(`+${line.text}`))
-      }
-      return out.slice(0, MAX_CARD_LINES)
+      return projectDiffCard(view as DiffCallView, true)
     }
     case 'generic': {
       const generic = view as GenericCallView
@@ -141,16 +209,7 @@ export function projectResultCard(view: ToolResultView | null, fallbackText: str
       return out.slice(0, MAX_CARD_LINES)
     }
     case 'diff': {
-      const diff = view as DiffResultView
-      const out: CardLine[] = []
-      for (const file of diff.diffs) {
-        out.push({ text: `── ${file.path}${file.oldText === null ? ' (new)' : ''}`, color: 'gray' })
-        if (file.oldText !== null) {
-          for (const line of lines(file.oldText).slice(0, 80)) out.push(diffLine(`-${line.text}`))
-        }
-        for (const line of lines(file.newText).slice(0, 80)) out.push(diffLine(`+${line.text}`))
-      }
-      return out.slice(0, MAX_CARD_LINES)
+      return projectDiffCard(view as DiffResultView, false)
     }
     case 'search': {
       const search = view as SearchMatchesResultView | SearchPathsResultView
@@ -267,7 +326,7 @@ export function compactCallCard(view: unknown): unknown {
         ...(card.content !== undefined ? { content: capContent(card.content) } : {}),
       }
     case 'diff':
-      return { ...card, diffs: capDiffs(card.diffs) }
+      return { ...card, tuiDiffPreview: { version: 1, rows: projectDiffCard(card, true) }, diffs: capDiffs(card.diffs) }
     case 'terminal':
       return card
     default:
@@ -296,7 +355,7 @@ export function compactResultCard(view: unknown): unknown {
         ...(card.output !== undefined ? { output: capPayload(card.output) } : {}),
       }
     case 'diff':
-      return { ...card, diffs: capDiffs(card.diffs) }
+      return { ...card, tuiDiffPreview: { version: 1, rows: projectDiffCard(card, false) }, diffs: capDiffs(card.diffs) }
     case 'search':
       if (card.shape === 'matches') {
         return {

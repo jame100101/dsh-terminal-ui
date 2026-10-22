@@ -1,3 +1,4 @@
+import { parseKeybindings } from '../src/keybindings'
 import { WHALE_ART } from '../src/welcome-banner'
 import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 /**
@@ -10,6 +11,7 @@ import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
  */
 
 import process from 'node:process'
+import { createRequire } from 'node:module'
 import { Writable, PassThrough } from 'node:stream'
 import { createElement } from 'react'
 import { describe, expect, it, afterEach, vi } from 'vitest'
@@ -18,7 +20,7 @@ import stringWidth from 'string-width'
 import { marked } from 'marked'
 import xtermHeadless from '@xterm/headless'
 import {
-  App, brandGlyph, permissionColor, permissionLabel, resolveTranscriptLineColor, statusActivityColor, traceLineColor,
+  App, movePanelSelection, brandGlyph, permissionColor, permissionLabel, resolveTranscriptLineColor, statusActivityColor, traceLineColor,
   WELCOME_CARD_COLOR,
 } from '../src/render'
 import { settingsTabCell } from '../src/settings-chrome'
@@ -371,6 +373,399 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
   return { store, capture, stdin, unmount: () => instance.unmount(), type: async (text) => { stdin.write(text); await settle() } }
 }
 
+describe('Claude terminal appearance frame', () => {
+  it('paints a readable light surface and restores dark without changing the draft', async () => {
+    const require = createRequire(import.meta.url)
+    const chalk = (await import(require.resolve('chalk', { paths: [require.resolve('ink')] }))).default
+    const previous = chalk.level; chalk.level = 3
+    const { capture, store, type, unmount } = await mount()
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-light' } } })
+      await type('light draft')
+      expect(capture.terminal.buffer.active.getLine(5)?.getCell(20)?.getBgColor()).toBe(0xfafafa)
+      expect(capture.terminal.buffer.active.getLine(1)?.getCell(0)?.getFgColor()).toBe(0x222222)
+      const composerRow = capture.screenLines().findIndex(line => line.includes('❯ light draft'))
+      expect(composerRow).toBeGreaterThan(0)
+      expect(capture.terminal.buffer.active.getLine(composerRow)?.getCell(2)?.getFgColor()).toBe(0x222222)
+      const latest = store.getSnapshot()
+      store.set({ ...latest, version: latest.version + 1, settings: { ...latest.settings!, general: { ...latest.settings!.general, appearance: 'claude-terminal-dark' } } })
+      await type('')
+      expect(capture.screenLines().join('\n')).toContain('light draft')
+      expect(capture.terminal.buffer.active.getLine(5)?.getCell(20)?.isBgDefault()).toBe(true)
+    } finally { unmount(); chalk.level = previous }
+  })
+
+  it.each([[120, 40], [80, 24]])('keeps compact chrome and the native caret at %ix%i', async (columns, rows) => {
+    const { capture, store, type, unmount } = await mount()
+    try {
+      capture.columns = columns; capture.rows = rows; capture.emit('resize')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark' } } })
+      await type('中文🙂 draft')
+      const lines = capture.screenLines()
+      expect(lines[0]).toContain('DSH-TUI')
+      expect(lines[1]).toContain('DeepSeek Harness')
+      expect(lines[2]).toContain('D:\\work')
+      expect(lines[rows - 4]).toContain('❯ 中文🙂 draft')
+      expect(lines[rows - 3]).toContain('─')
+      expect(lines[rows - 2]).toContain('Context:')
+      expect(lines[rows - 6]).toContain('effort off')
+      expect(lines[rows - 1]).not.toContain('effort')
+      expect(lines[rows - 1]).toContain('Ⅱ read only on')
+      expect(lines[rows - 1]).toContain('(Shift+Tab 切换)')
+      expect(capture.terminal.buffer.active.cursorY).toBe(rows - 4)
+      expect(capture.terminal.buffer.active.cursorX).toBe(stringWidth('❯ 中文🙂 draft'))
+      expect(lines.filter(line => line.includes('中文🙂 draft'))).toHaveLength(1)
+      expect(lines.every(line => stringWidth(line) <= columns)).toBe(true)
+      const changed = store.getSnapshot()
+      store.set({ ...changed, version: changed.version + 1, settings: { ...changed.settings!, general: { ...changed.settings!.general, appearance: 'dsh-classic' } } })
+      await type('!')
+      expect(capture.screenLines().join('\n')).toContain('中文🙂 draft!')
+    } finally { unmount() }
+  }, 15_000)
+})
+
+describe('compact welcome and thinking', () => {
+  it('shows welcome only before a turn and collapses live thinking without a moving tail', async () => {
+    const { store, capture, type, unmount } = await mount([])
+    try {
+      let current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', thinking: 'collapsed', locale: 'en' } } })
+      await type('draft中文')
+      expect(capture.screenLines().join('\n')).toContain('Welcome to DSH-TUI')
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: true, live: { text: '', think: 'HIDDEN_THOUGHT', thinkSince: Date.now(), renderId: 2 } })
+      await type('')
+      let frame = capture.screenLines().join('\n')
+      expect(frame).toContain('Thinking… ▶')
+      expect(frame).not.toContain('HIDDEN_THOUGHT')
+      expect(frame).not.toContain('Welcome to')
+      expect(frame).toContain('draft中文')
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, thinking: 'expanded' } } })
+      await type('')
+      frame = capture.screenLines().join('\n')
+      expect(frame).toContain('Thinking… ▼')
+      expect(frame).toContain('HIDDEN_THOUGHT')
+    } finally { unmount() }
+  })
+})
+
+describe('Claude working indicator contrast', () => {
+  it('uses readable muted cells and only one live activity owner', async () => {
+    const require = createRequire(import.meta.url)
+    const chalk = (await import(require.resolve('chalk', { paths: [require.resolve('ink')] }))).default
+    const previous = chalk.level; chalk.level = 3
+    const { store, capture, type, unmount } = await mount([{ kind: 'context', id: 1, producer: 'contrast-fixture', text: 'context' }])
+    try {
+      let current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: true,
+        settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en', thinking: 'collapsed' } },
+        live: { text: '', think: 'hidden', thinkSince: Date.now(), renderId: 2 } })
+      await type('')
+      const lines = capture.screenLines()
+      expect(lines.join('\n')).not.toContain('Catapulting…')
+      expect(lines.join('\n')).not.toContain('└ Tip: Esc to interrupt')
+      expect(lines.filter(line => line.includes('Esc cancel'))).toHaveLength(1)
+      expect(lines.at(-2)).toContain('Context: --')
+      expect(lines.at(-2)).toContain('Cache: --')
+      expect(lines.at(-1)).toContain('Ⅱ read only on')
+      expect(lines.join('\n')).not.toContain('/terminal-setup')
+      for (const label of ['Thinking', 'context injected']) {
+        const y = lines.findIndex(line => line.includes(label))
+        const x = stringWidth(lines[y]!.split(label)[0]!)
+        const cell = capture.terminal.buffer.active.getLine(capture.terminal.buffer.active.viewportY + y)!.getCell(x)!
+        expect(cell.getFgColor()).toBe(0x999999)
+        expect(cell.isDim()).toBe(0)
+      }
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: false, live: null })
+      await type('')
+      expect(capture.screenLines().join('\n')).not.toContain('Catapulting')
+      expect(capture.screenLines().join('\n')).not.toContain('Tip: Esc')
+    } finally { unmount(); chalk.level = previous }
+  })
+})
+
+describe('Claude composer activity row', () => {
+  it.each([120, 40])('keeps activity and cancel above the composer beside effort at %i columns', async columns => {
+    const cancel = vi.fn()
+    const { store, capture, type, unmount } = await mount([], { cancel })
+    try {
+      capture.columns = columns; capture.rows = 24; capture.emit('resize')
+      let current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1,
+        settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en' } },
+        reasoning: { effort: 'high', levels: ['high'] } })
+      await type('')
+      const start = capture.output.length
+      for (const phase of ['awaiting', 'thinking', 'generating', 'idle']) {
+        current = store.getSnapshot()
+        store.set({ ...current, version: current.version + 1, busy: phase !== 'idle',
+          live: phase === 'thinking' ? { text: '', think: 'thought', thinkSince: Date.now(), renderId: 2 }
+            : phase === 'generating' ? { text: 'reply', think: '', thinkSince: null, renderId: 2 } : null })
+        await type('')
+        const lines = capture.screenLines()
+        const row = composerInputRow(lines) - 1
+        expect(lines[row - 2]).toContain('effort high')
+        if (phase !== 'idle') {
+          expect(lines[row - 2]).toContain('Esc cancel')
+          if (columns === 120) expect(lines[row - 2]).toContain(phase === 'awaiting' ? 'Awaiting reply' : phase === 'thinking' ? 'Thinking' : 'Generating')
+        } else expect(lines[row - 2]).not.toContain('Esc cancel')
+        expect(lines.at(-1)).toContain('Ⅱ read only on')
+        expect(lines.at(-1)).not.toMatch(/Thinking|Generating|Awaiting|Esc cancel/)
+        expect(lines[row]?.trim()).toBe('❯')
+        expect(capture.terminal.buffer.active.cursorX).toBe(2)
+        expect(capture.terminal.buffer.active.cursorY).toBe(row)
+      }
+      expect(capture.output.slice(start)).not.toContain('\u00a0')
+      expect(capture.output.slice(start)).not.toContain('\x1b[0 q')
+      await type('中文🙂残留')
+      await type('\x15')
+      const row = composerInputRow(capture.screenLines()) - 1
+      expect(capture.screenLines()[row]?.trim()).toBe('❯')
+      const buffer = capture.terminal.buffer.active
+      for (let x = 2; x < columns - 2; x++) {
+        expect(buffer.getLine(buffer.viewportY + row)!.getCell(x)!.getChars().trim()).toBe('')
+      }
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: true })
+      await type('\x1b')
+      expect(cancel).toHaveBeenCalledOnce()
+    } finally { unmount() }
+  }, 20_000)
+})
+
+describe('Claude settings geometry', () => {
+  it.each([[120, 40], [80, 24]])('budgets the exclusive settings page at %ix%i', async (columns, rows) => {
+    const require = createRequire(import.meta.url)
+    const chalk = (await import(require.resolve('chalk', { paths: [require.resolve('ink')] }))).default
+    const previousLevel = chalk.level
+    chalk.level = 3 // This fixture asserts actual RGB cells, even in a non-TTY test runner.
+    const updateSetting = vi.fn(async () => {})
+    const { store, capture, type, unmount } = await mount([], { updateSetting, startup: { panel: { kind: 'settings' } } })
+    try {
+      capture.columns = columns; capture.rows = rows; capture.emit('resize')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark' } } })
+      await type('')
+      const lines = capture.screenLines()
+      expect(lines[2]).toContain('▔')
+      expect(lines[3]).toContain('常规')
+      expect(capture.terminal.buffer.active.getLine(3)?.getCell(3)?.getFgColor()).toBe(0xb1b9f9)
+      expect(lines[5]?.indexOf('╭')).toBe(3)
+      expect(lines[5]?.indexOf('╮')).toBe(columns - 4)
+      expect(lines[3]?.indexOf('常规')).toBe(3)
+      expect(lines[6]).toContain('搜索设置')
+      expect(lines[7]).toContain('╰')
+      expect(lines[8]?.trim()).toBe('')
+      expect(capture.terminal.buffer.active.cursorX).toBe(7)
+      expect(capture.terminal.buffer.active.cursorY).toBe(6)
+      expect(stringWidth(lines[9]!.split('当前')[0]!)).toBe(48)
+      expect(lines[rows - 1]).toContain('Esc')
+      expect(lines.every(line => stringWidth(line) <= columns)).toBe(true)
+      await type('\x1b')
+      await type('中文 draft')
+      expect(capture.screenLines()[rows - 4]).toContain('中文 draft')
+    } finally { unmount(); chalk.level = previousLevel }
+  }, 15_000)
+})
+
+describe('Claude bottom sheets', () => {
+  it.each([[120, 40], [80, 24]])('anchors model and permission sheets without changing host facts at %ix%i', async (columns, rows) => {
+    const selectModel = vi.fn(async () => { throw new Error('adapter rejected route') })
+    const cycleSandbox = vi.fn(() => 'read-only' as const)
+    const { store, capture, type, unmount } = await mount([], { selectModel, cycleSandbox })
+    try {
+      capture.columns = columns; capture.rows = rows; capture.emit('resize')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', keymap: 'claude-fullscreen' } } })
+      await type('中文🙂 retained')
+      await type('\x13')
+      await type('/model')
+      await type('\r')
+      let lines = capture.screenLines()
+      expect(lines[rows - 15]).toContain('▔')
+      expect(lines[rows - 14]).toContain('选择模型')
+      expect(lines.join('\n')).toContain('deepseek-v4-pro')
+      expect(lines.join('\n')).not.toContain('API 凭据')
+      expect(lines[rows - 1]).toContain('Enter')
+      await type('\r')
+      expect(selectModel).toHaveBeenCalledWith('deepseek-official', 'deepseek-v4-pro')
+      expect(capture.screenLines().join('\n')).toContain('adapter rejected route')
+      expect(store.getSnapshot().model).toBe('deepseek-v4-pro')
+      await type('\x1b')
+      await type('/permissions')
+      await type('\r')
+      lines = capture.screenLines()
+      expect(lines[rows - 11]).toContain('▔')
+      expect(lines[rows - 10]).toContain('权限与沙箱')
+      expect(lines[rows - 7]?.indexOf('╭')).toBe(3)
+      expect(lines[rows - 7]?.indexOf('╮')).toBe(51)
+      expect(lines[rows - 5]?.indexOf('╰')).toBe(3)
+      expect(lines.join('\n')).toContain('Sandbox · read-only')
+      expect(lines.join('\n')).toContain('Plan · off')
+      expect(lines[rows - 1]).not.toContain('Enter')
+      await type('\r')
+      expect(cycleSandbox).not.toHaveBeenCalled()
+      expect(store.getSnapshot().sandbox).toBe('read-only')
+      await type('\x1b')
+      await type('\x13')
+      expect(capture.screenLines()[rows - 4]).toContain('中文🙂 retained')
+      expect(capture.terminal.buffer.active.cursorX).toBe(stringWidth('❯ 中文🙂 retained'))
+    } finally { unmount() }
+  }, 15_000)
+})
+
+describe('settings editing and inert rows', () => {
+  it('mounts a masked credential editor in compact settings and preserves the draft', async () => {
+    const setCredential = vi.fn(async () => {})
+    const attachClipboardImage = vi.fn(async () => ({ error: null, chip: '[Image #1]' }))
+    const { store, capture, type, unmount } = await mount([], { setCredential, attachClipboardImage })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en', keymap: 'claude-fullscreen' }, models: { ...current.settings!.models, credentials: [{ ref: 'DEEPSEEK_API_KEY', configured: false, writable: true }] } } })
+      await type('preserve 中文 draft'); await type('\x13')
+      await type('/settings models'); await type('\r')
+      await type('\x1b[B'); await type('\r')
+      await type('\x1b[200~\x1b[201~')
+      expect(attachClipboardImage).not.toHaveBeenCalled()
+      await type('fixture-secret-not-a-real-key')
+      expect(capture.screenLines().join('\n')).toContain('••••')
+      expect(capture.output).not.toContain('fixture-secret-not-a-real-key')
+      await type('\r')
+      expect(setCredential).not.toHaveBeenCalled()
+      expect(capture.screenLines().join('\n')).toContain('Press Enter again')
+      await type('\r')
+      expect(setCredential).toHaveBeenCalledExactlyOnceWith('DEEPSEEK_API_KEY', 'fixture-secret-not-a-real-key')
+      await type('\x1b'); await type('\x13')
+      expect(capture.screenLines().join('\n')).toContain('preserve 中文 draft')
+    } finally { unmount() }
+  }, 15_000)
+
+  it('requires confirmation for credential removal and resets it when the value changes', async () => {
+    const unsetCredential = vi.fn(async () => {})
+    const setCredential = vi.fn(async () => {})
+    const { store, capture, type, unmount } = await mount([], { unsetCredential, setCredential })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en' }, models: { ...current.settings!.models, credentials: [{ ref: 'DEEPSEEK_API_KEY', configured: true, writable: true }] } } })
+      await type('/settings models'); await type('\r')
+      await type('DEEPSEEK_API_KEY'); await type('\r'); await type('\r')
+      expect(unsetCredential).not.toHaveBeenCalled()
+      expect(capture.screenLines().join('\n')).toContain('remove this credential')
+      await type('replacement-fixture'); await type('\r')
+      expect(setCredential).not.toHaveBeenCalled()
+      expect(unsetCredential).not.toHaveBeenCalled()
+      expect(capture.screenLines().join('\n')).toContain('save the credential')
+      await type('\x1b'); await type('\r'); await type('\r'); await type('\r')
+      expect(unsetCredential).toHaveBeenCalledExactlyOnceWith('DEEPSEEK_API_KEY')
+      expect(setCredential).not.toHaveBeenCalled()
+    } finally { unmount() }
+  }, 15_000)
+
+  it('keeps q as searchable text in compact settings and clears it before closing', async () => {
+    const { store, capture, type, unmount } = await mount([])
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en' } } })
+      await type('/settings'); await type('\r'); await type('q')
+      expect(capture.screenLines().join('\n')).toContain('⌕ q')
+      expect(capture.terminal.buffer.active.cursorX).toBe(8)
+      expect(capture.terminal.buffer.active.cursorY).toBe(6)
+      await type('中文🙂'.repeat(40))
+      expect(capture.terminal.buffer.active.cursorX).toBeLessThan(capture.columns - 4)
+      expect(capture.terminal.buffer.active.cursorY).toBe(6)
+      await type('\x1b')
+      expect(capture.screenLines().join('\n')).toContain('Search settings')
+      await type('\x1b')
+      expect(capture.screenLines().join('\n')).not.toContain('Search settings')
+    } finally { unmount() }
+  })
+
+  it('never paints selection on read-only permission facts after keyboard or mouse input', async () => {
+    const { store, capture, type, unmount } = await mount([])
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark' } } })
+      await type('/permissions'); await type('\r'); await type('\x1b[B')
+      const row = capture.screenLines().findIndex(line => line.includes('Sandbox ·'))
+      expect(row).toBeGreaterThan(0)
+      await type(`\x1b[<0;7;${row + 1}M`)
+      expect(capture.screenLines().some(line => line.trimStart().startsWith('▸'))).toBe(false)
+    } finally { unmount() }
+  })
+})
+
+describe('wrapped model actions', () => {
+  it('keeps host routes stable through wrapped rows, mouse clicks and filtering', async () => {
+    const selectModel = vi.fn(async () => {})
+    const { store, capture, type, unmount } = await mount([], { selectModel })
+    try {
+      capture.columns = 80; capture.rows = 24; capture.emit('resize')
+      const current = store.getSnapshot()
+      const provider = 'official-provider-with-long-description-for-wrapping'
+      store.set({ ...current, version: current.version + 1, provider, model: '中文👨‍👩‍👧‍👦-long-model-name-for-wrapping', settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark' }, models: { providers: [{ provider, models: Array.from({ length: 12 }, (_, i) => ({ id: i === 0 ? '中文👨‍👩‍👧‍👦-long-model-name-for-wrapping' : `model-${i}`, acceptsImage: true })) }], credentials: [] } } })
+      await type('/model'); await type('\r')
+      let lines = capture.screenLines()
+      expect(lines.join('\n')).toContain('… +')
+      expect(lines.join('\n')).toContain('中文👨‍👩‍👧‍👦')
+      expect(lines.join('\n')).toContain('图片输入')
+      const first = lines.findIndex(line => line.startsWith('   ') && line.includes('中文👨‍👩‍👧‍👦'))
+      await type(`\x1b[<0;35;${first + 2}M`)
+      expect(selectModel).toHaveBeenLastCalledWith(provider, '中文👨‍👩‍👧‍👦-long-model-name-for-wrapping')
+      await type('\x1b[B'); await type('\r')
+      expect(selectModel).toHaveBeenLastCalledWith(provider, 'model-1')
+      await type('model-11'); await type('\r')
+      expect(selectModel).toHaveBeenLastCalledWith(provider, 'model-11')
+      capture.columns = 42; capture.emit('resize'); await type('')
+      lines = capture.screenLines()
+      expect(lines.every(line => stringWidth(line) <= 42)).toBe(true)
+      await type('\x1b')
+      expect(capture.screenLines().join('\n')).toContain('选择模型')
+      await type('\x1b')
+      expect(capture.screenLines().some(line => line.startsWith('❯'))).toBe(true)
+    } finally { unmount() }
+  }, 15_000)
+})
+
+describe('Claude logical line editing', () => {
+  it('stashes and swaps complete Unicode drafts without submitting them', async () => {
+    const submit = vi.fn()
+    const { store, type, capture, unmount } = await mount([], { submit })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, keymap: 'claude-fullscreen' } } })
+      await type('中文🙂 saved')
+      await type('\x13')
+      expect(capture.screenLines().join('\n')).not.toContain('中文🙂 saved')
+      await type('second')
+      await type('\x13')
+      expect(capture.screenLines().join('\n')).toContain('中文🙂 saved')
+      await type('\x13')
+      expect(capture.screenLines().join('\n')).toContain('second')
+      expect(submit).not.toHaveBeenCalled()
+    } finally { unmount() }
+  }, 15_000)
+
+  it('moves Ctrl+A/E within a logical line and retains the other lines', async () => {
+    const submit = vi.fn()
+    const { store, type, unmount } = await mount([], { submit })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, keymap: 'claude-fullscreen' } } })
+      await type('\x1b[200~first\nsecond\x1b[201~')
+      await type('\x01')
+      await type('A')
+      await type('\x05')
+      await type('Z')
+      await type('\r')
+      expect(submit).toHaveBeenCalledExactlyOnceWith('first\nAsecondZ', false)
+    } finally { unmount() }
+  }, 15_000)
+})
+
 describe('Ink 7 full-screen render', () => {
   it('fills the terminal exactly and anchors the caret through Ink’s own cursor suffix', async () => {
     const { capture, unmount, type } = await mount()
@@ -563,7 +958,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\x1b[B')
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
-      expect(lines.some(line => line.includes('▸ /clear'))).toBe(true)
+      expect(lines.some(line => line.includes('▸ /bg'))).toBe(true)
       expect(lines.some(line => line.includes('▸ /attach'))).toBe(false)
     } finally {
       unmount()
@@ -588,7 +983,7 @@ describe('Ink 7 full-screen render', () => {
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('命令（↑↓ 选择'))).toBe(true)
-      expect(lines.some(line => line.includes('▸ /clear'))).toBe(true)
+      expect(lines.some(line => line.includes('▸ /bg'))).toBe(true)
       expect(lines.some(line => line.includes('❯/'))).toBe(true)
       // No stray CSI tail leaked into the composer as text.
       expect(lines.some(line => line.includes('[B'))).toBe(false)
@@ -597,7 +992,7 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
-  it('scrolls the transcript with wheel reports using the DamnatioX semantics', async () => {
+  it('scrolls by native wheel events and restores follow after reverse events', async () => {
     const nodes: TuiNode[] = Array.from({ length: 40 }, (_, index) => ({
       kind: 'user', id: index, text: `第${index}行`,
     }))
@@ -605,15 +1000,22 @@ describe('Ink 7 full-screen render', () => {
     try {
       let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
-      // One wheel-up tick hides 3 lines and pins the back button.
+      // One isolated native wheel-up tick hides 1 line and pins the back button.
       await type('\x1b[<64;10;5M')
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(true)
+      // One row only hides the trailing spacer; the prompt remains visible.
+      expect(lines.some(line => line.includes('▸ 第39行'))).toBe(true)
+      await type('\x1b[<64;10;5M')
+      await type('\x1b[<64;10;5M')
+      lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(false)
       const painted = capture.screenLines()
       expect(painted.filter(line => line.includes('DSH-TUI')).length).toBe(1)
       expect(painted.filter(line => line.includes('▼ 回到底部') || line.includes('back to bottom')).length).toBe(1)
-      // A wheel-down tick brings the newest lines back.
+      // Three reverse events restore the three consumed rows.
+      await type('\x1b[<65;10;5M')
+      await type('\x1b[<65;10;5M')
       await type('\x1b[<65;10;5M')
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
@@ -656,9 +1058,14 @@ describe('Ink 7 full-screen render', () => {
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ 第0行'))).toBe(false)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(true)
-      // A press on the bottom content row returns to the newest lines.
-      await type('\x1b[<0;99;23M')
-      await type('\x1b[<0;99;23m')
+      // Empty space beside the button must not abandon the history anchor.
+      const buttonRow = capture.screenLines().findIndex(line => line.includes('▼ 回到底部')) + 1
+      await type(`\x1b[<0;2;${buttonRow}M`)
+      await type(`\x1b[<0;2;${buttonRow}m`)
+      expect(lastFrameLines(capture).some(line => line.includes('▼ 回到底部'))).toBe(true)
+      // Only the rendered button re-enables sticky follow mode.
+      await type(`\x1b[<0;50;${buttonRow}M`)
+      await type(`\x1b[<0;50;${buttonRow}m`)
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ 第39行'))).toBe(true)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
@@ -726,11 +1133,11 @@ describe('Ink 7 full-screen render', () => {
       await type(`\x1b[<0;${modelsColumn};7M`)
       await type(`\x1b[<0;${modelsColumn};7m`)
       let lines = capture.screenLines()
-      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(true)
+      expect(lines.some(line => line.includes('运行时发送行为'))).toBe(true)
       await type(`\x1b[<0;${modelsColumn};6M`)
       await type(`\x1b[<0;${modelsColumn};6m`)
       lines = capture.screenLines()
-      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(false)
+      expect(lines.some(line => line.includes('运行时发送行为'))).toBe(false)
       expect(lines.some(line => line.includes('deepseek-official'))).toBe(true)
       expect(lines.some(line => line.includes('▸ deepseek-official'))).toBe(false)
       await type('\x1b[<0;4;8M')
@@ -753,14 +1160,14 @@ describe('Ink 7 full-screen render', () => {
       expect(searchAt).toBeGreaterThanOrEqual(0)
       expect(tabsAt).toBeGreaterThan(searchAt)
       expect(lines.some(line => line.includes('Tab 切换'))).toBe(true)
-      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(true)
+      expect(lines.some(line => line.includes('运行时发送行为'))).toBe(true)
       await type('\t')
       lines = capture.screenLines()
-      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(false)
+      expect(lines.some(line => line.includes('运行时发送行为'))).toBe(false)
       expect(lines.some(line => line.includes('deepseek-official'))).toBe(true)
       await type('\x1b[D')
       lines = capture.screenLines()
-      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(true)
+      expect(lines.some(line => line.includes('运行时发送行为'))).toBe(true)
     } finally {
       unmount()
     }
@@ -779,7 +1186,7 @@ describe('Ink 7 full-screen render', () => {
       await type('q')
       lines = capture.screenLines()
       expect(lines.some(line => line.includes('搜索设置'))).toBe(false)
-      expect(lines.some(line => line.includes('运行中 Enter'))).toBe(false)
+      expect(lines.some(line => line.includes('运行时发送行为'))).toBe(false)
     } finally {
       unmount()
     }
@@ -802,6 +1209,83 @@ describe('Ink 7 full-screen render', () => {
       unmount()
     }
   })
+
+  it('does not invent effort capabilities and opens the config alias', async () => {
+    const setEffort = vi.fn()
+    const { capture, unmount, type } = await mount([], { setEffort })
+    try {
+      await type('/effort high')
+      await type('\r')
+      expect(setEffort).not.toHaveBeenCalled()
+      expect(lastFrameLines(capture).some(line => line.includes('用法：/effort off'))).toBe(true)
+      await type('/config')
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('运行时发送行为'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('shows model settings as pending until host acceptance and surfaces rejection', async () => {
+    let resolveChange: (() => void) | undefined
+    let rejectChange: ((error: Error) => void) | undefined
+    const selectModel = vi.fn(() => new Promise<void>((resolve, reject) => {
+      resolveChange = resolve
+      rejectChange = reject
+    }))
+    const { store, capture, unmount, type } = await mount([], { selectModel })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: current.settings === null ? null : {
+        ...current.settings, models: { providers: [{ provider: 'fixture', models: [{ id: 'model-b' }] }], credentials: [] },
+      } })
+      await type('/settings models')
+      await type('\r')
+      await type('\r')
+      await type('\r')
+      expect(selectModel).toHaveBeenCalledExactlyOnceWith('fixture', 'model-b')
+      expect(lastFrameLines(capture).some(line => line.includes('正在应用模型设置'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('默认模型 →'))).toBe(false)
+      rejectChange?.(new Error('model rejected'))
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('model rejected'))).toBe(true)
+      await type('\r')
+      resolveChange?.()
+      await type('')
+      expect(selectModel).toHaveBeenCalledTimes(2)
+      expect(lastFrameLines(capture).some(line => line.includes('model-b') && line.includes('默认模型'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('opens job details before requesting an explicitly confirmed stop', async () => {
+    const killJob = vi.fn()
+    const { store, capture, unmount, type } = await mount([], { killJob })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, jobs: [{
+        id: 'job-1', kind: 'shell', label: 'build', status: 'running', elapsedMs: 1250, detail: 'compiler output',
+      }] })
+      await type('/tasks')
+      await type('\r')
+      await type('\r')
+      expect(killJob).not.toHaveBeenCalled()
+      expect(lastFrameLines(capture).some(line => line.includes('宿主状态: running'))).toBe(true)
+      await type('\r')
+      expect(killJob).not.toHaveBeenCalled()
+      expect(lastFrameLines(capture).some(line => line.includes('确认停止此任务'))).toBe(true)
+      await type('\x1b')
+      expect(lastFrameLines(capture).some(line => line.includes('确认停止此任务'))).toBe(false)
+      await type('\r')
+      await type('\r')
+      expect(killJob).toHaveBeenCalledExactlyOnceWith('job-1')
+      const next = store.getSnapshot()
+      store.set({ ...next, version: next.version + 1, jobs: next.jobs.map(job => ({ ...job, status: 'finished' })) })
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('宿主状态: finished'))).toBe(true)
+      await type('\r')
+      expect(killJob).toHaveBeenCalledTimes(1)
+      await type('\x1b')
+      expect(lastFrameLines(capture).some(line => line.includes('Enter 查看详情'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
 
   it('switches the agent preset from the settings presets page', async () => {
     const switched: string[] = []
@@ -841,6 +1325,36 @@ describe('Ink 7 full-screen render', () => {
     } finally {
       unmount()
     }
+  })
+
+  it('anchors the same history content through growth above, collapse, resize, and streaming append', async () => {
+    const nodes: TuiNode[] = Array.from({ length: 70 }, (_, id) => ({ kind: 'user', id, text: `anchor-row-${id}` }))
+    const { store, capture, unmount, type } = await mount(nodes)
+    const firstVisible = () => lastFrameLines(capture).map(line => /anchor-row-\d+/.exec(line)?.[0]).find(Boolean)
+    try {
+      await type('\x1b[5~')
+      await type('\x1b[5~')
+      const anchor = firstVisible()
+      expect(anchor).toBeDefined()
+      expect(anchor).not.toBe('anchor-row-0')
+      let snapshot = store.getSnapshot()
+      store.set({ ...snapshot, version: snapshot.version + 1,
+        nodes: [{ ...nodes[0]!, text: `anchor-row-0\n${'expanded details\n'.repeat(35)}` } as TuiNode, ...nodes.slice(1)] })
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(firstVisible()).toBe(anchor)
+      snapshot = store.getSnapshot()
+      store.set({ ...snapshot, version: snapshot.version + 1, nodes })
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(firstVisible()).toBe(anchor)
+      capture.columns = 80; capture.rows = 24; capture.emit('resize')
+      await new Promise(resolve => setTimeout(resolve, 120))
+      expect(firstVisible()).toBe(anchor)
+      snapshot = store.getSnapshot()
+      store.set({ ...snapshot, version: snapshot.version + 1, busy: true,
+        live: { text: 'new stream\n'.repeat(20), think: '', thinkSince: null } })
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(firstVisible()).toBe(anchor)
+    } finally { unmount() }
   })
 
   it('keeps the frame clean under streaming plus rapid wheel scrolling', async () => {
@@ -1180,6 +1694,22 @@ describe('Ink 7 full-screen render', () => {
     }
   })
 
+  it('attaches clipboard images with Ctrl+V and empty bracketed paste while retaining text', async () => {
+    let calls = 0
+    const { capture, type, unmount } = await mount([], {
+      attachClipboardImage: async () => ({ error: null, chip: `[Image #${++calls}]` }),
+    })
+    try {
+      await type('保留草稿 ')
+      await type('\x16')
+      expect(calls).toBe(process.platform === 'win32' ? 0 : 1)
+      if (process.platform !== 'win32') expect(lastFrameLines(capture).join('\n')).toContain('[Image #1]')
+      await type('\x1b[200~\x1b[201~')
+      expect(calls).toBe(process.platform === 'win32' ? 1 : 2)
+      expect(lastFrameLines(capture).join('\n')).toContain('保留草稿')
+    } finally { unmount() }
+  })
+
   it('admits a pasted image-file batch through one host call', async () => {
     const batches: string[][] = []
     const { capture, unmount, type } = await mount([], {
@@ -1196,6 +1726,26 @@ describe('Ink 7 full-screen render', () => {
     } finally {
       unmount()
     }
+  })
+
+  it('keeps the session picker alive when the host rejects a resume', async () => {
+    const { store, capture, unmount, type } = await mount([], {
+      resumeSession: async () => { throw new Error('restore unavailable') },
+    })
+    try {
+      store.set({ ...store.getSnapshot(), version: store.getSnapshot().version + 1, sessions: [
+        { id: 'session-failed', model: '', status: 'persisted', title: 'Failed target', live: false, persisted: true },
+      ] })
+      await type('/sessions')
+      await type('\r')
+      await type('\x1b[B')
+      await type('\r')
+      expect(lastFrameLines(capture).join('\n')).toContain('restore unavailable')
+      expect(lastFrameLines(capture).join('\n')).toContain('Failed target')
+      await type('\x1b')
+      await type('still editable')
+      expect(lastFrameLines(capture).join('\n')).toContain('still editable')
+    } finally { unmount() }
   })
 
   it('opens the sessions panel with persisted rows and resumes on Enter', async () => {
@@ -1620,10 +2170,12 @@ describe('Ink 7 full-screen render', () => {
 
   it('routes /effort off|low|high|max to the host and rejects other values', async () => {
     const efforts: (string | undefined)[] = []
-    const { capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
+    const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
       setEffort: (effort) => { efforts.push(effort) },
     })
     try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, reasoning: { effort: undefined, levels: ['low', 'high', 'max'] } })
       await type('/effort high')
       await type('\r')
       await type('/effort off')
@@ -1645,10 +2197,12 @@ describe('Ink 7 full-screen render', () => {
 
   it('opens /effort as a four-option Claude-style selector', async () => {
     const efforts: (string | undefined)[] = []
-    const { capture, unmount, type } = await mount([], {
+    const { store, capture, unmount, type } = await mount([], {
       setEffort: (effort) => { efforts.push(effort) },
     })
     try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, reasoning: { effort: undefined, levels: ['low', 'high', 'max'] } })
       await type('/effort')
       let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('推理力度（↑↓ 选择'))).toBe(true)
@@ -1702,6 +2256,676 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 60_000)
 
+  it('searches input history without sending and restores the cancelled scratch caret', async () => {
+    const submitted: string[] = []
+    const { capture, unmount, type } = await mount([], { submit: text => { submitted.push(text) } })
+    try {
+      await type('older 中文 task')
+      await type('\r')
+      await type('newest task')
+      await type('\r')
+      await type('scratch')
+      await type('\x1b[D')
+      await type('\x12')
+      await type('中文')
+      expect(lastFrameLines(capture).some(line => line.includes('历史搜索: 中文'))).toBe(true)
+      await type('\x1b')
+      await type('!')
+      expect(lastFrameLines(capture).some(line => line.includes('❯scratc!h'))).toBe(true)
+      await type('\x12')
+      await type('中文')
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('❯older 中文 task'))).toBe(true)
+      expect(submitted).toEqual(['older 中文 task', 'newest task'])
+      await type('\x12')
+      await type('no such entry')
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('没有匹配项'))).toBe(true)
+      expect(submitted).toHaveLength(2)
+      await type('\x1b')
+      expect(lastFrameLines(capture).some(line => line.includes('❯older 中文 task'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('preserves collapsed paste resources when cancelling history search', async () => {
+    const submitted: string[] = []
+    const pasted = Array.from({ length: 80 }, (_, index) => `draft-${index}`).join('\n')
+    const { capture, unmount, type } = await mount([], { submit: text => { submitted.push(text) } })
+    try {
+      await type(`\x1b[200~${pasted}\x1b[201~`)
+      await type('\x12')
+      await type('missing')
+      await type('\x1b')
+      expect(lastFrameLines(capture).some(line => line.includes('[Pasted text #1 +80 lines]'))).toBe(true)
+      await type('\r')
+      expect(submitted).toEqual([pasted])
+    } finally { unmount() }
+  }, 30_000)
+
+  it('completes a mention at the caret without replacing the suffix', async () => {
+    const mention = '@[Earlier work](dsh-session:InNlc3Npb24tb2xkIg)'
+    const submitted: string[] = []
+    const { capture, unmount, type } = await mount([], {
+      submit: text => { submitted.push(text) },
+      listSessionReferences: async query => query === 'Ear' ? [{ label: 'Earlier work', mention }] : [],
+    })
+    try {
+      await type('prefix @Ear suffix')
+      await type('\x1b[D'.repeat(7))
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('@Earlier work'))).toBe(true)
+      await type('\t')
+      await type('\r')
+      expect(submitted).toEqual([`prefix ${mention} suffix`])
+    } finally { unmount() }
+  }, 30_000)
+
+  it('discards delayed reference results after draft and session changes', async () => {
+    const requests: Array<{ query: string; resolve: (matches: { label: string; mention: string }[]) => void }> = []
+    const submitted: string[] = []
+    const { store, capture, unmount, type } = await mount([], {
+      submit: text => { submitted.push(text) },
+      listSessionReferences: query => new Promise(resolve => { requests.push({ query, resolve }) }),
+    })
+    try {
+      await type('@OldUnique')
+      await type('\x01')
+      await type('@NewUnique')
+      const before = store.getSnapshot()
+      store.set({ ...before, version: before.version + 1, sessionId: 'other-session', cwd: '/different-workspace' })
+      await type('')
+      const old = requests.find(request => request.query === 'OldUnique')
+      const newest = requests.filter(request => request.query === 'NewUnique').at(-1)
+      expect(old).toBeDefined()
+      expect(newest).toBeDefined()
+      newest?.resolve([{ label: 'current candidate', mention: '@[current](dsh-session:current)' }])
+      await type('')
+      old?.resolve([{ label: 'stale candidate', mention: '@[stale](dsh-session:stale)' }])
+      for (const request of requests.filter(request => request.query === 'NewUnique' && request !== newest)) {
+        request.resolve([{ label: 'old session candidate', mention: '@[old](dsh-session:old)' }])
+      }
+      await type('')
+      const lines = lastFrameLines(capture)
+      expect(lines.some(line => line.includes('@current candidate'))).toBe(true)
+      expect(lines.some(line => line.includes('@stale candidate') || line.includes('@old session candidate'))).toBe(false)
+      await type('\t')
+      await type('\r')
+      expect(submitted).toEqual(['@[current](dsh-session:current)'])
+    } finally { unmount() }
+  }, 30_000)
+
+  it('retains the draft while image admission is pending and aborts intake on session change', async () => {
+    let finish: ((result: { error: string | null; chip?: string }) => void) | undefined
+    let signal: AbortSignal | undefined
+    const submit = vi.fn()
+    const attachFile = vi.fn((_path: string, nextSignal?: AbortSignal) => {
+      signal = nextSignal
+      return new Promise<{ error: string | null; chip?: string }>(resolve => { finish = resolve })
+    })
+    const { store, type, capture, unmount } = await mount([], { submit, attachFile })
+    try {
+      await type('/attach /tmp/image.png')
+      await type('\r')
+      await type('pending draft')
+      await type('\r')
+      expect(submit).not.toHaveBeenCalled()
+      expect(lastFrameLines(capture).some(line => line.includes('❯pending draft'))).toBe(true)
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, sessionId: 'other-session' })
+      await type('')
+      expect(signal?.aborted).toBe(true)
+      finish?.({ error: null, chip: '[Image #1]' })
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('[Image #1]'))).toBe(false)
+      await type('\r')
+      expect(submit).toHaveBeenCalledExactlyOnceWith('pending draft', false)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('executes the undo command against the original draft rather than the command text', async () => {
+    const submit = vi.fn()
+    const { type, capture, unmount } = await mount([], { submit })
+    try {
+      await type('original')
+      await type(' changed')
+      await type('\x01')
+      await type('/draft undo')
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('❯original') && !line.includes('changed'))).toBe(true)
+      expect(submit).not.toHaveBeenCalled()
+    } finally { unmount() }
+  }, 30_000)
+
+  it('restores official image refs through kill, yank and undo', async () => {
+    let store: TuiStore
+    const restoreDraftImages = vi.fn((resources: readonly string[]) => {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, attachmentCount: resources.length, pendingImages: resources.map((resource, index) => ({ resource, chip: `[Image #${index + 1}]`, name: resource, bytes: 1, width: 1, height: 1, mediaType: 'image/png' })) })
+    })
+    const mounted = await mount([], { restoreDraftImages, syncImageChips: (_before, next) => {
+      if (!next.includes('[Image #')) restoreDraftImages([])
+      return next
+    } })
+    store = mounted.store
+    const { type, capture, unmount } = mounted
+    try {
+      restoreDraftImages(['official-image'])
+      await type('with [Image #1]')
+      await type('\x17')
+      expect(store.getSnapshot().pendingImages).toEqual([])
+      await type('\x19')
+      expect(store.getSnapshot().pendingImages[0]?.resource).toBe('official-image')
+      expect(lastFrameLines(capture).some(line => line.includes('❯with [Image #1]'))).toBe(true)
+      await type('\x1f')
+      expect(store.getSnapshot().pendingImages).toEqual([])
+      await type('\x1bu')
+      expect(store.getSnapshot().pendingImages[0]?.resource).toBe('official-image')
+    } finally { unmount() }
+  }, 30_000)
+
+  it.each(['removed', 'extra [Image #1] [Image #2]'])('rejects external-editor image reference changes (%s)', async edited => {
+    const restoreDraftImages = vi.fn()
+    const editDraft = vi.fn(async () => edited)
+    const { store, type, capture, unmount } = await mount([], { restoreDraftImages, editDraft })
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, attachmentCount: 1, pendingImages: [{ resource: 'official-image', chip: '[Image #1]', name: 'image', bytes: 1, width: 1, height: 1, mediaType: 'image/png' }] })
+      await type('original [Image #1]')
+      await type('\x01')
+      await type('/editor')
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('❯original [Image #1]'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('Image reference tokens changed'))).toBe(true)
+      expect(store.getSnapshot().pendingImages[0]?.resource).toBe('official-image')
+      expect(restoreDraftImages).toHaveBeenLastCalledWith(['official-image'])
+    } finally { unmount() }
+  }, 30_000)
+
+  it('does not re-enable mouse reporting after exiting with an external editor pending', async () => {
+    let finish: ((text: string) => void) | undefined
+    const editDraft = vi.fn(() => new Promise<string>(resolve => { finish = resolve }))
+    const { type, capture, unmount } = await mount([], { editDraft })
+    try {
+      await type('original')
+      await type('\x01')
+      await type('/editor')
+      await type('\r')
+      unmount()
+      const stoppedAt = capture.output.length
+      finish?.('late edit')
+      await new Promise(resolve => setTimeout(resolve, 150))
+      expect(capture.output.slice(stoppedAt)).not.toContain('\x1b[?1000h')
+      expect(capture.output.lastIndexOf('\x1b[?1000l')).toBeGreaterThan(capture.output.lastIndexOf('\x1b[?1000h'))
+    } finally { unmount() }
+  }, 30_000)
+
+  it.each(['yank', 'redo'] as const)('supports /draft %s as an alternative to terminal shortcuts', async action => {
+    const { type, capture, unmount } = await mount()
+    try {
+      await type('alpha beta')
+      await type('\x17')
+      if (action === 'redo') { await type('\x19'); await type('\x1f') }
+      await type('\x01')
+      await type(`/draft ${action}`)
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('❯alpha beta'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('aborts an external editor on session change and ignores its late result', async () => {
+    let finish: ((text: string) => void) | undefined
+    let signal: AbortSignal | undefined
+    const editDraft = vi.fn((_text: string, value?: AbortSignal) => { signal = value; return new Promise<string>(resolve => { finish = resolve }) })
+    const { store, type, capture, unmount } = await mount([], { editDraft })
+    try {
+      await type('original')
+      await type('\x01')
+      await type('/editor')
+      await type('\r')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, sessionId: 'next-session' })
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(signal?.aborted).toBe(true)
+      finish?.('STALE EXTERNAL RESULT')
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('STALE EXTERNAL RESULT'))).toBe(false)
+      expect(lastFrameLines(capture).some(line => line.includes('❯original'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('supports word kill/yank and undo/redo without submitting or losing caret', async () => {
+    const submit = vi.fn()
+    const { type, capture, unmount } = await mount([], { submit })
+    try {
+      await type('alpha beta')
+      await type('\x17')
+      expect(lastFrameLines(capture).some(line => line.includes('❯alpha') && !line.includes('beta'))).toBe(true)
+      await type('\x19')
+      expect(lastFrameLines(capture).some(line => line.includes('❯alpha beta'))).toBe(true)
+      await type('\x1f')
+      expect(lastFrameLines(capture).some(line => line.includes('❯alpha') && !line.includes('beta'))).toBe(true)
+      await type('\x1bu')
+      expect(lastFrameLines(capture).some(line => line.includes('❯alpha beta'))).toBe(true)
+      await type('\x1bb')
+      await type('X')
+      expect(lastFrameLines(capture).some(line => line.includes('❯alpha Xbeta'))).toBe(true)
+      expect(submit).not.toHaveBeenCalled()
+    } finally { unmount() }
+  }, 30_000)
+
+  it('restores killed long-paste resources and keeps undo isolated from settings focus', async () => {
+    const pasted = Array.from({ length: 30 }, (_, index) => `payload-${index}`).join('\n')
+    const submitted: string[] = []
+    const { type, capture, unmount } = await mount([], { submit: text => { submitted.push(text) } })
+    try {
+      await type(`\x1b[200~${pasted}\x1b[201~`)
+      await type('\x15')
+      await type('\x19')
+      expect(lastFrameLines(capture).some(line => line.includes('[Pasted text #1'))).toBe(true)
+      await type('\r')
+      expect(submitted).toEqual([pasted])
+      await type('/settings')
+      await type('\r')
+      await type('\x1f')
+      expect(lastFrameLines(capture).some(line => line.includes('[Pasted text #1'))).toBe(false)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('edits expanded draft text externally and undo restores its paste snapshot', async () => {
+    const pasted = Array.from({ length: 30 }, (_, index) => `edit-${index}`).join('\n')
+    const editDraft = vi.fn(async (text: string) => text + '\nedited')
+    const { type, capture, unmount } = await mount([], { editDraft })
+    try {
+      await type(`\x1b[200~${pasted}\x1b[201~`)
+      await type('\x01')
+      await type('/editor')
+      await type('\r')
+      expect(editDraft).toHaveBeenCalledWith(pasted, expect.any(AbortSignal))
+      expect(lastFrameLines(capture).some(line => line.includes('edited'))).toBe(true)
+      await type('\x1f')
+      expect(lastFrameLines(capture).some(line => line.includes('[Pasted text #1'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it.each(['/editor', '/ed'])('preserves the draft and restores native caret after external editor failure (%s)', async command => {
+    const editDraft = vi.fn(async () => { throw new Error('editor exited with 7') })
+    const { type, capture, unmount } = await mount([], { editDraft })
+    try {
+      await type('original draft')
+      await type('\x01')
+      await type(command)
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('❯original draft'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('editor exited with 7'))).toBe(true)
+      expect(capture.terminal.buffer.active.cursorX).toBeGreaterThan(1)
+      await type('\x1b[C')
+      await type('X')
+      expect(lastFrameLines(capture).some(line => line.includes('❯original draftX'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('handles empty panel rows and cycles first/last actionable rows', () => {
+    expect(movePanelSelection([], 0, -1)).toBe(0)
+    expect(movePanelSelection([], 0, 1)).toBe(0)
+    const rows = [{ key: 'header', text: 'header' }, { key: 'a', text: 'a', action: 'toggle-thinking' as const }, { key: 'hint', text: 'hint' }, { key: 'b', text: 'b', action: 'toggle-locale' as const }]
+    expect(movePanelSelection(rows, 1, -1)).toBe(3)
+    expect(movePanelSelection(rows, 3, 1)).toBe(1)
+  })
+
+  it('preserves selected plugin identity when refreshed rows reorder', async () => {
+    const togglePlugin = vi.fn(async () => ({ ok: true as const, enabled: false }))
+    const { store, type, unmount } = await mount([], { togglePlugin })
+    try {
+      const plugins = [
+        { id: 'selected', name: 'selected', enabled: true, loaded: true, toggleable: true },
+        { id: 'other', name: 'other', enabled: true, loaded: true, toggleable: true },
+      ]
+      let current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, plugins } })
+      await type('/settings plugins')
+      await type('\r')
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, plugins: [...plugins].reverse() } })
+      await type('')
+      await type('\r')
+      expect(togglePlugin).toHaveBeenCalledExactlyOnceWith('selected')
+    } finally { unmount() }
+  }, 30_000)
+
+  it('retains a failed child message and clears only after explicit queue admission', async () => {
+    const sendChild = vi.fn().mockRejectedValueOnce(new Error('child is read-only')).mockResolvedValueOnce({ messageId: 'accepted-123' })
+    const { type, capture, unmount } = await mount([], { sendChild })
+    try {
+      await type('/send-child child-1 queue follow up')
+      await type('\r')
+      expect(lastFrameLines(capture).some(line => line.includes('❯/send-child child-1 queue follow up'))).toBe(true)
+      await type('\r')
+      expect(sendChild).toHaveBeenLastCalledWith('child-1', 'follow up', 'queue')
+      expect(lastFrameLines(capture).some(line => line.includes('accepted-123'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('❯/send-child'))).toBe(false)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('keeps expanded thinking preference through settlement and the next live step', async () => {
+    const user: TuiNode = { kind: 'user', id: 1, text: 'ask' }
+    const { store, type, capture, unmount } = await mount([user])
+    try {
+      let current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: true, settings: { ...current.settings!, general: { ...current.settings!.general, thinking: 'expanded' } }, live: { text: '', think: 'FIRST_THOUGHT\nLAST_THOUGHT', thinkSince: Date.now(), renderId: 2 } })
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('FIRST_THOUGHT'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('LAST_THOUGHT'))).toBe(true)
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: false, live: null, nodes: [user, { kind: 'think', id: 5, renderId: 2, text: 'FIRST_THOUGHT\nLAST_THOUGHT', durationMs: 500 }] })
+      await type('')
+      expect(lastFrameLines(capture).filter(line => line.includes('FIRST_THOUGHT'))).toHaveLength(1)
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: true, live: { text: '', think: 'NEXT_FIRST\nNEXT_LAST', thinkSince: Date.now(), renderId: 6 } })
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('NEXT_FIRST'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('NEXT_LAST'))).toBe(true)
+      expect(store.getSnapshot().settings?.general.thinking).toBe('expanded')
+    } finally { unmount() }
+  }, 30_000)
+
+  it('opens and exports full session source separately from a tool call', async () => {
+    const readSessionSource = vi.fn(async (offset = 0) => ({ callId: '', status: 'complete', warnings: [], offset, nextOffset: null, totalChars: 20, text: 'FULL SESSION RECORD' }))
+    const exportSessionSource = vi.fn(async () => '/tmp/full-session.txt')
+    const readToolSource = vi.fn()
+    const { type, capture, unmount } = await mount([], { readSessionSource, exportSessionSource, readToolSource })
+    try {
+      await type('/session-source')
+      await type('\r')
+      expect(readSessionSource).toHaveBeenCalledExactlyOnceWith(0, 8000, true)
+      expect(readToolSource).not.toHaveBeenCalled()
+      expect(lastFrameLines(capture).some(line => line.includes('FULL SESSION RECORD'))).toBe(true)
+      await type('e')
+      expect(exportSessionSource).toHaveBeenCalledOnce()
+    } finally { unmount() }
+  }, 30_000)
+
+  it('keeps a live selection through settlement and clears it explicitly when its text changes', async () => {
+    const require = createRequire(import.meta.url)
+    const chalk = (await import(require.resolve('chalk', { paths: [require.resolve('ink')] }))).default
+    const previousLevel = chalk.level
+    chalk.level = 1
+    const user: TuiNode = { kind: 'user', id: 1, text: 'ask' }
+    const { store, type, capture, unmount } = await mount([user])
+    try {
+      let current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: true, live: { text: 'UNIQUE_SELECTED_ANSWER', think: '', thinkSince: null, renderId: 2 } })
+      await type('')
+      const row = lastFrameLines(capture).findIndex(line => line.includes('UNIQUE_SELECTED_ANSWER')) + 1
+      await type(`\x1b[<0;3;${row}M`)
+      await type(`\x1b[<32;15;${row}M`)
+      expect(promptRowHasInverse(capture, 'UNIQUE_SELECTED_ANSWER'), JSON.stringify({ row, lines: lastFrameLines(capture), tail: capture.output.slice(-1500) })).toBe(true)
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, busy: false, live: null, nodes: [user, { kind: 'assistant', id: 8, renderId: 2, text: 'UNIQUE_SELECTED_ANSWER', messageId: 'message-8' }] })
+      await type('')
+      expect(lastFrameLines(capture).filter(line => line.includes('UNIQUE_SELECTED_ANSWER'))).toHaveLength(1)
+      expect(promptRowHasInverse(capture, 'UNIQUE_SELECTED_ANSWER'), JSON.stringify({ row, lines: lastFrameLines(capture), tail: capture.output.slice(-1500) })).toBe(true)
+      current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, nodes: [user, { kind: 'assistant', id: 8, renderId: 2, text: 'changed answer', messageId: 'message-8' }] })
+      await type('')
+      expect(promptRowHasInverse(capture, 'changed answer')).toBe(false)
+      expect(lastFrameLines(capture).some(line => line.includes('选区已清除'))).toBe(true)
+    } finally { unmount(); chalk.level = previousLevel }
+  }, 30_000)
+
+  it('closes the source viewer on session change and ignores a late page', async () => {
+    let complete: ((value: { callId: string; status: string; warnings: string[]; text: string; offset: number; nextOffset: null; totalChars: number }) => void) | undefined
+    const readToolSource = vi.fn(() => new Promise<{ callId: string; status: string; warnings: string[]; text: string; offset: number; nextOffset: null; totalChars: number }>(resolve => { complete = resolve }))
+    const { store, type, capture, unmount } = await mount([], { readToolSource })
+    try {
+      await type('/source old-call')
+      await type('\r')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, sessionId: 'new-session' })
+      await type('')
+      complete?.({ callId: 'old-call', status: 'complete', warnings: [], text: 'STALE SOURCE', offset: 0, nextOffset: null, totalChars: 12 })
+      await type('new draft')
+      expect(lastFrameLines(capture).some(line => line.includes('STALE SOURCE'))).toBe(false)
+      expect(lastFrameLines(capture).some(line => line.includes('❯new draft'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('ignores a source export acknowledgement from the previous session', async () => {
+    let complete: ((path: string) => void) | undefined
+    const readSessionSource = vi.fn(async () => ({ callId: '', status: 'complete', warnings: [], text: 'old document', offset: 0, nextOffset: null, totalChars: 12 }))
+    const exportSessionSource = vi.fn(() => new Promise<string>(resolve => { complete = resolve }))
+    const { store, type, capture, unmount } = await mount([], { readSessionSource, exportSessionSource })
+    try {
+      await type('/session-source')
+      await type('\r')
+      await type('e')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, sessionId: 'new-session' })
+      await type('')
+      complete?.('/tmp/STALE-EXPORT.txt')
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('STALE-EXPORT') || line.includes('old document'))).toBe(false)
+    } finally { unmount() }
+  }, 30_000)
+
+  it.each(['resolve', 'reject'] as const)('ignores a late child %s acknowledgement after switching sessions', async outcome => {
+    let accept: ((value: { messageId: string }) => void) | undefined
+    let reject: ((error: Error) => void) | undefined
+    const sendChild = vi.fn(() => new Promise<{ messageId: string }>((resolve, fail) => { accept = resolve; reject = fail }))
+    const { store, type, capture, unmount } = await mount([], { sendChild })
+    try {
+      await type('/send-child child queue task')
+      await type('\r')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, sessionId: 'new-session' })
+      await type('')
+      if (outcome === 'resolve') accept?.({ messageId: 'STALE-CHILD' })
+      else reject?.(new Error('STALE-CHILD'))
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('STALE-CHILD'))).toBe(false)
+      expect(lastFrameLines(capture).some(line => line.includes('❯/send-child child queue task'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('pages full tool source without clipping huge lines and exports the masked source', async () => {
+    let cut = 0
+    const readToolSource = vi.fn(async (callId: string, offset = 0, _size?: number, fresh = false) => {
+      if (fresh) cut += 1
+      return ({
+      callId, status: 'complete', warnings: [], offset, totalChars: 16000,
+      nextOffset: offset === 0 ? 8000 : null,
+      text: offset === 0 ? `SOURCE-FIRST CUT-${cut} ` + 'x'.repeat(300) : `SOURCE-LAST CUT-${cut} complete record`,
+    }) })
+    const exportToolSource = vi.fn(async () => '/tmp/masked-tool-source.txt')
+    const { type, capture, unmount } = await mount([], { readToolSource, exportToolSource })
+    try {
+      await type('/source call-123')
+      await type('\r')
+      expect(readToolSource).toHaveBeenLastCalledWith('call-123', 0, 8000, true)
+      expect(lastFrameLines(capture).some(line => line.includes('SOURCE-FIRST'))).toBe(true)
+      await type('n')
+      expect(readToolSource).toHaveBeenLastCalledWith('call-123', 8000, 8000, false)
+      expect(lastFrameLines(capture).some(line => line.includes('SOURCE-LAST'))).toBe(true)
+      await type('p')
+      expect(readToolSource).toHaveBeenLastCalledWith('call-123', 0, 8000, false)
+      expect(lastFrameLines(capture).some(line => line.includes('SOURCE-FIRST CUT-1'))).toBe(true)
+      await type('r')
+      expect(lastFrameLines(capture).some(line => line.includes('SOURCE-FIRST CUT-2'))).toBe(true)
+      await type('e')
+      expect(exportToolSource).toHaveBeenCalledWith('call-123')
+      await type('q')
+      await type('draft survives')
+      expect(lastFrameLines(capture).some(line => line.includes('❯draft survives'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('restores official image identities with scratch caret and collapsed paste across multiple history entries', async () => {
+    let store: TuiStore
+    const admitted: string[][] = []
+    const image = (resource: string) => ({ resource, chip: '[Image #1]', name: resource, bytes: 1, width: 1, height: 1, mediaType: 'image/png' })
+    const restoreDraftImages = vi.fn((resources: readonly string[]) => {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, pendingImages: resources.map(image), attachmentCount: resources.length })
+    })
+    const mounted = await mount([], { restoreDraftImages, submit: () => {
+      admitted.push(store.getSnapshot().pendingImages.map(image => image.resource!))
+      restoreDraftImages([])
+    } })
+    store = mounted.store
+    const { type, capture, unmount } = mounted
+    try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, models: [{ ...current.models[0]!, acceptsImage: true }] })
+      restoreDraftImages(['sent-image'])
+      await type('first [Image #1]')
+      await type('\r')
+      await type('second')
+      await type('\r')
+      restoreDraftImages(['scratch-image'])
+      await type('scratch [Image #1]')
+      await type('\x1b[H')
+      await type('\x1b[A')
+      expect(store.getSnapshot().pendingImages).toEqual([])
+      await type('\x1b[A')
+      expect(store.getSnapshot().pendingImages[0]?.resource).toBe('sent-image')
+      await type('\x1b[B')
+      await type('\x1b[B')
+      expect(store.getSnapshot().pendingImages[0]?.resource).toBe('scratch-image')
+      expect(lastFrameLines(capture).some(line => line.includes('scratch [Image #1]'))).toBe(true)
+      await type('\x1b[A')
+      await type('\x1b[A')
+      await type('\r')
+      expect(admitted).toEqual([['sent-image'], [], ['sent-image']])
+    } finally { unmount() }
+  }, 30_000)
+
+  it('forces a real Ctrl+L repaint and only double-clears in the explicit claude keymap', async () => {
+    const newSession = vi.fn()
+    const { store, type, capture, unmount } = await mount([], { newSession })
+    try {
+      await type('preserved draft')
+      const before = capture.output.length
+      await type('\x0c')
+      expect(capture.output.slice(before)).toContain('preserved draft')
+      await type('\x0c')
+      expect(newSession).not.toHaveBeenCalled()
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, keymap: 'claude-fullscreen' } } })
+      await type('')
+      await type('\x0c')
+      await type('\x0c')
+      expect(newSession).toHaveBeenCalledTimes(1)
+      expect(lastFrameLines(capture).some(line => line.includes('❯preserved draft'))).toBe(true)
+      const time = vi.spyOn(Date, 'now')
+      try {
+        time.mockReturnValue(10_000)
+        await type('\x0c')
+        time.mockReturnValue(12_001)
+        await type('\x0c')
+        expect(newSession).toHaveBeenCalledTimes(1)
+      } finally { time.mockRestore() }
+      // Claude Ctrl+A moves to line start; Ctrl+K clears it without changing the redraw assertions.
+      await type('\x01')
+      await type('\x0b')
+      await type('/clear-screen')
+      await type('\r')
+      expect(newSession).toHaveBeenCalledTimes(1)
+      await type('/clear')
+      await type('\r')
+      expect(newSession).toHaveBeenCalledTimes(2)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('does not hide pending image attachments behind a history entry', async () => {
+    const { store, capture, unmount, type } = await mount()
+    try {
+      await type('history')
+      await type('\r')
+      await type('scratch [Image #1]')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, attachmentCount: 1 })
+      await type('')
+      await type('\x1b[A')
+      expect(lastFrameLines(capture).some(line => line.includes('❯scratch [Image #1]'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('请先发送或移除图片'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('restores draft caret after an approval takeover and binds the decision to its request', async () => {
+    const approve = vi.fn()
+    const cycleSandbox = vi.fn(() => 'workspace-write' as const)
+    const { store, capture, unmount, type } = await mount([], { approve, cycleSandbox })
+    try {
+      await type('keep')
+      await type('\x1b[D')
+      const before = store.getSnapshot()
+      store.set({ ...before, version: before.version + 1, pendingApproval: {
+        requestId: 'approval-1', sessionId: before.sessionId, toolName: 'shell',
+      } })
+      await type('')
+      await type('\x1b[Z')
+      expect(cycleSandbox).not.toHaveBeenCalled()
+      await type('n')
+      expect(approve).toHaveBeenCalledExactlyOnceWith('rejected', 'approval-1')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, pendingApproval: null })
+      await type('')
+      await type('X')
+      expect(lastFrameLines(capture).some(line => line.includes('❯keeXp'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('restores a collapsed paste resource after browsing input history', async () => {
+    const submissions: string[] = []
+    const pasted = Array.from({ length: 80 }, (_, index) => `scratch-${index}`).join('\n')
+    const { capture, unmount, type } = await mount([], { submit: text => { submissions.push(text) } })
+    try {
+      await type('previous input')
+      await type('\r')
+      await type(`\x1b[200~${pasted}\x1b[201~`)
+      await type('\x1b[A')
+      expect(lastFrameLines(capture).some(line => line.includes('❯previous input'))).toBe(true)
+      await type('\x1b[B')
+      expect(lastFrameLines(capture).some(line => line.includes('[Pasted text #1 +80 lines]'))).toBe(true)
+      await type('\r')
+      expect(submissions).toEqual(['previous input', pasted])
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
+  it('retains rejected submissions and protects newer edits from late admission', async () => {
+    let accept: (() => void) | undefined
+    let reject: ((error: Error) => void) | undefined
+    const submit = vi.fn(() => new Promise<void>((resolve, rejectPromise) => {
+      accept = resolve
+      reject = rejectPromise
+    }))
+    const { capture, unmount, type } = await mount([], { submit })
+    try {
+      await type('keep this')
+      await type('\r')
+      await type('\r')
+      expect(submit).toHaveBeenCalledTimes(1)
+      expect(lastFrameLines(capture).some(line => line.includes('❯keep this'))).toBe(true)
+      reject?.(new Error('admission rejected'))
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('❯keep this'))).toBe(true)
+      expect(lastFrameLines(capture).some(line => line.includes('admission rejected'))).toBe(true)
+      await type('\r')
+      expect(submit).toHaveBeenCalledTimes(2)
+      await type(' plus new edit')
+      accept?.()
+      await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('❯keep this plus new edit'))).toBe(true)
+    } finally {
+      unmount()
+    }
+  }, 30_000)
+
   it('recalls the previous and next inputs with ↑/↓ like cmd/PowerShell', async () => {
     const submissions: string[] = []
     const { capture, unmount, type } = await mount([], {
@@ -1717,14 +2941,12 @@ describe('Ink 7 full-screen render', () => {
       await type('\x1b[A')
       let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('❯second task'))).toBe(true)
-      // A nonempty draft owns ↑/↓ as caret motion, so a second ↑ stays on
-      // the recalled line instead of walking to `first task`.
+      // At the visual boundary, repeated ↑ continues through input history.
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('❯second task'))).toBe(true)
-      expect(lines.some(line => line.includes('❯first task'))).toBe(false)
-      // Ctrl+L empties the composer and keeps the history cursor, so the
-      // next ↑ on an empty draft walks one further back.
+      expect(lines.some(line => line.includes('❯second task'))).toBe(false)
+      expect(lines.some(line => line.includes('❯first task'))).toBe(true)
+      // Ctrl+L preserves the recalled draft and history cursor.
       await type('\x0c')
       await type('\x1b[A')
       lines = lastFrameLines(capture)
@@ -1747,11 +2969,14 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 30_000)
 
-  it('moves the caret with arrows when the composer has text instead of recalling history', async () => {
-    const { capture, unmount, type } = await mount([], {
+  it.each(['legacy-dsh', 'claude-fullscreen'] as const)('moves horizontally and recalls history at the visual boundary without losing the scratch draft (%s)', async keymap => {
+    const { store, capture, unmount, type } = await mount([], {
       submit: () => {},
     })
     try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, keymap } } })
+      await type('')
       await type('hello')
       expect(lastCursorSuffix(capture.output).column).toBe(8)
       await type('\x1b[D')
@@ -1765,16 +2990,25 @@ describe('Ink 7 full-screen render', () => {
       await type('keep')
       await type('\x1b[A')
       lines = lastFrameLines(capture)
-      expect(lines.some(line => line.includes('❯keep'))).toBe(true)
-      expect(lines.some(line => line.includes('❯hello'))).toBe(false)
+      expect(lines.some(line => line.includes('❯keep'))).toBe(false)
+      expect(lines.some(line => line.includes('❯hello'))).toBe(true)
+      await type('\x1b[B')
+      // Admission and restored caret each commit asynchronously. Wait for the
+      // rendered state rather than assuming a fixed frame budget under load.
+      const deadline = Date.now() + 2000
+      while (!lastFrameLines(capture).some(line => line.includes('❯keep')) && Date.now() < deadline) await type('')
+      expect(lastFrameLines(capture).some(line => line.includes('❯keep')), lastFrameLines(capture).join('\n')).toBe(true)
     } finally {
       unmount()
     }
   }, 30_000)
 
-  it('moves the caret between wrapped composer rows with ↑/↓', async () => {
-    const { capture, unmount, type } = await mount()
+  it.each(['legacy-dsh', 'claude-fullscreen'] as const)('moves the caret between wrapped composer rows with ↑/↓ (%s)', async keymap => {
+    const { store, capture, unmount, type } = await mount()
     try {
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, settings: { ...current.settings!, general: { ...current.settings!.general, keymap } } })
+      await type('')
       const draft = 'a'.repeat(150)
       await type(draft)
       const wrapWidth = composerWrapWidth(COLUMNS)
@@ -1813,6 +3047,8 @@ describe('Ink 7 full-screen render', () => {
     const { capture, unmount, type } = await mount(nodes)
     try {
       await type('\x1b[<64;10;5M')
+      await type('\x1b[<64;10;5M')
+      await type('\x1b[<64;10;5M')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       let lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(true)
@@ -1820,7 +3056,7 @@ describe('Ink 7 full-screen render', () => {
       // The button pins to the last transcript row: 30-row terminal, 4-row
       // header, 20-row transcript → 1-based terminal row 24. A left-press
       // there returns to the newest lines.
-      await type('\x1b[<0;5;24M')
+      await type('\x1b[<0;50;24M')
       await new Promise<void>(resolve => setTimeout(resolve, 320))
       lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▼ 回到底部'))).toBe(false)
@@ -1828,6 +3064,72 @@ describe('Ink 7 full-screen render', () => {
     } finally {
       unmount()
     }
+  }, 30_000)
+
+  it('replaces only the slash token at the caret and preserves trailing prose', async () => {
+    const submitted: string[] = []
+    const { type, capture, unmount } = await mount([], { submit: text => { submitted.push(text) } })
+    try {
+      await type('please /modxx then continue')
+      for (let index = 0; index < 16; index++) await type('\x1b[D')
+      await type('\t')
+      expect(lastFrameLines(capture).some(line => line.includes('please /model then continue'))).toBe(true)
+      await type('\r')
+      expect(submitted).toEqual(['please /model then continue'])
+    } finally { unmount() }
+  }, 30_000)
+
+  it('gives an arriving approval precedence over plugin confirmation and preserves the draft', async () => {
+    const updatePlugin = vi.fn()
+    const approve = vi.fn()
+    const { store, type, capture, unmount } = await mount([], { updatePlugin, approve })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({ ...snapshot, version: snapshot.version + 1, settings: { ...snapshot.settings!, bundles: [
+        { name: 'example-plugin', version: '1.0.0', installed: true, enabled: true, availability: 'profile' },
+      ] } })
+      await type('/settings plugins')
+      await type('\r')
+      await type('\x1b[B'); await type('\x1b[B')
+      await type('\r')
+      await type('2.0.0')
+      await type('\r')
+      const current = store.getSnapshot()
+      store.set({ ...current, version: current.version + 1, pendingApproval: { requestId: 'takeover-1', sessionId: current.sessionId, toolName: 'shell' } })
+      await type('')
+      await type('n')
+      expect(approve).toHaveBeenCalledExactlyOnceWith('rejected', 'takeover-1')
+      expect(updatePlugin).not.toHaveBeenCalled()
+      const after = store.getSnapshot()
+      store.set({ ...after, version: after.version + 1, pendingApproval: null })
+      await type('draft')
+      expect(lastFrameLines(capture).some(line => line.includes('❯draft'))).toBe(true)
+    } finally { unmount() }
+  }, 30_000)
+
+  it('requires an exact plugin version and a second confirmation before exposing pending restart', async () => {
+    const updatePlugin = vi.fn(async (name: string, requestedVersion: string) => ({
+      name, requestedVersion, phase: 'pending-restart' as const, installedVersion: requestedVersion,
+      restartReason: 'native module changed', rollbackSpec: `${name}@1.0.0`, rollback: 'available' as const,
+    }))
+    const { store, type, capture, unmount } = await mount([], { updatePlugin })
+    try {
+      const snapshot = store.getSnapshot()
+      store.set({ ...snapshot, version: snapshot.version + 1, settings: { ...snapshot.settings!, bundles: [
+        { name: 'example-plugin', version: '1.0.0', installed: true, enabled: true, availability: 'profile' },
+      ] } })
+      await type('/settings plugins')
+      await type('\r')
+      await type('\x1b[B'); await type('\x1b[B')
+      await type('\r')
+      await type('2.0.0')
+      await type('\r')
+      expect(updatePlugin).not.toHaveBeenCalled()
+      expect(lastFrameLines(capture).some(line => line.includes('确认安装'))).toBe(true)
+      await type('\r')
+      expect(updatePlugin).toHaveBeenCalledExactlyOnceWith('example-plugin', '2.0.0')
+      expect(lastFrameLines(capture).some(line => line.includes('pending-restart'))).toBe(true)
+    } finally { unmount() }
   }, 30_000)
 
   it('toggles plugins with Enter and reflects enabled state without leaving the panel', async () => {
@@ -1925,7 +3227,7 @@ describe('Ink 7 full-screen render', () => {
     }
   }, 30_000)
 
-  it('selects a dependency-blocked plugin and reports the reason on Enter', async () => {
+  it('reports a host dependency rejection when a previously toggleable plugin becomes blocked', async () => {
     const toggled: string[] = []
     const { store, capture, unmount, type } = await mount([{ kind: 'user', id: 1, text: 'hi' }], {
       togglePlugin: async (id) => {
@@ -1947,8 +3249,7 @@ describe('Ink 7 full-screen render', () => {
               name: 'session',
               enabled: true,
               loaded: true,
-              toggleable: false,
-              toggleBlockedReason: 'dependency',
+              toggleable: true, // The dependency changed after this snapshot.
             },
           ],
         },
@@ -2001,7 +3302,7 @@ describe('Ink 7 full-screen render', () => {
       await type('\r')
       screen = capture.screenLines().join('\n')
       expect(screen).toContain('Plugins')
-      expect(screen).toContain('Every plugin row is selectable')
+      expect(screen).toContain('blocked rows are read-only')
       expect(screen).not.toMatch(/\p{Script=Han}/u)
     } finally {
       unmount()
@@ -2299,12 +3600,14 @@ describe('Ink 7 full-screen render', () => {
         kind: 'assistant', id: 10 + index, text: `assistant row ${index}`, messageId: `m${index}`,
       })),
     ]
-    const { capture, unmount, type } = await mount(nodes)
+    const { capture, unmount, type, stdin } = await mount(nodes)
     try {
       // Wheel up far past the maximum offset; the clamp stops at the top.
-      for (let tick = 0; tick < 30; tick += 1) {
-        await type('\x1b[<64;10;5M')
+      for (let tick = 0; tick < 100; tick += 1) {
+        stdin.write('\x1b[<64;10;5M')
+        await new Promise(resolve => setTimeout(resolve, 50))
       }
+      await type('')
       const lines = lastFrameLines(capture)
       expect(lines.some(line => line.includes('▸ the very first prompt'))).toBe(true)
     } finally {
@@ -2437,4 +3740,227 @@ describe('Ink 7 full-screen render', () => {
       unmount()
     }
   }, 30_000)
+})
+
+describe('masked terminal projection and exports', () => {
+  it('rebuilds live wrapping when masking replaces a previously unrecognized prefix', async () => {
+    const { capture, store, unmount } = await mount()
+    try {
+      const before = store.getSnapshot()
+      store.set({ ...before, version: before.version + 1, busy: true,
+        live: { text: 'ghp_abc', think: 'ghp_abc', thinkSince: Date.now() } })
+      await vi.waitFor(() => expect(lastFrameLines(capture).join('\n')).toContain('ghp_abc'), { timeout: 2000 })
+      const next = store.getSnapshot()
+      store.set({ ...next, version: next.version + 1,
+        live: { text: 'ghp_' + 'abcdef'.repeat(8), think: 'ghp_' + 'abcdef'.repeat(8), thinkSince: Date.now() } })
+      await vi.waitFor(() => {
+        const screen = lastFrameLines(capture).join('\n')
+        expect(screen).toContain('[REDACTED]')
+        expect(screen).not.toContain('ghp_abc')
+      }, { timeout: 2000 })
+    } finally { unmount() }
+  })
+
+  it('masks the complete live buffers before wrapping assistant text and thinking tails', async () => {
+    const secret = 'sk-' + 'v'.repeat(60)
+    const { capture, store, unmount } = await mount()
+    try {
+      const before = store.getSnapshot()
+      store.set({ ...before, version: before.version + 1, busy: true,
+        live: { text: `api_key=${secret}`, think: `Authorization: Bearer ${secret}`, thinkSince: Date.now() } })
+      await vi.waitFor(() => expect(lastFrameLines(capture).join('\n')).toContain('[REDACTED]'), { timeout: 2000 })
+      expect(capture.output).not.toContain(secret)
+      expect(store.getSnapshot().live?.text).toContain(secret)
+    } finally { unmount() }
+  })
+
+  it('masks complete message secrets before wrapping without changing stored facts', async () => {
+    const secret = 'sk-' + 's'.repeat(60)
+    const source: TuiNode = { kind: 'user', id: 901, text: `api_key=${secret}` }
+    const { capture, store, unmount } = await mount([source])
+    try {
+      expect(capture.output).not.toContain(secret)
+      expect(lastFrameLines(capture).join('\n')).toContain('[REDACTED]')
+      expect(store.getSnapshot().nodes[0]).toMatchObject({ text: `api_key=${secret}` })
+    } finally { unmount() }
+  })
+
+  it('uses masked export by default and forwards raw archive only on explicit --raw', async () => {
+    const submit = vi.fn()
+    const exportTranscript = vi.fn(async () => '/tmp/dsh-tui-export-test/transcript.txt')
+    const { type, unmount } = await mount([], { submit, exportTranscript })
+    try {
+      await type('/export')
+      await type('\r')
+      expect(exportTranscript).toHaveBeenCalledTimes(1)
+      expect(submit).not.toHaveBeenCalled()
+      await type('/export --raw')
+      await type('\r')
+      expect(submit).toHaveBeenCalledExactlyOnceWith('/export --raw', false)
+    } finally { unmount() }
+  }, 15_000)
+})
+
+it('changes approval policy through the adapter while preserving the stashed Unicode draft', async () => {
+  const setApprovalPolicy = vi.fn(async (_policy: 'ask' | 'never') => {})
+  const { store, capture, type, unmount } = await mount([], { setApprovalPolicy })
+  try {
+    const current = store.getSnapshot()
+    store.set({ ...current, version: current.version + 1, approval: { policy: 'ask', source: 'profile' }, settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en', keymap: 'claude-fullscreen' } } })
+    await type('中文🙂 draft'); await type('\x13')
+    await type('/permissions'); await type('\r')
+    expect(capture.screenLines().join('\n')).toContain('Ask when required')
+    await type('Never'); await type('\r')
+    expect(setApprovalPolicy).toHaveBeenCalledExactlyOnceWith('never')
+    expect(store.getSnapshot().sandbox).toBe('read-only')
+    await type('\x1b'); await type('\x1b'); await type('\x13')
+    expect(capture.screenLines().join('\n')).toContain('中文🙂 draft')
+  } finally { unmount() }
+}, 15_000)
+
+it('requires a second explicit Enter for the host Auto preset and explains the sandbox and request cost', async () => {
+  const selectPermissionPreset = vi.fn(async (_name: string) => {})
+  const { store, capture, type, unmount } = await mount([], { selectPermissionPreset })
+  try {
+    const current = store.getSnapshot()
+    store.set({ ...current, version: current.version + 1,
+      permissionCatalog: { current: 'workspace-write', options: [{ value: 'workspace-write', name: 'Workspace' }, { value: 'auto', name: 'Auto review' }] },
+      settings: { ...current.settings!, general: { ...current.settings!.general, appearance: 'claude-terminal-dark', locale: 'en' } } })
+    await type('/permissions'); await type('\r'); await type('Auto review'); await type('\r')
+    expect(selectPermissionPreset).not.toHaveBeenCalled()
+    expect(capture.screenLines().join('\n')).toContain('no file sandbox')
+    expect(capture.screenLines().join('\n')).toContain('additional model review')
+    await type('\r')
+    expect(selectPermissionPreset).toHaveBeenCalledExactlyOnceWith('auto')
+  } finally { unmount() }
+})
+
+
+describe('custom bindings mounted input ownership', () => {
+  it('submits exactly once through a chord and retains Chinese/Emoji text', async () => {
+    const submit=vi.fn(), app=await mount([], {submit})
+    try {
+      app.store.set({...app.store.getSnapshot(), version:app.store.getSnapshot().version+1, keybindings:parseKeybindings(JSON.stringify({bindings:[{context:'Chat',bindings:{'ctrl+x ctrl+s':'chat:submit',enter:null}}]}))})
+      await app.type('中文🌏')
+      await app.type('\r')
+      expect(submit).not.toHaveBeenCalled()
+      await app.type('\x18'); await app.type('\x13')
+      expect(submit).toHaveBeenCalledTimes(1)
+      expect(submit).toHaveBeenCalledWith('中文🌏',false)
+    } finally {app.unmount()}
+  })
+  it('requires confirmation before MCP execution and never sends management to the model', async()=>{
+    const manageMcp=vi.fn().mockResolvedValue(null), submit=vi.fn(), app=await mount([], {manageMcp,submit})
+    try {
+      await app.type('/mcp enable mcp-demo'); await app.type('\r')
+      expect(manageMcp).not.toHaveBeenCalled()
+      await app.type('/mcp enable mcp-demo'); await app.type('\r')
+      expect(manageMcp).toHaveBeenCalledWith({action:'enable',id:'mcp-demo'})
+      expect(submit).not.toHaveBeenCalled()
+    } finally {app.unmount()}
+  })
+})
+
+ it('opens a bound panel and backgrounds once without submitting or erasing the draft', async () => {
+  const submit=vi.fn(), backgroundSession=vi.fn().mockResolvedValue(null), app=await mount([], {submit,backgroundSession})
+  try {
+    app.store.set({...app.store.getSnapshot(), version:app.store.getSnapshot().version+1, keybindings:parseKeybindings(JSON.stringify({bindings:[{context:'Chat',bindings:{'ctrl+o':'chat:model','ctrl+b':'chat:background'}}]}))})
+    await app.type('草稿🌏')
+    await app.type('\x0f')
+    expect(app.capture.screenLines().join('\n')).toMatch(/model|模型/i)
+    // Protected panel input cannot activate a Chat background binding.
+    await app.type('\x02')
+    expect(backgroundSession).not.toHaveBeenCalled()
+    await app.type('\x1b')
+    expect(app.capture.screenLines().join('\n')).toContain('草稿🌏')
+    await app.type('\x02')
+    expect(backgroundSession).toHaveBeenCalledTimes(1)
+    expect(submit).not.toHaveBeenCalled()
+    await app.type('\x1b')
+    expect(app.capture.screenLines().join('\n')).toContain('草稿🌏')
+  } finally {app.unmount()}
+})
+
+it('uses Settings navigation bindings without submitting the draft or changing the search query', async () => {
+ const submit=vi.fn(), updateSetting=vi.fn().mockResolvedValue(undefined), app=await mount([], {submit,updateSetting})
+ try {
+  app.store.set({...app.store.getSnapshot(),version:app.store.getSnapshot().version+1,keybindings:parseKeybindings(JSON.stringify({bindings:[
+   {context:'Chat',bindings:{'ctrl+o':'app:settings'}},
+   {context:'Global',bindings:{'ctrl+n':'app:exit'}},
+   {context:'Settings',bindings:{'ctrl+n':'panel:down','ctrl+k':'panel:up','ctrl+q':'panel:close'}}
+  ]}))})
+  await app.type('草稿🌏'); await app.type('\x0f')
+  const before=app.capture.screenLines().join('\n')
+  await app.type('\x0e')
+  const after=app.capture.screenLines().join('\n')
+  expect(after).not.toBe(before)
+  expect(after).toMatch(/settings|设置/i)
+  await app.type('\x11')
+  expect(app.capture.screenLines().join('\n')).toContain('草稿🌏')
+  expect(submit).not.toHaveBeenCalled()
+  expect(updateSetting).not.toHaveBeenCalled()
+ } finally {app.unmount()}
+})
+
+
+it('uses a block caret from the first current-theme frame and after activity changes', async () => {
+  const app = await mount()
+  try {
+    const snapshot = app.store.getSnapshot()
+    app.store.set({ ...snapshot, version: snapshot.version + 1, settings: { ...snapshot.settings!, general: { ...snapshot.settings!.general, appearance: 'claude-terminal-dark' } } })
+    await app.type('')
+    expect(app.capture.output).toContain('\x1b[2 q')
+    expect(app.capture.terminal.options.cursorStyle).toBe('block')
+    app.store.set({ ...app.store.getSnapshot(), version: app.store.getSnapshot().version + 1, busy: true })
+    await app.type('中文🌏')
+    expect(app.capture.terminal.options.cursorStyle).toBe('block')
+    expect(app.capture.screenLines().join('\n')).toContain('中文🌏')
+  } finally { app.unmount() }
+})
+
+it('installs a new bundle only after review without submitting a model request', async () => {
+  const installPlugin = vi.fn().mockResolvedValue({ name:'new-bundle', phase:'applied', rollback:'not-needed' })
+  const submit = vi.fn(), app = await mount([], { installPlugin, submit })
+  try {
+    const snapshot = app.store.getSnapshot()
+    app.store.set({ ...snapshot, version: snapshot.version + 1, settings:{ ...snapshot.settings!, bundles:[], general:{...snapshot.settings!.general,appearance:'claude-terminal-dark',locale:'en'} } })
+    await app.type('/settings plugins'); await app.type('\r'); await app.type('\r')
+    await app.type('new-bundle@1.2.3'); await app.type('\r')
+    expect(installPlugin).not.toHaveBeenCalled()
+    expect(app.capture.screenLines().join('\n')).toContain('installed disabled')
+    await app.type('\r')
+    expect(installPlugin).toHaveBeenCalledExactlyOnceWith('new-bundle','1.2.3')
+    expect(submit).not.toHaveBeenCalled()
+  } finally { app.unmount() }
+})
+
+it('confirms future-session permissions separately from the current session preset', async () => {
+  const setPermissionDefault=vi.fn().mockResolvedValue(undefined), selectPermissionPreset=vi.fn()
+  const app=await mount([], {setPermissionDefault,selectPermissionPreset})
+  try {
+    const snapshot=app.store.getSnapshot()
+    app.store.set({...snapshot,version:snapshot.version+1,permissionCatalog:{current:'workspace-write',options:[{value:'workspace-write',name:'Workspace'}],defaultPreset:'workspace-write',defaultWritable:true,defaultOptions:[{value:'read-only',name:'Future sessions read only'}]},settings:{...snapshot.settings!,general:{...snapshot.settings!.general,appearance:'claude-terminal-dark',locale:'en'}}})
+    await app.type('/permissions');await app.type('\r');await app.type('Future sessions read only');await app.type('\r')
+    expect(setPermissionDefault).not.toHaveBeenCalled()
+    expect(app.capture.screenLines().join('\n')).toContain('Current and saved sessions stay unchanged')
+    await app.type('\r')
+    expect(setPermissionDefault).toHaveBeenCalledExactlyOnceWith('read-only')
+    expect(selectPermissionPreset).not.toHaveBeenCalled()
+    expect(app.store.getSnapshot().permissionCatalog?.current).toBe('workspace-write')
+  } finally {app.unmount()}
+})
+
+it('requires explicit confirmation before removing a profile bundle', async () => {
+  const removeBundle=vi.fn().mockResolvedValue({application:'restart-required',restartReason:'no-hmr'})
+  const app=await mount([], {removeBundle})
+  try {
+    const snapshot=app.store.getSnapshot()
+    app.store.set({...snapshot,version:snapshot.version+1,settings:{...snapshot.settings!,general:{...snapshot.settings!.general,appearance:'claude-terminal-dark',locale:'en'},bundles:[{name:'fixture-bundle',version:'1.0.0',installed:true,enabled:false,availability:'profile',removable:true}]}})
+    await app.type('/settings plugins');await app.type('\r');await app.type('Remove bundle');await app.type('\r')
+    expect(removeBundle).not.toHaveBeenCalled()
+    expect(app.capture.screenLines().join('\n')).toContain('whole profile')
+    await app.type('\r')
+    expect(removeBundle).toHaveBeenCalledExactlyOnceWith('fixture-bundle')
+    expect(app.capture.screenLines().join('\n')).toContain('restart-required')
+  } finally {app.unmount()}
 })

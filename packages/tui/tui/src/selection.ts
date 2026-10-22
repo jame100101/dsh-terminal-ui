@@ -7,6 +7,7 @@
  */
 
 import stringWidth from 'string-width'
+import { graphemes } from './input/editor-state'
 import { lineSelectableWidth, type TranscriptLine } from './viewport'
 
 /** One cell inside the already-windowed transcript lines. */
@@ -45,7 +46,7 @@ export function glyphSpanAt(text: string, column: number): { start: number; end:
   const target = Math.max(0, Math.floor(column))
   if (target >= selectable) return { start: selectable, end: selectable }
   let col = 0
-  for (const character of text) {
+  for (const { segment: character } of graphemes(text)) {
     const width = Math.max(1, stringWidth(character))
     const next = col + width
     if (col >= selectable) break
@@ -93,7 +94,7 @@ export function sliceDisplayRange(text: string, startCol: number, endCol: number
   const end = Math.max(start, endCol)
   let column = 0
   let out = ''
-  for (const character of text) {
+  for (const { segment: character } of graphemes(text)) {
     const width = Math.max(1, stringWidth(character))
     const next = column + width
     if (next > start && column < end) out += character
@@ -117,7 +118,7 @@ export function sliceDisplaySegment(text: string, startCol: number, endCol: numb
   const end = Math.max(start, endCol)
   let column = 0
   let out = ''
-  for (const character of text) {
+  for (const { segment: character } of graphemes(text)) {
     const width = Math.max(1, stringWidth(character))
     if (column >= end) break
     if (column >= start) out += character
@@ -146,7 +147,7 @@ export function sliceDisplayParts(
   let before = ''
   let mid = ''
   let after = ''
-  for (const character of text) {
+  for (const { segment: character } of graphemes(text)) {
     const width = Math.max(1, stringWidth(character))
     const next = column + width
     if (next <= start) before += character
@@ -262,4 +263,23 @@ export function extractSelectedText(
   }
   while (rows.length > 0 && rows[rows.length - 1] === '') rows.pop()
   return rows.join('\n')
+}
+
+/** Preserve a selected contiguous text block through settlement; ambiguous or changed text must not copy new rows. */
+export function remapSelection(selection: TextSelection, recorded: ReadonlyMap<number, TranscriptLine>,
+  current: readonly TranscriptLine[], windowStart: number): TextSelection | null {
+  const first = Math.min(selection.anchor.lineIndex, selection.head.lineIndex)
+  const last = Math.max(selection.anchor.lineIndex, selection.head.lineIndex)
+  const source = Array.from({ length: last - first + 1 }, (_, index) => recorded.get(first + index))
+  if (source.some(line => line === undefined)) return null
+  const matches: number[] = []
+  for (let index = 0; index + source.length <= current.length; index++) {
+    if (source.every((line, offset) => (line!.text === current[index + offset]?.text || (line!.key === current[index + offset]?.key && line!.text === `${current[index + offset]?.text}▌`)))) matches.push(index)
+  }
+  const exactIdentity = matches.filter(index => source.every((line, offset) => line!.key === current[index + offset]?.key))
+  const selected = exactIdentity.length === 1 ? exactIdentity[0] : matches.length === 1 ? matches[0] : undefined
+  if (selected === undefined) return null
+  const delta = windowStart + selected - first
+  return { anchor: { ...selection.anchor, lineIndex: selection.anchor.lineIndex + delta },
+    head: { ...selection.head, lineIndex: selection.head.lineIndex + delta } }
 }

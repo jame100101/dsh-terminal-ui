@@ -5410,5 +5410,17 @@
     "compatibilityFixtureManifests": 7,
     "retainedWorkspaceManifests": 2,
     "removedPackageManifests": 275
+  },
+  "auditScope": "Historical extraction inventory at baseline; not the active dependency graph. Active pins are package manifests and pnpm-lock.yaml.",
+  "developmentCompatibility": {
+    "date": "2026-10-18",
+    "harness": "0.2.1-rc.2",
+    "cordis": "4.0.5",
+    "defaultNpmChannel": "0.2.0-rc.2",
+    "defaultNpmChannelStatus": "UNTESTED",
+    "runtimeVendored": false,
+    "runtimeInvariantCompanion": "removed upstream; local regression assertions retained",
+    "presetAssets": "public MIT dsh-web-app/presets/*.patch.yml; only browser-dependent tool-schedule disabled",
+    "evidence": "docs/implementation-progress.md"
   }
 }

@@ -10,7 +10,7 @@
 export interface LoaderEntryView {
   id: string
   disabled: boolean
-  options: { id: string; name: string; group?: boolean | null; disabled?: unknown }
+  options: { id: string; name: string; group?: boolean | null; disabled?: unknown; config?: unknown }
   fiber?: {
     state?: number
     inject: Record<string, unknown>
@@ -120,7 +120,12 @@ export function profilePatchEntry(
  * @returns unique dependent entry ids, alphabetically sorted.
  */
 export function pluginDisableBlockers(entries: readonly LoaderEntryView[], target: LoaderEntryView): string[] {
-  const provided = new Set(Object.keys(target.fiber?.store ?? {}))
+  // Cordis store includes injected implementations as well as owned ones.
+  // Compare the public Impl.fiber identity before treating a service as ours.
+  const provided = new Set(Object.entries(target.fiber?.store ?? {}).filter(([, impl]) => {
+    const owner = (impl as { fiber?: unknown } | undefined)?.fiber
+    return owner === undefined || owner === target.fiber
+  }).map(([name]) => name))
   if (provided.size === 0) return []
   return [...new Set(entries
     // Include/group fibers inherit injections for their subtree. Generated-id

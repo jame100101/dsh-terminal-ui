@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { applyEvent, createScratch, initialState } from '../src/fold'
 import {
-  MAX_NODE_LINE_CACHE, cachedNodeLines, createNodeLineCache, pruneNodeLineCache,
+  MAX_NODE_LINE_CACHE, MAX_NODE_LINE_VARIANTS, cachedNodeLines, createNodeLineCache, pruneNodeLineCache,
 } from '../src/render'
 import type { TuiNode } from '../src/types'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
@@ -58,4 +58,17 @@ describe('fold heap working set', () => {
     expect(fold.nodes.length / after100).toBe(5)
     expect(heap500).toBeLessThan(heap100 * 12)
   })
+})
+
+// Keep the nodes strongly reachable: WeakMap alone cannot bound width history.
+it('bounds both row and height variants across 2000 resizes with CJK and emoji', () => {
+  const cache = createNodeLineCache()
+  const node: TuiNode = { kind: 'user', id: 1, text: '中文🙂 👨‍👩‍👧‍👦 long content '.repeat(8) }
+  for (let width = 12; width < 2012; width++) {
+    const lines = cachedNodeLines(cache, node, width, false, undefined, 'zh')
+    expect(cache.counts.get(node)?.size).toBeLessThanOrEqual(MAX_NODE_LINE_VARIANTS)
+    expect(cache.lines.get(node)?.size).toBeLessThanOrEqual(MAX_NODE_LINE_VARIANTS)
+    expect(lines.length).toBeGreaterThan(0)
+  }
+  expect(cachedNodeLines(cache, node, 12, false, undefined, 'zh').length).toBeGreaterThan(1)
 })

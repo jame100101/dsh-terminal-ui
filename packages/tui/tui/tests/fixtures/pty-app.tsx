@@ -1,12 +1,16 @@
 import { SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { runInk } from '../../src/render'
 import { createTuiStore } from '../../src/store'
+import { isAppearance } from '../../src/theme'
 import type { TuiHost } from '../../src/render'
 import type { TuiNode } from '../../src/types'
 import { appendFileSync, writeFileSync } from 'node:fs'
 
 const requestedNodeCount = Number(process.env.TUI_PTY_NODE_COUNT ?? 80)
-const nodeCount = Number.isFinite(requestedNodeCount)
+const emptyStatic = process.env.TUI_PTY_EMPTY_STATIC === '1'
+const requestedAppearance = process.env.TUI_PTY_APPEARANCE
+const appearance = requestedAppearance !== undefined && isAppearance(requestedAppearance) ? requestedAppearance : undefined
+const nodeCount = emptyStatic ? 0 : Number.isFinite(requestedNodeCount)
   ? Math.max(1, Math.min(3_000, Math.floor(requestedNodeCount)))
   : 80
 const requestedUpdateMs = Number(process.env.TUI_PTY_UPDATE_MS ?? 40)
@@ -61,7 +65,7 @@ const initial = {
   sessions: [],
   queued: [],
   settings: {
-    general: { busyEnter: 'queue', thinking: 'collapsed', theme: 'dark', locale: 'en' },
+    general: { busyEnter: 'queue', thinking: 'collapsed', theme: 'dark', locale: 'en', ...(appearance === undefined ? {} : { appearance }) },
     models: { providers: [], credentials: [] },
     plugins: process.env.TUI_PTY_PLUGINS === '1'
       ? [{ id: 'fixture-plugin', name: 'fixture-plugin', enabled: true, loaded: true, toggleable: true }]
@@ -182,6 +186,14 @@ const busyTimer = process.env.TUI_PTY_BUSY === '1'
   }, updateMs)
   : undefined
 
+// Static busy rendering fixture: observes animation-only writes without invented host outcomes.
+if (process.env.TUI_PTY_STATIC_BUSY === '1') {
+  const current = store.getSnapshot()
+  store.set({ ...current, version: current.version + 1, busy: true,
+    live: { text: '', think: 'steady reasoning', thinkSince: Date.now() } })
+}
+
+if (process.env.TUI_PTY_CRASH === '1') process.on('SIGUSR2', () => { throw new Error('fixture unexpected failure') })
 await runInk(store, host)
 if (busyTimer !== undefined) clearInterval(busyTimer)
 if (memoryTimer !== undefined) clearInterval(memoryTimer)

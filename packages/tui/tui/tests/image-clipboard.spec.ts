@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { describe, expect, it } from 'vitest'
 import { clipboardImageCommands, readClipboardImage } from '../src/image-clipboard'
@@ -73,4 +74,40 @@ describe('readClipboardImage', () => {
     }) as unknown as ClipboardImageSpawn
     expect(await readClipboardImage(noStdout, 'linux')).toBeNull()
   })
+})
+
+
+it.skipIf(process.platform !== 'darwin')('reads a TIFF screenshot through native AppKit without touching the general clipboard', () => {
+  const entry = clipboardImageCommands('darwin').find(item => item.command === 'osascript')!
+  const script = entry.args.at(-1)!.replace('$.NSPasteboard.generalPasteboard', 'board')
+  const seed = [
+    "ObjC.import('AppKit')",
+    'const board = $.NSPasteboard.pasteboardWithUniqueName',
+    "const data = $.NSData.alloc.initWithBase64EncodedStringOptions('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=', 0)",
+    'const seed = $.NSImage.alloc.initWithData(data)',
+    'board.clearContents',
+    'board.setDataForType(seed.TIFFRepresentation, $.NSPasteboardTypeTIFF)',
+  ].join('; ')
+  const output = execFileSync('osascript', ['-l', 'JavaScript', '-e', `${seed}; try { ${script} } finally { board.releaseGlobally }`], { timeout: 5000 })
+  expect([...output.subarray(0, 8)]).toEqual([...PNG.subarray(0, 8)])
+  expect(output.readUInt32BE(16)).toBe(2)
+  expect(output.readUInt32BE(20)).toBe(2)
+})
+
+it('bounds clipboard output and cancels a stalled reader', async () => {
+  expect(await readClipboardImage(fakeSpawn(PNG), 'linux', { maxBytes: 4 })).toBeNull()
+  let killed = 0
+  const stalled = (() => {
+    const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; kill: () => void }
+    child.stdout = new EventEmitter()
+    child.kill = () => { killed++ }
+    return child
+  }) as unknown as ClipboardImageSpawn
+  expect(await readClipboardImage(stalled, 'linux', { timeoutMs: 5 })).toBeNull()
+  expect(killed).toBe(2)
+  const controller = new AbortController()
+  const pending = readClipboardImage(stalled, 'darwin', { signal: controller.signal })
+  controller.abort()
+  expect(await pending).toBeNull()
+  expect(killed).toBe(3)
 })

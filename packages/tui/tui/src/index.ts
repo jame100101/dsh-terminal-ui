@@ -1,3 +1,20 @@
+import { loadSessionRows, SessionTitleCache } from './harness/session-panel'
+import { manageMcp } from './harness/mcp-management'
+import { watchKeybindings } from './keybindings-runtime'
+import { dirname as keybindingDirname, join as keybindingJoin } from 'node:path'
+import { readApprovalPolicy, changeApprovalPolicy } from './harness/approval-policy'
+import { fallbackToolLabel } from './tool-label'
+import type { HarnessAdapter } from './harness/adapter'
+import { currentAppearance, type AppearanceId } from './theme'
+import { runExternalEditor } from './external-editor'
+import { executeImageCommand } from './controller/command-images'
+import { sendChildPrompt } from './controller/child-prompt'
+import { PluginUpdateController, type BundleManager } from './controller/plugin-updates'
+import { SourceInspectionCache, readSessionSource, readToolSource, pageToolSource, exportToolSource, type ToolSourceDocument } from './source-query'
+import { DraftImageRegistry } from './draft-images'
+import { redactDisplayText, redactDisplayValue } from './display-redaction'
+import { exportDisplayedTranscript } from './transcript-export'
+import { mountAnswerers, settleApproval, settleQuestion } from './harness/answerers'
 import { readTuiSession } from './session-read'
 /**
  * @deepseek-ai/dsh-tui — the in-process terminal surface over the dsh core.
@@ -16,17 +33,19 @@ import { readTuiSession } from './session-read'
  * @module @deepseek-ai/dsh-tui
  */
 
+import { readPermissionPresets, selectPermissionPreset, setPermissionDefault } from './harness/permission-presets'
+import { CompletionNotification, completionSequence } from './completion-notification'
 import type { AssistantStreamFrame } from '@deepseek-ai/dsh-agent'
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, FiberState } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, AgentHandle, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-settings'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import type { Volatile } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-credentials'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { SessionId } from '@deepseek-ai/dsh-session'
@@ -56,7 +75,8 @@ import type {} from '@deepseek-ai/dsh-session-title'
 import type {} from '@deepseek-ai/dsh-attachment'
 // Empty import carries the agent-presets Context merge and the
 // `agent-preset/selected` session-event vocabulary the preset rows below read.
-import type {} from '@deepseek-ai/dsh-agent-presets'
+import type {} from '@deepseek-ai/dsh-agent-preset-registry'
+import type {} from '@deepseek-ai/dsh-working-directory'
 import type {} from '@deepseek-ai/dsh-app-boot'
 // Empty type imports carry the sandbox-policy Context merge, the
 // session-projection registry merge, and the token-meter `contextPressure`
@@ -68,7 +88,7 @@ import type {} from '@deepseek-ai/dsh-token-meter'
 import { isUserInvocable } from '@deepseek-ai/dsh-skill'
 import type {} from '@deepseek-ai/dsh-session-reference'
 import { formatSessionReferenceMention } from '@deepseek-ai/dsh-session-reference'
-import { SANDBOX_MODES, setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
+import { setSandboxMode } from '@deepseek-ai/dsh-sandbox-policy'
 import type { ImageAttachmentRef, ImageMediaType } from '@deepseek-ai/dsh-attachment'
 import { MessageId, ReasoningEffortId } from '@deepseek-ai/dsh-llm/brand'
 import {
@@ -78,7 +98,7 @@ import {
 import type { FoldScratch } from './fold'
 import type { FoldState } from './types'
 import { renderAssistantResultPlain, renderNodePlain } from './plain'
-import { collectCredentialRefs, collectPluginFields, groupProviders, sessionTitlesById } from './settings-data'
+import { collectCredentialRefs, collectPluginFields, groupProviders } from './settings-data'
 import { createTuiStore } from './store'
 import type { PendingImageChip } from './store'
 import {
@@ -95,6 +115,7 @@ import type { StartupIntent } from './startup-args'
 import {
   createForkArtifact,
   createTuiAgent,
+  applyTuiPreset,
   createWorkflowProjection,
   EXIT_FAILURE,
   EXIT_OK,
@@ -133,7 +154,7 @@ import type {
 export const name = 'tui'
 
 /** Core services required before the surface can mount. */
-export const inject = ['agents', 'agentDefaultModel', 'tools', 'settings', 'credentials', 'messageFeedback', 'sessionQuery', 'sessionTitle', 'attachments', 'sandboxPolicy']
+export const inject = ['sessions', 'agents', 'agentDefaultModel', 'tools', 'settings', 'credentials', 'messageFeedback', 'sessionQuery', 'sessionTitle', 'attachments', 'sandboxPolicy', 'workingDirectory']
 
 /** Default maximum number of foreground-session observations retained by the TUI. */
 export const DEFAULT_SESSION_RECENCY_MAX_ENTRIES = 1_000
@@ -142,6 +163,14 @@ export const DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS = 60_000
 
 /** TUI plugin configuration. */
 export interface Config {
+  preferredPreset?: Volatile<string>
+  taskNotifications?: Volatile<'off' | 'always'>
+  busyEnter: Volatile<'queue' | 'steer'>
+  thinking: Volatile<'collapsed' | 'expanded'>
+  theme: Volatile<'dark' | 'light'>
+  appearance: Volatile<AppearanceId>
+  locale: Volatile<'zh' | 'en'>
+  keymap: Volatile<'legacy-dsh' | 'claude-fullscreen'>
   /** Maximum lifecycle observations in the TUI-owned session recency sidecar. */
   sessionRecencyMaxEntries?: number
   /** Absolute live user profile patch path; omission keeps plugin rows read-only. */
@@ -155,7 +184,15 @@ export interface Config {
 }
 
 /** Validated TUI plugin configuration schema. */
-export const Config: z<Config> = z.object({
+export const Config = z.object({
+  preferredPreset: z.string().default('').volatile(),
+  taskNotifications: z.union(['off', 'always']).default('off').volatile(),
+  busyEnter: z.union(['queue', 'steer']).default('queue').volatile(),
+  thinking: z.union(['collapsed', 'expanded']).default('collapsed').volatile(),
+  theme: z.union(['dark', 'light']).default('dark').volatile(),
+  appearance: z.union(['claude-terminal-dark', 'claude-terminal-light', 'dsh-classic']).default('claude-terminal-dark').volatile(),
+  locale: z.union(['zh', 'en']).default('zh').volatile(),
+  keymap: z.union(['legacy-dsh', 'claude-fullscreen']).default('legacy-dsh').volatile(),
   sessionRecencyMaxEntries: z.number().step(1).min(1).default(DEFAULT_SESSION_RECENCY_MAX_ENTRIES),
   profilePatchPath: z.string().required(false),
   pluginToggleProtectedIds: z.array(z.string()).default([]),
@@ -179,7 +216,7 @@ function writeRuntimeDiagnostic(ctx: Context, destination: string): void {
   const reactFromTui = resolvedModulePath('react')
   const reactFromInk = realpathSync(createRequire(inkEntry).resolve('react'))
   const markerPath = join(dirname(inkEntry), 'dsh-tui-patch.json')
-  const marker = JSON.parse(readFileSync(markerPath, 'utf8')) as unknown
+  const marker = existsSync(markerPath) ? JSON.parse(readFileSync(markerPath, 'utf8')) as unknown : null
   const modules = Object.fromEntries([
     '@deepseek-ai/cordis',
     '@deepseek-ai/dsh-agent',
@@ -191,7 +228,7 @@ function writeRuntimeDiagnostic(ctx: Context, destination: string): void {
     tuiModule: realpathSync(fileURLToPath(import.meta.url)),
     cordisContextIdentity: ctx instanceof Context,
     modules,
-    ink: { entry: inkEntry, markerPath: realpathSync(markerPath), marker },
+    ink: { entry: inkEntry, markerPath: existsSync(markerPath) ? realpathSync(markerPath) : null, marker },
     react: { fromTui: reactFromTui, fromInk: reactFromInk, sameRuntime: reactFromTui === reactFromInk },
   }, undefined, 2)}\n`)
 }
@@ -229,6 +266,7 @@ const IMAGE_MEDIA_BY_EXT: Record<string, ImageMediaType> = {
 function pendingImageChips(refs: readonly ImageAttachmentRef[]): PendingImageChip[] {
   return refs.map((ref, index) => ({
     chip: imageChip(index),
+    resource: String(ref.attachmentId),
     name: ref.name ?? `image-${index + 1}`,
     bytes: ref.bytes,
     width: ref.width,
@@ -315,49 +353,6 @@ function readOccupancy(ctx: Context, session: Session): { projectedTokens: numbe
 }
 
 /**
- * Load the /sessions rows: live agents plus the newest 50 persisted-corpus
- * records with their latest folded titles. Fails soft to the live list when
- * the query service or any title read rejects.
- */
-async function loadSessionRows(ctx: Context, liveRows: readonly SessionEntry[]): Promise<SessionEntry[]> {
-  const query = ctx.get('sessionQuery')
-  if (query === undefined) return [...liveRows]
-  try {
-    const records = await query.listSessions()
-    const newest = records.slice(0, 50)
-    // Titles fold once for every requested session. The live rows are usually
-    // already among `newest`, and the corpus filter below drops live ids from
-    // `newest` afterwards — so titles must be keyed BY SESSION ID, never read
-    // by position: index-aligned lookups shifted by one for every corpus row
-    // after a live record (the first-open bug where Enter resumed the NEXT
-    // session below the selected one).
-    const liveIds = liveRows.map(row => SessionId(row.id))
-    const titles = sessionTitlesById(await query.readTitleSnapshots([...newest.map(record => record.header.id), ...liveIds]))
-    const live = liveRows.map((row) => {
-      const title = titles.get(row.id)
-      return title === undefined ? row : { ...row, title }
-    })
-    const corpus: SessionEntry[] = newest
-      .filter(record => !liveIds.includes(record.header.id))
-      .map((record) => {
-        const title = titles.get(record.header.id)
-        return {
-          id: record.header.id,
-          model: '',
-          status: record.live ? 'running' : 'persisted',
-          ...(title === undefined ? {} : { title }),
-          live: record.live,
-          persisted: record.persisted,
-          createdAt: record.header.createdAt,
-        }
-      })
-    return [...live, ...corpus]
-  } catch {
-    return [...liveRows]
-  }
-}
-
-/**
  * Attach the tool's presentCall/presentResult card to the folded tool row.
  * `tool/call` runs after `applyEvent` (the new running row is last).
  * `tool/result` runs before `applyEvent` so `presentResult` can still read
@@ -372,7 +367,11 @@ function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): vo
     const definition = tools.get(event.data.name)
     if (definition !== undefined && definition.presentCall !== undefined) {
       try {
-        node.callCard = compactCallCard(definition.presentCall(node.args) ?? null)
+        const presented = redactDisplayValue(definition.presentCall(node.args) ?? null)
+        node.callCard = compactCallCard(presented)
+        if (presented !== null) node.displayTitle = node.name === 'bash' || node.name === 'shell'
+          ? fallbackToolLabel(node.name, { command: presented.title })
+          : presented.title.slice(0, 300)
       } catch {
         node.callCard = null
       }
@@ -404,7 +403,7 @@ function enrichToolCards(ctx: Context, event: SessionEvent, fold: FoldState): vo
     const definition = tools.get(node.name)
     if (definition !== undefined && definition.presentResult !== undefined && result !== undefined) {
       try {
-        node.resultCard = compactResultCard(definition.presentResult(node.args, result) ?? null)
+        node.resultCard = compactResultCard(redactDisplayValue(definition.presentResult(node.args, result) ?? null))
       } catch {
         node.resultCard = null
       }
@@ -443,7 +442,7 @@ function queuedEntries(agent: Agent): { text: string; steer: boolean }[] {
 async function loadSettingsData(
   ctx: Context,
   surface: Surface,
-  tuiScope: SettingsScope<{ busyEnter: 'queue' | 'steer'; thinking: 'collapsed' | 'expanded' }>,
+  tuiScope: { get(): GeneralSettings },
   config: Config,
 ): Promise<SettingsData> {
   const descriptors = ctx.settings.describe({ redactSecrets: true })
@@ -476,23 +475,43 @@ async function loadSettingsData(
   // does not): the presets page degrades to its empty placeholder when the
   // service is absent, and a failed roster read must not blank the whole page.
   const presetService = ctx.get('agentPresets') as {
-    list(): Promise<{ id: string; name?: string; trust: 'system' | 'user'; broken?: string }[]>
+    list(): Promise<{ id: string; name?: string; trust?: 'system' | 'user'; broken?: string }[]>
   } | undefined
-  let presetRows: { id: string; name: string; trust: 'system' | 'user'; broken?: string }[] = []
+  let presetRows: { id: string; name: string; trust?: 'system' | 'user'; broken?: string }[] = []
   if (presetService !== undefined) {
     try {
       presetRows = (await presetService.list()).map(preset => ({
         id: preset.id,
         name: preset.name ?? preset.id,
-        trust: preset.trust,
+        ...(preset.trust === undefined ? {} : { trust: preset.trust }),
         ...(preset.broken === undefined ? {} : { broken: preset.broken }),
       }))
     } catch {
       // A roster read racing a preset edit must not blank the whole page.
     }
   }
+  const ptc = surface.agent.ctx.get('ptcRuntime') as unknown
+  const ptcEntry = loaderEntries.find(entry => entry.options.id === 'ptc-runtime'
+    && entry.options.name === '@deepseek-ai/dsh-ptc-runtime-node')
+  const ptcValue = descriptors.find(descriptor => descriptor.ns === 'ptc-runtime')?.value as { executionMode?: unknown } | undefined
+  const executionMode = ptcEntry === undefined ? undefined : ptcValue?.executionMode
+  const pluginManager = ctx.get('pluginManager') as { listBundles(): Promise<NonNullable<SettingsData['bundles']>> } | undefined
+  let bundles: SettingsData['bundles']
+  try { bundles = await pluginManager?.listBundles() } catch { /* An inventory read racing teardown is unknown. */ }
+  // schemas() deep-clones definitions; do it once per refresh, not per server.
+  const mcpToolNames = ctx.tools.schemas(surface.agent).map(tool => tool.name).filter(tool => tool.startsWith('mcp__'))
   return {
     general,
+    mcp: loaderEntries.filter(entry => entry.options.name === '@deepseek-ai/dsh-mcp-client' && isProfilePatchEntry(entry)).map(entry => {
+      const value = entry.options.config as { serverName?: unknown; transport?: unknown } | undefined
+      const server = typeof value?.serverName === 'string' ? value.serverName : entry.options.id
+      const tools = mcpToolNames.filter(tool => tool.startsWith(`mcp__${server}__`))
+      return { id: entry.options.id, server, transport: typeof value?.transport === 'string' ? value.transport : 'unknown', tools: tools.slice(0, 200), toolCount: tools.length }
+    }),
+    ptc: { available: ptc !== undefined,
+      ...(executionMode === 'per-call' || executionMode === 'persistent-in-memory' ? { executionMode } : {}),
+    },
+    ...(bundles === undefined ? {} : { bundles }),
     models: {
       providers: groupProviders(surface.models),
       credentials: credentialRows,
@@ -518,14 +537,14 @@ async function loadSettingsData(
           id: entry.options.id,
           name: entry.options.name,
           enabled: !entry.disabled,
-          loaded: entry.fiber !== undefined,
+          loaded: entry.fiber?.state === FiberState.ACTIVE,
           toggleable: toggleBlockedReason === undefined,
           ...(toggleBlockedReason === undefined ? {} : { toggleBlockedReason }),
           ...(descriptor === undefined ? {} : { namespace: descriptor.ns }),
         }
       }),
     configs: Object.fromEntries(
-      descriptors.map(descriptor => [descriptor.ns, collectPluginFields(descriptor.schema, descriptor.value, general.locale)]),
+      descriptors.map(descriptor => [descriptor.ns, loaderEntries.some(entry => entry.options.id === descriptor.ns && entry.options.name === '@deepseek-ai/dsh-mcp-client') ? [] : collectPluginFields(descriptor.schema, descriptor.value, general.locale)]),
     ),
     inventory: {
       namespaces: descriptors.map(descriptor => ({
@@ -569,15 +588,21 @@ async function subagentRows(ctx: Context, rootSessionId: SessionId): Promise<Sub
   if (subagents === undefined) return []
   try {
     const entries = await subagents.listDescendants(rootSessionId)
-    return entries.map((entry): SubagentRow => entry.kind === 'child'
-      ? {
-        id: entry.id,
-        label: entry.mode === 'continuable' ? entry.label : (entry.label ?? entry.id),
-        mode: entry.mode,
-        activity: entry.activity,
-        depth: entry.depth,
+    return await Promise.all(entries.map(async (entry): Promise<SubagentRow> => {
+      if (entry.kind !== 'child') return { id: entry.id, label: entry.reason, mode: 'diagnostic', activity: 'diagnostic', depth: entry.depth }
+      let preset: string | undefined
+      if (entry.mode !== 'external') {
+        try {
+          const cut = await readTuiSession(ctx.sessionQuery, SessionId(entry.id))
+          preset = recordedPreset(cut.session, cut.events)
+        } catch { /* Missing or remote sessions remain unknown, never inherit the parent's preset. */ }
       }
-      : { id: entry.id, label: entry.reason, mode: 'diagnostic', activity: 'diagnostic', depth: entry.depth })
+      return {
+        id: entry.id, label: entry.mode === 'continuable' ? entry.label : (entry.label ?? entry.id),
+        mode: entry.mode, activity: entry.activity, depth: entry.depth,
+        ...(preset === undefined ? {} : { preset }),
+      }
+    }))
   } catch {
     // A listing racing teardown must not blank the panel.
     return []
@@ -602,6 +627,8 @@ function subscribe(
   surface: Surface,
   refreshSettings: () => void,
   foldSidecar: ProjectionSidecarStore,
+  isResident: (agent: Agent) => boolean = () => false,
+  notificationsEnabled: () => boolean = () => surface.settings?.general.taskNotifications === 'always',
 ): () => void {
   const publish = (reusePanels = false): void => {
     const previous = store.getSnapshot()
@@ -612,6 +639,7 @@ function subscribe(
       models: surface.models,
       sessions: ctx.agents.list().map((agent): SessionEntry => ({
         id: agent.id,
+        resident: isResident(agent),
         model: agent.options.model ?? '',
         status: agent.status,
       })),
@@ -629,6 +657,9 @@ function subscribe(
     }))
     store.set({
       version: surface.version,
+      ...(previous.keybindings === undefined ? {} : { keybindings: previous.keybindings }),
+      permissionCatalog: readPermissionPresets(ctx, surface.agent),
+      approval: readApprovalPolicy(ctx, surface.agent),
       nodes: surface.fold.nodes,
       trace: surface.fold.trace,
       todos: surface.fold.todos,
@@ -652,8 +683,11 @@ function subscribe(
       foldSidecar.write(surface.agent.session.header, last?.seq ?? 0, surface.fold)
     }
   }
+  const completion = new CompletionNotification()
+  if (surface.agent.status === 'running') completion.start()
   const uiPublish = createUiPublishScheduler(() => { publish(true) })
   const off = ctx.on('internal/dispatch', (_mode, eventName, args) => {
+    if (eventName === 'permission-presets/catalog-changed') { publish(); return }
     if (eventName === 'agent/assistant-stream') {
       const payload = (args as unknown[])[0] as { agent: Agent; frame: AssistantStreamFrame }
       if (payload.agent !== surface.agent) return
@@ -675,6 +709,8 @@ function subscribe(
       const session = (args as unknown[])[0] as Session | undefined
       if (session !== surface.agent.session) return
       const event = (args as unknown[])[1] as SessionEvent
+      if (event.type === 'turn/start') completion.start()
+      if (event.type === 'turn/end') completion.end(event.data.reason.kind)
       // presentResult needs the running row's args; applyEvent drops them.
       if (event.type === 'tool/result' || event.type === 'tool/ptc-dispatch') {
         enrichToolCards(ctx, event, surface.fold)
@@ -716,6 +752,9 @@ function subscribe(
       const payload = (args as unknown[])[0] as { agent?: unknown; status?: unknown } | undefined
       if (payload?.agent !== surface.agent) return
       surface.busy = payload.status === 'running'
+      if (payload.status === 'idle' && completion.idle(queuedEntries(surface.agent).length > 0 || surface.fold.goal?.phase === 'active', notificationsEnabled())) {
+        if (process.stdout.isTTY) process.stdout.write(completionSequence(process.env.TERM_PROGRAM, !!process.env.TMUX))
+      }
       uiPublish.dispose()
       publish()
     }
@@ -730,7 +769,7 @@ function subscribe(
       if (key !== 'contextPressure' || session !== surface.agent.session) return
       publish()
     })
-  const offSettings = ctx.on('settings/updated', refreshSettings)
+  const offSettings = ctx.on('settings/document-updated', refreshSettings)
   const offCredentialReference = ctx.on('credentials/reference-updated', refreshSettings)
   const offCredentialRecord = ctx.on('credentials/record-updated', refreshSettings)
   const jobs = ctx.get('jobs')
@@ -747,61 +786,6 @@ function subscribe(
     offCredentialRecord()
     offOccupancy()
     offJobsChanged()
-  }
-}
-
-/** Mount the interactive answerers; in the non-TTY fallback none mount. */
-function mountAnswerers(ctx: Context, store: TuiStore, surface: Surface): void {
-  const approval = ctx.get('approval')
-  if (approval !== undefined) {
-    ctx.on('approval/request', (req, next) => {
-      if (req.agent !== surface.agent) return next()
-      // A second concurrent question cannot be presented; fail it closed.
-      if (surface.pendingApproval !== null) return Promise.resolve('rejected' as const)
-      return new Promise<'allowed-once' | 'rejected'>((resolve) => {
-        surface.approvalResolve = resolve
-        surface.pendingApproval = {
-          toolName: req.toolName,
-          ...(req.reason === undefined ? {} : { reason: req.reason }),
-        }
-        surface.version += 1
-        store.set({ ...store.getSnapshot(), pendingApproval: surface.pendingApproval, version: surface.version })
-        // The answerer race: the service settles 'cancelled' on signal abort;
-        // clear the overlay so the UI does not hold a dead question.
-        req.signal?.addEventListener('abort', () => {
-          if (surface.pendingApproval !== null) {
-            surface.pendingApproval = null
-            surface.approvalResolve = null
-            surface.version += 1
-            store.set({ ...store.getSnapshot(), pendingApproval: null, version: surface.version })
-          }
-        }, { once: true })
-      })
-    })
-  }
-  if (ctx.get('userQuestions') !== undefined) {
-    ctx.on('user-questions/request', request => new Promise((resolve) => {
-      surface.questionResolve = answers => resolve({ answers })
-      surface.pendingQuestion = {
-        questions: request.questions.map(question => ({
-          id: question.id,
-          question: question.question,
-          ...(question.detail === undefined ? {} : { detail: question.detail }),
-          ...(question.options === undefined ? {} : { options: question.options }),
-          ...(question.multiSelect === undefined ? {} : { multiSelect: question.multiSelect }),
-        })),
-      }
-      surface.version += 1
-      store.set({ ...store.getSnapshot(), pendingQuestion: surface.pendingQuestion, version: surface.version })
-      request.signal?.addEventListener('abort', () => {
-        if (surface.pendingQuestion !== null) {
-          surface.pendingQuestion = null
-          surface.questionResolve = null
-          surface.version += 1
-          store.set({ ...store.getSnapshot(), pendingQuestion: null, version: surface.version })
-        }
-      }, { once: true })
-    }))
   }
 }
 
@@ -868,7 +852,7 @@ function readStartupIntent(ctx: Context): StartupIntent | null {
  */
 async function boot(
   ctx: Context,
-  tuiScope: SettingsScope<{ busyEnter: 'queue' | 'steer'; thinking: 'collapsed' | 'expanded' }>,
+  tuiScope: { get(): GeneralSettings },
   config: Config,
 ): Promise<void> {
   // Parse the startup argv first: help, version, and usage rejections must
@@ -889,7 +873,7 @@ async function boot(
     homePath('tui', 'projections'),
     (error) => { ctx.logger.warn(`tui: fold projection sidecar fault: ${error instanceof Error ? error.message : String(error)}`) },
   )
-  const created = await createTuiAgent(ctx, process.cwd())
+  const created = await createTuiAgent(ctx, process.cwd(), config.preferredPreset?.get() || undefined)
   // Handle of the surface's CURRENT agent. Switches dispose THIS handle before
   // replacing it — disposing the boot-time `created.handle` on every switch
   // leaked each intermediate agent (multiple live sessions the /sessions
@@ -923,6 +907,7 @@ async function boot(
   }]
   const store = createTuiStore({
     version: 0,
+    approval: readApprovalPolicy(ctx, created.agent),
     nodes: [],
     trace: [],
     todos: [],
@@ -955,7 +940,11 @@ async function boot(
     occupancy: null,
     resumeProgress: null,
   })
-  const surface: Surface = {
+  const offKeybindings = config.profilePatchPath === undefined ? () => {} : watchKeybindings(keybindingJoin(keybindingDirname(config.profilePatchPath), 'keybindings.json'), keybindings => {
+    surface.version = Math.max(surface.version, store.getSnapshot().version) + 1
+    store.set({ ...store.getSnapshot(), keybindings, version: surface.version })
+  })
+  let surface: Surface = {
     fold: initialState(),
     scratch: createScratch(),
     version: 0,
@@ -983,19 +972,30 @@ async function boot(
     cwd: process.cwd(),
     resumeProgress: null,
   }
+  const sessionTitleCache = new SessionTitleCache()
+  let sessionRowsRequest: AbortController | undefined
+  const surfaceRequests = new Set<AbortController>()
+  const abortSurfaceRequests = (): void => { for (const request of surfaceRequests) request.abort(); surfaceRequests.clear() }
+  let pluginUpdates: PluginUpdateController | undefined
   let settingsGeneration = 0
   /** Reload and publish the settings projection; only the newest read commits. */
   const reloadSettings = async (): Promise<void> => {
     const generation = ++settingsGeneration
+    const owner = surface.agent
     const data = await loadSettingsData(ctx, surface, tuiScope, config)
-    if (generation !== settingsGeneration) return
+    data.pluginUpdates = pluginUpdates?.snapshot() ?? []
+    if (generation !== settingsGeneration || surface.agent !== owner) return
     surface.settings = data
     surface.version += 1
     store.set({ ...store.getSnapshot(), settings: data, version: surface.version })
   }
   /** Load the model catalog, then the settings pages it feeds (parallel). */
+  let modelCatalogGeneration = 0
   const loadPanels = (): void => {
-    void loadModels(ctx, created.selection).then((models) => {
+    const generation = ++modelCatalogGeneration
+    const owner = surface.agent
+    void loadModels(ctx, surface.selection.current ?? ctx.agentDefaultModel.currentSelection()).then((models) => {
+      if (generation !== modelCatalogGeneration || surface.agent !== owner) return
       surface.models = models
       surface.version += 1
       store.set({ ...store.getSnapshot(), models, version: surface.version })
@@ -1034,7 +1034,9 @@ async function boot(
     const service = ctx.get('messageFeedback')
     if (service === undefined) return
     try {
-      const result = await service.list({ sessionId: surface.agent.id })
+      const owner = surface.agent
+      const result = await service.list({ sessionId: owner.id })
+      if (surface.agent !== owner) return
       if (result.ok) {
         surface.feedback = new Map(result.value.items.map(item => [item.messageId, item]))
         publishFeedback()
@@ -1044,7 +1046,9 @@ async function boot(
     }
   }
   const loadReasoning = (): void => {
+    const owner = surface.agent
     void resolveTuiReasoning(ctx, created.selection).then((reasoning) => {
+      if (surface.agent !== owner) return
       surface.reasoning = reasoning
       surface.version += 1
       store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
@@ -1065,20 +1069,28 @@ async function boot(
   // rows on demand after the first terminal frame is interactive.
   /** Reload the /settings pages after any settings or credential commit. */
   const refreshSettings = (): void => {
-    void reloadSettings().catch(() => {
-      // A refresh racing service teardown must not disturb the exit path.
-    })
+    // Official providers may hide their catalog until a credential exists.
+    // Re-query after credential/config changes instead of freezing the boot fallback.
+    loadPanels()
   }
+  const bundleManager = ctx.get('pluginManager') as BundleManager | undefined
+  if (bundleManager) pluginUpdates = new PluginUpdateController(bundleManager, refreshSettings)
   /** Current UI locale, including the initial settings value before publish. */
   const uiLocale = (): 'zh' | 'en' => surface.settings?.general.locale ?? (tuiScope.get() as GeneralSettings).locale
   /** Select copy without passing display language into Harness services. */
   const uiText = (zh: string, en: string): string => uiLocale() === 'en' ? en : zh
+  let mcpMutation = false
+  let surfaceClosing = false
   let pluginToggleTail: Promise<void> = Promise.resolve()
   /** Serialize profile writes and Loader recompositions across rapid Enter presses. */
   const togglePlugin = (id: string): ReturnType<typeof toggleProfilePlugin> => {
     const run = pluginToggleTail.then(async () => {
       if (config.profilePatchPath === undefined) return { ok: false as const, code: 'entry-unavailable' as const }
-      const result = await toggleProfilePlugin({
+      const isMcp = [...ctx.loader.entries()].some(entry => entry.options.id === id && entry.options.name === '@deepseek-ai/dsh-mcp-client')
+      if (isMcp && (changingSession || ctx.agents.list().some(agent => agent.status === 'running' || queuedEntries(agent).length > 0))) return { ok: false as const, code: 'apply-failed' as const, detail: 'Wait for all tasks before changing MCP' }
+      if (isMcp) mcpMutation = true
+      let result
+      try { result = await toggleProfilePlugin({
         ctx,
         patchPath: config.profilePatchPath,
         id,
@@ -1086,6 +1098,7 @@ async function boot(
         protectedIds: config.pluginToggleProtectedIds ?? [],
         settleTimeoutMs: config.pluginToggleSettleTimeoutMs ?? DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS,
       })
+      } finally { if (isMcp) mcpMutation = false }
       if (result.ok) {
         try {
           await reloadSettings()
@@ -1099,12 +1112,33 @@ async function boot(
     pluginToggleTail = run.then(() => {}, () => {})
     return run
   }
-  let unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
+  // Resident sessions own their handles and projections until resumed or exit.
+  // Bounded by count; never silently evict a live task to make room.
+  const parked = new Map<string, { handle: AgentHandle; surface: Surface; store: TuiStore; off: () => void }>()
+  const notificationsEnabled = (): boolean => (tuiScope.get() as GeneralSettings).taskNotifications === 'always'
+  const isResident = (agent: Agent): boolean => parked.get(String(agent.id))?.surface.agent === agent
+  const parkCurrent = (): void => {
+    const owner = surface
+    const local = createTuiStore(store.getSnapshot())
+    const routed: TuiStore = {
+      getSnapshot: () => surface === owner ? store.getSnapshot() : local.getSnapshot(),
+      subscribe: listener => local.subscribe(listener),
+      set: snapshot => { local.set(snapshot); if (surface === owner) store.set(snapshot) },
+    }
+    parked.set(String(owner.agent.id), { handle: currentHandle, surface: owner, store: routed,
+      off: subscribe(ctx, routed, owner, () => {}, projections, isResident, notificationsEnabled) })
+    surface = { ...owner }
+  }
+  let unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
   const offSkillsChange = ctx.on('skills/change', () => { refreshCatalogs() }, { global: true })
   const isTty = process.stdin.isTTY === true && process.stdout.isTTY === true
   // Print mode never mounts the interactive answerers: asks fail closed,
   // matching the non-TTY fallback semantics.
-  if (isTty && intent.mode !== 'print') mountAnswerers(ctx, store, surface)
+  if (isTty && intent.mode !== 'print') mountAnswerers(ctx, store, surface, agent => {
+    if (surface.agent === agent) return { store, surface }
+    const entry = parked.get(String(agent.id))
+    return entry?.surface.agent === agent ? entry : undefined
+  })
   /** Host-command passthrough: registered slash commands dispatch without a model turn; unknown lines go to the model. */
   const publishPendingImages = (): void => {
     surface.version += 1
@@ -1115,14 +1149,19 @@ async function boot(
       version: surface.version,
     })
   }
+  const draftImages = new DraftImageRegistry()
+  let imageDraftEpoch = 0
   const currentModelAcceptsImage = (): boolean => modelRouteAcceptsImages(
     surface.models,
     (surface.selection.current ?? ctx.agentDefaultModel.currentSelection()).provider,
     surface.currentModel,
   )
+  let savingImages = false
   const ingestImageBatch = async (
     inputs: readonly { data: Uint8Array; mediaType: ImageMediaType; name: string }[],
+    signal?: AbortSignal,
   ): Promise<{ error: string | null; chips?: readonly string[] }> => {
+    if (savingImages) return { error: uiText('图片正在保存，请稍后重试', 'Image save in progress; retry shortly') }
     const attachments = ctx.get('attachments')
     if (attachments === undefined) {
       return {
@@ -1156,8 +1195,14 @@ async function boot(
       }
     }
     try {
-      const start = surface.pendingAttachments.length
+      savingImages = true
+      signal?.throwIfAborted()
+      const owner = surface.agent
       const refs = await attachments.saveImages(inputs)
+      signal?.throwIfAborted()
+      if (surface.agent !== owner) return { error: uiText('附加图片期间会话已切换，请在当前会话重试', 'Session changed while saving images; retry in the current session') }
+      draftImages.remember(refs, [...surface.pendingAttachments, ...[...parked.values()].flatMap(entry => entry.surface.pendingAttachments)])
+      const start = surface.pendingAttachments.length
       surface.pendingAttachments = [...surface.pendingAttachments, ...refs]
       publishPendingImages()
       return { error: null, chips: refs.map((_ref, index) => imageChip(start + index)) }
@@ -1172,19 +1217,20 @@ async function boot(
         return { error: uiText('图片边长过大，请压缩后重试', 'Image dimension is too large; compress it and try again') }
       }
       return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
-    }
+    } finally { savingImages = false }
   }
   const ingestImageBytes = async (
     input: { data: Uint8Array; mediaType: ImageMediaType; name: string },
+    signal?: AbortSignal,
   ): Promise<{ error: string | null; chip?: string }> => {
-    const result = await ingestImageBatch([input])
+    const result = await ingestImageBatch([input], signal)
     return result.error === null
       ? { error: null, ...(result.chips?.[0] === undefined ? {} : { chip: result.chips[0] }) }
       : { error: result.error }
   }
   /** Read and classify one local image before the attachment service admits its batch. */
   const readImageFileInput = (path: string): { data: Uint8Array; mediaType: ImageMediaType; name: string } => {
-    const absolute = resolve(path)
+    const absolute = resolve(surface.cwd, path)
     const bytes = new Uint8Array(readFileSync(absolute))
     const mediaType = sniffMediaType(bytes)
       ?? mediaTypeFromPath(absolute)
@@ -1198,28 +1244,38 @@ async function boot(
   // Prompt admission and preset selection share the same session queue. The
   // claim lands before the next switch checks blank state, closing the event gap.
   const dispatchOrFollowup = async (text: string, steer: boolean): Promise<void> => {
+    if (changingSession || mcpMutation) throw new Error('Session or MCP change in progress; draft retained')
     const commandAgent = surface.agent
+    const commandImages = [...surface.pendingAttachments]
+    const commandEpoch = imageDraftEpoch
+    // Raw host archives require an explicit command, never the default UI export.
+    if (text.trim() === '/export --raw') text = '/export'
+    else if (text.trim() === '/export') {
+      const path = await exportDisplayedTranscript(store.getSnapshot().nodes, uiLocale())
+      process.stdout.write(`${uiText('已导出脱敏显示投影', 'Exported masked display projection')}: ${path}\n`)
+      return
+    } else if (/^\/export(?:\s|$)/u.test(text)) {
+      throw new Error(uiText('用法：/export（脱敏显示投影）或 /export --raw（完整原始归档，可能含敏感数据）', 'Usage: /export (masked display projection) or /export --raw (full raw archive, may contain sensitive data)'))
+    }
     const submit = async (): Promise<void> => {
       await presetQueue.run(commandAgent.id, () => {
         // A delayed fallback from a replaced session never lands in the new
         // session's composer or attachment queue.
-        if (surface.agent !== commandAgent) return
-        const sending = attachmentsForSubmit(text, surface.pendingAttachments)
-        surface.pendingAttachments = sending
+        if (surface.agent !== commandAgent) throw new Error('The session changed before input admission')
+        const sending = attachmentsForSubmit(text, commandImages)
         const prose = stripImageChips(text)
         if (sending.length > 0 && !currentModelAcceptsImage()) {
-          publishPendingImages()
-          process.stderr.write(`${uiText(
-            '当前模型不接受图片。请在 /settings models 选择带 · 图 的模型，或在 settings.yaml 为该模型声明 input: [text, image]。',
-            'The current model does not accept images. Pick a model marked · image in /settings models, or set input: [text, image] for it in settings.yaml.',
-          )}\n`)
-          return
+          throw new Error(uiText('当前模型不接受图片；草稿与附件已保留', 'The current model does not accept images; draft and attachments retained'))
         }
         const message = createTuiUserMessage(prose, sending)
-        surface.pendingAttachments = []
-        publishPendingImages()
         if (steer) commandAgent.steer(message)
         else commandAgent.followup(message)
+        // Only accepted resources leave the composer; concurrent attachment intake survives.
+        const admitted = new Set(sending)
+        if (imageDraftEpoch === commandEpoch) {
+          surface.pendingAttachments = surface.pendingAttachments.filter(ref => !admitted.has(ref))
+          publishPendingImages()
+        }
         presetQueue.claimPrompt(commandAgent.id)
         recency.touch(commandAgent.session.header)
       })
@@ -1234,17 +1290,21 @@ async function boot(
       return
     }
     try {
-      const images = await encodeTuiCommandImages(ctx.attachments, surface.pendingAttachments)
-      const execution = await commands.execute(commandAgent, text, images.map(image => ({ type: 'image' as const, ...image })), new AbortController().signal)
+      const execution = await executeImageCommand(
+        { owner: commandAgent, epoch: commandEpoch, images: commandImages },
+        { owner: () => surface.agent, epoch: () => imageDraftEpoch, images: () => surface.pendingAttachments,
+          replace: images => { surface.pendingAttachments = images; publishPendingImages() } },
+        images => encodeTuiCommandImages(ctx.attachments, images),
+        images => commands.execute(commandAgent, text, images.map(image => ({ type: 'image' as const, ...image })), new AbortController().signal),
+      )
       if (execution !== undefined) {
-        surface.pendingAttachments = []
-        publishPendingImages()
         recency.touch(commandAgent.session.header)
         return
       }
       await submit()
-    } catch {
-      await submit()
+    } catch (error) {
+      // A failed command may already have side effects; never resubmit it as a model turn.
+      throw error
     }
   }
   const foldHooks = {
@@ -1295,11 +1355,16 @@ async function boot(
     try {
       await handle.dispose()
     } catch (error) {
-      fail(ctx, error)
+      console.error(`dsh: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
   /** Swap the surface onto a freshly created agent (/new). */
-  const newSession = async (): Promise<void> => {
+  let changingSession = false
+  const newSession = async (background = false): Promise<string | null> => {
+    if (changingSession) return 'Session switch already in progress'
+    if (background && (surface.pendingApproval || surface.pendingQuestion)) return 'Resolve the pending decision before backgrounding'
+    if (background && parked.size >= 8) return 'Eight resident sessions are already retained; resume one first'
+    changingSession = true
     try {
       if (projectionCheckpointIsComplete(surface.agent.session.snapshotEvents())) {
         projections.write(
@@ -1308,24 +1373,45 @@ async function boot(
           surface.fold,
         )
       }
-      // A new session continues the preset the surface currently runs; a
-      // metadata-free session resolves the roster default instead.
-      const previousSessionId = surface.agent.id
-      const nextPreset = recordedPreset(surface.agent.session.header, surface.agent.session.snapshotEvents())
+      // An explicit future default precedes the current preset for new sessions.
+      // Resume/fork continue to use their recorded composition.
+      const previousAgent = surface.agent
+      const previousSessionId = previousAgent.id
+      const nextPreset = config.preferredPreset?.get() || recordedPreset(surface.agent.session.header, surface.agent.session.snapshotEvents())
       const next = await createTuiAgent(ctx, surface.cwd, nextPreset)
-      const nextReasoning = await resolveTuiReasoning(ctx, next.selection)
+      const { reasoning: nextReasoning, cwd: nextCwd } = await replayTuiResumeOrDispose(next.handle, async () => ({
+        reasoning: await resolveTuiReasoning(ctx, next.selection),
+        cwd: ctx.workingDirectory.get(next.agent.session),
+      }))
+      if (background && (surface.pendingApproval || surface.pendingQuestion)) { await disposePrepared(next.handle); throw new Error('Resolve the pending decision before backgrounding') }
       unsubscribe()
-      await currentHandle.dispose()
+      abortSurfaceRequests()
+      try {
+        if (background) parkCurrent()
+        else await currentHandle.dispose()
+      } catch (error) {
+        if (ctx.agents.get(previousSessionId) === previousAgent) {
+          unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
+          await disposePrepared(next.handle)
+          throw error
+        }
+        // A quiescent old handle may report a contained teardown error.
+        // Keep the prepared replacement usable instead of exiting the host.
+        console.error(`dsh: ${error instanceof Error ? error.message : String(error)}`)
+      }
       presetQueue.forget(previousSessionId)
       currentHandle = next.handle
       surface.fold = initialState()
       surface.scratch = createScratch()
       surface.agent = next.agent
+      surface.cwd = nextCwd
       surface.selection = next.ref
       surface.currentModel = next.selection.model
       surface.busy = false
       surface.pendingApproval = null
       surface.pendingQuestion = null
+      surface.approvalResolve = null
+      surface.questionResolve = null
       surface.feedback = new Map()
       surface.pendingAttachments = []
       surface.commands = []
@@ -1334,15 +1420,45 @@ async function boot(
       surface.subagents = []
       surface.workflows = createWorkflowProjection()
       surface.reasoning = nextReasoning
-      unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
+      unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
       refreshCatalogs()
       void loadFeedback()
+      return null
     } catch (error) {
-      fail(ctx, error)
-    }
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(`dsh: ${message}`)
+      return message
+    } finally { changingSession = false }
   }
   /** Resume one persisted session onto the surface; rebuilds the transcript from its log. */
   const resumeSession = async (id: string): Promise<string | null> => {
+    if (changingSession) return 'Session switch already in progress'
+    changingSession = true
+    try { return await resumeSessionImpl(id) } finally { changingSession = false }
+  }
+  const resumeSessionImpl = async (id: string): Promise<string | null> => {
+    const resident = parked.get(id)
+    if (resident) {
+      const previous = surface.agent
+      unsubscribe()
+      abortSurfaceRequests()
+      try { await currentHandle.dispose() } catch (error) {
+        if (ctx.agents.get(previous.id) === previous) {
+          unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
+          return String(error)
+        }
+      }
+      resident.off()
+      parked.delete(id)
+      presetQueue.forget(previous.id)
+      currentHandle = resident.handle
+      surface = resident.surface
+      surface.version = Math.max(surface.version, store.getSnapshot().version) + 1
+      unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
+      refreshSettings(); refreshCatalogs(); void loadFeedback()
+      return null
+    }
+    if (id === String(surface.agent.id)) return null
     const gen = ++resumeGeneration
     resumeAbort?.abort()
     const controller = new AbortController()
@@ -1411,6 +1527,7 @@ async function boot(
     let fold: FoldState
     let scratch: FoldScratch
     let nextWorkflows: Map<string, WorkflowRow>
+    let nextCwd: string
     try {
       const replayed = await replayTuiResumeOrDispose(next, async () => {
         const sidecar = await projections.read(String(next.agent.session.header.id), next.agent.session.header.createdAt)
@@ -1449,18 +1566,20 @@ async function boot(
           fold: targetFold,
           scratch: targetScratch,
           workflows: foldWorkflowSessionEvents(events),
+          cwd: ctx.workingDirectory.get(next.agent.session),
         }
       })
       fold = replayed.fold
       scratch = replayed.scratch
       nextWorkflows = replayed.workflows
+      nextCwd = replayed.cwd
     } catch (error) {
       if (gen === resumeGeneration) {
         resumeAbort = null
         surface.resumeProgress = null
         publishSurfaceFold()
       }
-      fail(ctx, error)
+      console.error(`dsh: ${error instanceof Error ? error.message : String(error)}`)
       return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
     }
     if (resumeWasCancelled(controller.signal, gen, resumeGeneration)) {
@@ -1487,27 +1606,29 @@ async function boot(
     const previousSessionId = previousAgent.id
     unsubscribe()
     try {
+      abortSurfaceRequests()
       await currentHandle.dispose()
     } catch (error) {
       // A disposer that rejected before unregistering leaves the old surface
       // adoptable. Restore its subscription and discard the prepared target.
       if (ctx.agents.get(previousSessionId) === previousAgent) {
-        unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
+        unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
         await disposePrepared(next)
         surface.resumeProgress = null
         publishSurfaceFold()
-        fail(ctx, error)
+        console.error(`dsh: ${error instanceof Error ? error.message : String(error)}`)
         return `${uiText('恢复失败', 'Resume failed')}: ${error instanceof Error ? error.message : String(error)}`
       }
       // The old Agent reached registry quiescence despite a contained teardown
       // callback failure. Adopt the prepared target rather than strand the UI.
-      fail(ctx, error)
+      console.error(`dsh: ${error instanceof Error ? error.message : String(error)}`)
     }
     presetQueue.forget(previousSessionId)
     currentHandle = next
     surface.fold = fold
     surface.scratch = scratch
     surface.agent = next.agent
+    surface.cwd = nextCwd
     surface.selection = ref
     surface.currentModel = selection.model
     surface.busy = false
@@ -1522,7 +1643,7 @@ async function boot(
     surface.workflows = nextWorkflows
     surface.reasoning = nextReasoning
     surface.resumeProgress = null
-    unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections)
+    unsubscribe = subscribe(ctx, store, surface, refreshSettings, projections, isResident, notificationsEnabled)
     // The presets page marks the CURRENT preset: republish settings so the
     // marker follows the resumed session.
     refreshSettings()
@@ -1535,9 +1656,8 @@ async function boot(
     return null
   }
   /**
-   * Switch the CURRENT session onto one agent preset, in place — the exact
-   * Web mechanism. The agent and the session survive; only the composition is
-   * swapped, and it is recorded in the log afterwards.
+   * Switch a blank idle session, or save the default for the next session.
+   * The official registry owns composition and durable selection events.
    */
   const switchPreset = async (id: string): Promise<string | null> => {
     const agent = surface.agent
@@ -1545,30 +1665,27 @@ async function boot(
       if (surface.agent !== agent) {
         return uiText('会话已切换，未应用预设', 'The session changed before the preset could be applied')
       }
-      // Re-read after earlier queued work. A prompt claims the session in this
-      // queue before `turn/start` becomes observable.
-      if (presetQueue.presetLocked(agent.id, agent.session.snapshotEvents())) {
-        return uiText(
-          '预设已锁定：当前会话已经开始对话，预设不可再变更（请 /new 开新会话后再切换）',
-          'Preset locked: this conversation has started; use /new before selecting another preset',
-        )
-      }
       const presetService = ctx.get('agentPresets')
       if (presetService === undefined) {
         return uiText(
-          'agent 预设服务未加载（bundle 缺 dsh-agent-presets）',
-          'Agent preset service is not loaded (bundle lacks dsh-agent-presets)',
+          'agent 预设服务未加载（bundle 缺 dsh-agent-preset-registry）',
+          'Agent preset service is not loaded (bundle lacks dsh-agent-preset-registry)',
         )
       }
       try {
-        // recompose resolves and prepares the target before moving the scope;
-        // an invalid target leaves the previous composition installed.
-        const preset = await presetService.recompose(agent.ctx, id)
-        agent.session.append('agent-preset/selected', { agentPreset: preset.id })
-        if (surface.agent === agent) {
-          refreshSettings()
-          refreshCatalogs()
-        }
+        const result = await applyTuiPreset({
+          registry: presetService, agent, id,
+          isCurrent: () => surface.agent === agent,
+          isBusy: () => surface.busy,
+          isLocked: () => presetQueue.presetLocked(agent.id, agent.session.snapshotEvents()),
+          saveDefault: preset => ctx.settings.update('tui', { preferredPreset: preset }),
+        })
+        refreshSettings()
+        refreshCatalogs()
+        if (result === 'saved-default') return uiText(
+          `当前会话预设保持不变；已保存新会话默认预设 ${id}，使用 /new 应用`,
+          `Current session unchanged; saved ${id} for new sessions. Use /new to apply`,
+        )
         return null
       } catch (error) {
         return `${uiText('切换预设失败', 'Preset switch failed')}: ${error instanceof Error ? error.message : String(error)}`
@@ -1638,6 +1755,25 @@ async function boot(
       }
     }
   }
+  // Retain one explicit inspection cut so page boundaries and export use the same record.
+  const sourceInspection = new SourceInspectionCache()
+  const inspectSessionSource = async (fresh = false): Promise<ToolSourceDocument> => {
+    const owner = surface.agent
+    const document = await sourceInspection.read(owner.id, '', fresh, () => readSessionSource(ctx.sessionQuery, owner.id))
+    if (surface.agent !== owner) throw new Error('Session changed during source inspection')
+    return document
+  }
+  const inspectSource = async (callId: string, fresh = false): Promise<ToolSourceDocument> => {
+    const owner = surface.agent
+    const document = await sourceInspection.read(owner.id, callId, fresh, () => readToolSource(ctx.sessionQuery, { sessionId: owner.id, callId }, {
+      present: (toolName, args, result) => {
+        const definition = owner.ctx.tools.get(toolName)
+        return { call: definition?.presentCall?.(args), result: result === undefined ? undefined : definition?.presentResult?.(args, result) }
+      },
+    }))
+    if (surface.agent !== owner) throw new Error('Session changed during tool source inspection')
+    return document
+  }
   /**
    * One-shot --print executor: submit through the unified dispatch path,
    * wait for the turn to settle, print only the assistant result to stdout,
@@ -1672,6 +1808,7 @@ async function boot(
     const result = renderAssistantResultPlain(store.getSnapshot().nodes.slice(firstCount))
     if (result !== '') process.stdout.write(result + '\n')
     const reason = turnEndReasonAfter(surface.agent.session.snapshotEvents(), turnBefore)
+    if (reason?.kind === 'error') process.stderr.write(redactDisplayText(`${reason.error.code}: ${reason.error.message}`) + '\n')
     requestExit(ctx, reason === undefined ? (prompt.startsWith('/') ? EXIT_OK : EXIT_FAILURE) : mapTurnEndToExitCode(reason))
   }
   try {
@@ -1708,17 +1845,98 @@ async function boot(
     }
     if (isTty) {
       const { runInk } = await import('./render')
-      const inkDone = runInk(store, {
-        submit: (text, steer) => { void dispatchOrFollowup(text, steer).catch((error: unknown) => { fail(ctx, error) }) },
+      const adapter: HarnessAdapter = {
+        submit: (text, steer) => dispatchOrFollowup(text, steer),
+        editDraft: async (text, signal) => {
+          const owner = surface.agent
+          const controller = new AbortController()
+          const abort = (): void => controller.abort()
+          signal?.addEventListener('abort', abort, { once: true })
+          if (signal?.aborted) controller.abort()
+          surfaceRequests.add(controller)
+          try {
+            const edited = await runExternalEditor(text, { cwd: surface.cwd, signal: controller.signal })
+            if (surface.agent !== owner || controller.signal.aborted) throw new Error('Draft session changed; editor result discarded')
+            return edited
+          } finally {
+            signal?.removeEventListener('abort', abort)
+            surfaceRequests.delete(controller)
+          }
+        },
+        sendChild: async (id, text, delivery) => {
+          const owner = surface.agent
+          const controller = new AbortController()
+          surfaceRequests.add(controller)
+          try {
+            const receipt = await sendChildPrompt(ctx.get('subagents'), owner.id, id, text, delivery, controller.signal)
+            return { messageId: String(receipt.messageId) }
+          } finally { surfaceRequests.delete(controller) }
+        },
+        readSessionSource: async (offset = 0, size = 8000, fresh = false) => {
+          const document = await inspectSessionSource(fresh)
+          return { callId: '', status: document.status, warnings: document.warnings, ...pageToolSource(document, offset, size) }
+        },
+        exportSessionSource: async () => exportToolSource(await inspectSessionSource()),
+        readToolSource: async (callId, offset = 0, size = 8000, fresh = false) => {
+          const document = await inspectSource(callId, fresh)
+          return { callId, status: document.status, warnings: document.warnings, ...pageToolSource(document, offset, size) }
+        },
+        exportToolSource: async callId => exportToolSource(await inspectSource(callId)),
+        removeBundle: async bundle => {
+          if (!pluginUpdates) throw new Error('Plugin manager unavailable')
+          const result = await pluginUpdates.remove(bundle)
+          await reloadSettings()
+          return { application: result.application, ...(result.restartReason ? { restartReason: result.restartReason } : {}), ...(result.error ? { error: result.error.code } : {}) }
+        },
+        setBundleEnabled: async (bundle, enabled) => {
+          if (!pluginUpdates) throw new Error('Plugin manager unavailable')
+          const result = await pluginUpdates.setEnabled(bundle, enabled)
+          await reloadSettings()
+          return { application: result.application, ...(result.restartReason ? { restartReason: result.restartReason } : {}), ...(result.error ? { error: result.error.code } : {}) }
+        },
+        installPlugin: async (bundle, version) => {
+          if (!pluginUpdates) throw new Error('Plugin manager unavailable')
+          const result = await pluginUpdates.install(bundle, version)
+          await reloadSettings()
+          return result
+        },
+        updatePlugin: async (bundle, version) => {
+          if (!pluginUpdates) throw new Error('Plugin manager unavailable')
+          const result = await pluginUpdates.update(bundle, version)
+          await reloadSettings()
+          return result
+        },
+        restoreDraftImages: resources => {
+          const restored = draftImages.restore(resources)
+          imageDraftEpoch += 1
+          surface.pendingAttachments = restored
+          publishPendingImages()
+        },
+        exportTranscript: () => exportDisplayedTranscript(store.getSnapshot().nodes, uiLocale()),
         cancel: () => { surface.agent.cancel({ kind: 'user' }) },
         exit: () => {
           // Cancel first so whenIdle in the teardown settles promptly even
           // when the user quits mid-turn; nothing here may throw, or the
           // launcher's teardown race escalates into a failing exit code.
           try { surface.agent.cancel({ kind: 'user' }) } catch {}
-          requestExit(ctx, EXIT_OK)
+          surfaceClosing = true
+          // Keep the Loader alive until an admitted atomic profile mutation settles.
+          void pluginToggleTail.then(() => requestExit(ctx, EXIT_OK))
         },
         newSession: () => { void newSession() },
+        backgroundSession: () => newSession(true),
+        listRewindPoints: () => surface.agent.session.snapshotEvents().flatMap(event => event.type === 'turn/end' && event.data.reason.kind === 'completed' ? [{ atSeq: event.seq, turn: event.data.turn }] : []).slice(-50).reverse(),
+        rewindSession: async atSeq => {
+          if (changingSession || surface.agent.status === 'running') return 'Wait for the current turn or session switch to settle'
+          const owner = surface.agent
+          changingSession = true
+          try {
+            const fork = await createForkArtifact(ctx, { source: owner, cwd: surface.cwd, atSeq })
+            if (fork === null) return 'No completed turn at this boundary'
+            if (surface.agent !== owner) return 'Session changed; the fork is preserved in /sessions'
+            return await resumeSessionImpl(String(fork))
+          } catch (error) { return String(error) } finally { changingSession = false }
+        },
         resumeSession: resumeSession,
         switchPreset: switchPreset,
         renameSession: async (title) => {
@@ -1732,10 +1950,7 @@ async function boot(
         },
         changeWorkspace: async (path) => {
           try {
-            const target = resolve(path)
-            const { statSync } = await import('node:fs')
-            if (!statSync(target).isDirectory()) return uiText('目标不是目录', 'The target is not a directory')
-            process.chdir(target)
+            const target = await ctx.workingDirectory.set(surface.agent, path)
             surface.cwd = target
             surface.version += 1
             store.set({ ...store.getSnapshot(), cwd: target, version: surface.version })
@@ -1759,16 +1974,16 @@ async function boot(
             return []
           }
         },
-        attachFiles: async (paths) => {
+        attachFiles: async (paths, signal) => {
           try {
-            return ingestImageBatch(paths.map(readImageFileInput))
+            return ingestImageBatch(paths.map(readImageFileInput), signal)
           } catch (error) {
             return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
           }
         },
-        attachFile: async (path) => {
+        attachFile: async (path, signal) => {
           try {
-            const result = await ingestImageBatch([readImageFileInput(path)])
+            const result = await ingestImageBatch([readImageFileInput(path)], signal)
             if (result.error !== null) return { error: result.error }
             const chip = result.chips?.[0]
             return { error: null, ...(chip === undefined ? {} : { chip }) }
@@ -1776,15 +1991,17 @@ async function boot(
             return { error: `${uiText('附加失败', 'Attach failed')}: ${error instanceof Error ? error.message : String(error)}` }
           }
         },
-        attachClipboardImage: async () => {
-          const image = await readClipboardImage()
+        attachClipboardImage: async (signal) => {
+          const owner = surface.agent
+          const image = await readClipboardImage(undefined, undefined, { ...(signal === undefined ? {} : { signal }) })
+          if (signal?.aborted || surface.agent !== owner) return { error: uiText('图片附加已取消', 'Image attachment cancelled') }
           if (image === null) {
             return {
               error: uiText('剪贴板里没有图片（Windows 请用 Alt+V）', 'No image on the clipboard (on Windows use Alt+V)'),
               empty: true,
             }
           }
-          return ingestImageBytes(image)
+          return ingestImageBytes(image, signal)
         },
         syncImageChips: (previousDraft, nextDraft) => {
           const next = reconcileImageChips(previousDraft, nextDraft, surface.pendingAttachments)
@@ -1808,84 +2025,82 @@ async function boot(
             return `${uiText('分叉失败', 'Fork failed')}: ${error instanceof Error ? error.message : String(error)}`
           }
         },
-        selectModel: (provider, model, reasoningEffort) => {
+        selectModel: async (provider, model, reasoningEffort) => {
           const effort = reasoningEffort === undefined ? undefined : ReasoningEffortId(reasoningEffort)
-          surface.selection.current = {
-            provider,
-            model,
-            ...(effort === undefined ? {} : { reasoningEffort: effort }),
-          }
+          const nextSelection = { provider, model, ...(effort === undefined ? {} : { reasoningEffort: effort }) }
+          const agent = surface.agent
+          const reasoning = await resolveTuiReasoning(ctx, nextSelection)
+          await ctx.agentDefaultModel.saveSelection(nextSelection)
+          if (surface.agent !== agent) throw new Error('The session changed while saving model selection')
+          surface.selection.current = nextSelection
           surface.currentModel = model
-          void ctx.agentDefaultModel.saveSelection(surface.selection.current)
-          surface.reasoning = {
-            effort: effort === undefined ? undefined : String(effort),
-            levels: surface.reasoning.levels,
-          }
+          surface.reasoning = reasoning
           surface.version += 1
-          store.set({
-            ...store.getSnapshot(),
-            provider,
-            model,
-            reasoning: surface.reasoning,
-            version: surface.version,
-          })
-          const nextSelection = {
-            provider,
-            model,
-            ...(effort === undefined ? {} : { reasoningEffort: effort }),
-          }
-          void resolveTuiReasoning(ctx, nextSelection).then((reasoning) => {
-            surface.reasoning = reasoning
-            surface.version += 1
-            store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
-          }).catch(() => {})
+          store.set({ ...store.getSnapshot(), provider, model, reasoning, version: surface.version })
         },
-        setEffort: (effort) => {
-          // `/effort off|low|high|max`: set (or clear, for off) the persisted
-          // reasoning effort on the current default route.
+        setEffort: async (effort) => {
+          const agent = surface.agent
           const selected = surface.selection.current ?? ctx.agentDefaultModel.currentSelection()
-          const reasoningEffort = effort === undefined ? undefined : ReasoningEffortId(effort)
-          surface.selection.current = {
-            provider: selected.provider,
-            model: selected.model,
-            ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          if (effort !== undefined && !surface.reasoning.levels.includes(effort)) throw new Error('Unsupported reasoning effort')
+          const nextSelection = {
+            provider: selected.provider, model: selected.model,
+            ...(effort === undefined ? {} : { reasoningEffort: ReasoningEffortId(effort) }),
           }
+          const reasoning = await resolveTuiReasoning(ctx, nextSelection)
+          await ctx.agentDefaultModel.saveSelection(nextSelection)
+          if (surface.agent !== agent) throw new Error('The session changed while saving reasoning effort')
+          surface.selection.current = nextSelection
           surface.currentModel = selected.model
-          void ctx.agentDefaultModel.saveSelection(surface.selection.current)
-          surface.reasoning = { effort, levels: surface.reasoning.levels }
+          surface.reasoning = reasoning
           surface.version += 1
-          store.set({ ...store.getSnapshot(), reasoning: surface.reasoning, version: surface.version })
+          store.set({ ...store.getSnapshot(), reasoning, version: surface.version })
         },
         cycleSandbox: () => {
           // Shift+Tab: rotate the session's file-policy override. Write the
           // snapshot immediately so the permission chip does not wait for the
           // fold subscription; appending `sandbox/mode` keeps the log durable.
           const current = ctx.sandboxPolicy.resolve({ session: surface.agent.session }).mode
-          const index = SANDBOX_MODES.indexOf(current)
-          const next = SANDBOX_MODES[(index + 1) % SANDBOX_MODES.length] ?? 'read-only'
+          const next = current === 'read-only' ? 'workspace-write' : 'read-only'
           setSandboxMode(surface.agent.session, next)
           surface.version += 1
           store.set({ ...store.getSnapshot(), sandbox: next, version: surface.version })
           return next
         },
+        setPermissionDefault: async preset => {
+          await setPermissionDefault(ctx, preset)
+          await reloadSettings()
+          surface.version += 1
+          store.set({ ...store.getSnapshot(), version: surface.version, permissionCatalog: readPermissionPresets(ctx, surface.agent) })
+        },
+        selectPermissionPreset: preset => {
+          if (surface.busy || surface.pendingApproval || surface.pendingQuestion) throw new Error('Resolve the current turn or decision before changing permission presets')
+          selectPermissionPreset(ctx, surface.agent, preset)
+        },
+        setApprovalPolicy: (policy) => {
+          if (surface.pendingApproval !== null) throw new Error(uiText('请先处理当前审批', 'Resolve the pending approval first'))
+          changeApprovalPolicy(ctx, surface.agent, policy)
+          surface.version += 1
+          store.set({ ...store.getSnapshot(), approval: readApprovalPolicy(ctx, surface.agent), version: surface.version })
+        },
         cancelResume,
-        approve: (outcome) => {
-          surface.pendingApproval = null
-          const resolve = surface.approvalResolve
-          surface.approvalResolve = null
-          surface.version += 1
-          store.set({ ...store.getSnapshot(), pendingApproval: null, version: surface.version })
-          resolve?.(outcome)
-        },
-        answerQuestion: (answers) => {
-          surface.pendingQuestion = null
-          const resolve = surface.questionResolve
-          surface.questionResolve = null
-          surface.version += 1
-          store.set({ ...store.getSnapshot(), pendingQuestion: null, version: surface.version })
-          resolve?.([...answers])
-        },
+        approve: (outcome, requestId) => { settleApproval(store, surface, requestId, outcome) },
+        answerQuestion: (answers, requestId) => { settleQuestion(store, surface, requestId, answers) },
         updateSetting: patch => ctx.settings.update('tui', patch as object),
+        manageMcp: request => {
+          const run = pluginToggleTail.then(async () => {
+            if (surfaceClosing) return 'TUI is closing'
+            if (!config.profilePatchPath) return 'Profile editing is unavailable'
+            if (changingSession || ctx.agents.list().some(agent => agent.status === 'running' || queuedEntries(agent).length > 0) || surface.fold.goal?.phase === 'active') return 'Wait for foreground and resident tasks to settle before changing MCP'
+            mcpMutation = true
+            try {
+              await manageMcp({ ctx, patchPath: config.profilePatchPath, surfacePluginId: name, protectedIds: config.pluginToggleProtectedIds ?? [], settleTimeoutMs: config.pluginToggleSettleTimeoutMs ?? DEFAULT_PLUGIN_TOGGLE_SETTLE_TIMEOUT_MS }, request)
+              await reloadSettings()
+              return null
+            } catch { return 'MCP change failed; check configuration and host diagnostics. Existing credentials were not cleared.' } finally { mcpMutation = false }
+          })
+          pluginToggleTail = run.then(() => {}, () => {})
+          return run
+        },
         togglePlugin,
         updatePluginConfig: async (ns, patch) => {
           try {
@@ -1906,7 +2121,9 @@ async function boot(
             return
           }
           if (kind === 'subagents') {
-            void subagentRows(ctx, surface.agent.id).then((rows) => {
+            const owner = surface.agent
+            void subagentRows(ctx, owner.id).then((rows) => {
+              if (surface.agent !== owner) return
               surface.subagents = rows
               surface.version += 1
               store.set({ ...store.getSnapshot(), subagents: rows, version: surface.version })
@@ -1918,14 +2135,23 @@ async function boot(
             model: agent.options.model ?? '',
             status: agent.status,
           }))
-          void loadSessionRows(ctx, liveRows).then((rows) => {
+          sessionRowsRequest?.abort()
+          const request = new AbortController()
+          sessionRowsRequest = request
+          surfaceRequests.add(request)
+          const owner = surface.agent
+          void loadSessionRows(ctx.get('sessionQuery'), liveRows, request.signal, { cache: sessionTitleCache, persistence: ctx.get('sessionPersistence'), isLive: id => ctx.sessions.get(id) !== undefined }).then((rows) => {
+            if (request.signal.aborted || sessionRowsRequest !== request || surface.agent !== owner) return
             surface.version += 1
-            store.set({ ...store.getSnapshot(), sessions: rows, version: surface.version })
-          }).catch(() => {})
+            store.set({ ...store.getSnapshot(), sessions: rows.map(row => ({ ...row, resident: parked.has(String(row.id)) })), version: surface.version })
+          }).catch(() => {}).finally(() => {
+            surfaceRequests.delete(request)
+            if (sessionRowsRequest === request) sessionRowsRequest = undefined
+          })
         },
         killJob: (id) => {
           const jobs = ctx.get('jobs')
-          try { jobs?.kill(JobId(id), surface.agent) } catch {}
+          try { jobs?.kill(JobId(id), surface.agent.id) } catch {}
           surface.jobs = jobsRows(ctx, surface.agent, Date.now())
           surface.version += 1
           store.set({ ...store.getSnapshot(), jobs: surface.jobs, version: surface.version })
@@ -1988,7 +2214,8 @@ async function boot(
           return feedbackErrorText(result.error, uiLocale())
         },
         ...(panel === null ? {} : { startup: { panel } }),
-      })
+      }
+      const inkDone = runInk(store, adapter)
       // The startup prompt is a real user submission through the unified
       // dispatch path once Ink owns the terminal — never a simulated Enter.
       if (intent.prompt !== undefined) void dispatchOrFollowup(intent.prompt, false).catch((error: unknown) => { fail(ctx, error) })
@@ -2024,7 +2251,7 @@ async function boot(
         const nodes = store.getSnapshot().nodes
         for (const node of nodes.slice(firstCount)) {
           const rendered = renderNodePlain(node, (tuiScope.get() as GeneralSettings).locale)
-          if (rendered !== '') process.stdout.write(rendered + '\n')
+          if (rendered !== '') (node.kind === 'status' && node.error ? process.stderr : process.stdout).write(rendered + '\n')
         }
       }
       // The startup prompt runs through the same linear path as a REPL line;
@@ -2040,8 +2267,16 @@ async function boot(
   } catch (error) {
     fail(ctx, error)
   } finally {
+    abortSurfaceRequests()
+    offKeybindings()
+    await pluginToggleTail
     try { offSkillsChange() } catch {}
     try { unsubscribe() } catch {}
+    for (const entry of parked.values()) {
+      entry.off()
+      await disposePrepared(entry.handle)
+    }
+    parked.clear()
     try { await surface.agent.whenIdle() } catch {}
     await recency.drain()
     await projections.drain()
@@ -2058,11 +2293,16 @@ async function boot(
  */
 export function apply(ctx: Context, config: Config): void {
   if (config.runtimeDiagnosticPath !== undefined) writeRuntimeDiagnostic(ctx, config.runtimeDiagnosticPath)
-  const tuiScope = ctx.settings.register('tui', z.object({
-    busyEnter: z.union(['queue', 'steer']).default('queue'),
-    thinking: z.union(['collapsed', 'expanded']).default('collapsed'),
-    theme: z.union(['dark', 'light']).default('dark'),
-    locale: z.union(['zh', 'en']).default('zh'),
-  }))
+  ctx.effect(() => ctx.settings.configure({ auto: false }))
+  const tuiScope = { get: (): GeneralSettings => ({
+    preferredPreset: config.preferredPreset?.get() ?? '',
+    taskNotifications: config.taskNotifications?.get() ?? 'off',
+    busyEnter: config.busyEnter.get(),
+    thinking: config.thinking.get(),
+    theme: config.theme.get(),
+    appearance: currentAppearance(config.appearance.get()),
+    locale: config.locale.get(),
+    keymap: config.keymap.get(),
+  }) }
   void boot(ctx, tuiScope, config).catch((error: unknown) => { fail(ctx, error) })
 }

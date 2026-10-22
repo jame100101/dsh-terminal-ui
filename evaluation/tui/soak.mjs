@@ -6,8 +6,8 @@
  *   TUI_SOAK_MS=2000 node --import tsx/esm evaluation/tui/soak.mjs
  *
  * One runner retains one fold, parser, scratch, and append-only event list for
- * the whole wall-clock interval. Official session-log bytes are reported as
- * the process memory floor. Real ConPTY coverage remains in terminal-pty.spec.
+ * the whole wall-clock interval. Synthetic event-content size is estimated separately; it is not an
+ * actual serialized official session size. Real ConPTY coverage remains in terminal-pty.spec.
  */
 import { writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'

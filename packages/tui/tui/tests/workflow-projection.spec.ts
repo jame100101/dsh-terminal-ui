@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import {
-  applyWorkflowSessionEvent, createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
+  MAX_COMPLETED_WORKFLOW_ROWS, applyWorkflowSessionEvent, createWorkflowProjection, foldWorkflowSessionEvents, projectWorkflowSessionDelivery,
 } from '../src/workflow-projection'
 
 function event(type: string, data: unknown, seq = 0): SessionEvent {
@@ -122,4 +122,22 @@ describe('durable workflow projection', () => {
       id: 'run-a', name: 'audit', status: 'completed', phase: '', agentsStarted: 1,
     })
   })
+})
+
+it('retains active runs while bounding 2000 completed workflows identically on replay', () => {
+  const events: SessionEvent[] = [event('tool-workflow/run-start', { runId: 'still-running', name: 'active' })]
+  for (let id = 0; id < 2000; id++) {
+    events.push(event('tool-workflow/run-start', { runId: String(id), name: '中文🙂' }))
+    events.push(event('tool-workflow/run-end', { runId: String(id), stopReason: id % 2 ? 'completed' : 'cancelled' }))
+  }
+  let live = createWorkflowProjection()
+  for (const entry of events) {
+    live = applyWorkflowSessionEvent(live, entry)
+    expect(live.size).toBeLessThanOrEqual(MAX_COMPLETED_WORKFLOW_ROWS + 2)
+    expect(live.get('still-running')?.status).toBe('running')
+  }
+  expect(live.size).toBe(MAX_COMPLETED_WORKFLOW_ROWS + 1)
+  expect(live.has('0')).toBe(false)
+  expect(live.get('1999')?.status).toBe('completed')
+  expect(foldWorkflowSessionEvents(events)).toEqual(live)
 })

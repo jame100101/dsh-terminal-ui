@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  buildJobsRows, buildPluginConfigRows, buildSessionRows, buildSettingsRows, buildSubagentRows, buildWorkflowRows,
+  buildJobDetailRows, buildJobsRows, buildPluginConfigRows, buildSessionRows, buildSettingsRows, buildSubagentRows, buildWorkflowRows,
   collectCredentialRefs, collectPluginFields, groupProviders, sessionTitlesById, SETTINGS_PAGES,
 } from '../src/settings-data'
 import type { SettingsData } from '../src/store'
@@ -135,7 +135,7 @@ describe('buildSettingsRows locale', () => {
 })
 
 describe('buildSettingsRows plugin inventory', () => {
-  it('makes writable plugin rows actionable and dims disabled rows', () => {
+  it('only makes host-toggleable plugin rows actionable', () => {
     const fixture = modelsSettings()
     fixture.settings.plugins = [
       { id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true, namespace: 'storage' },
@@ -145,44 +145,42 @@ describe('buildSettingsRows plugin inventory', () => {
       { id: 'tool-bash', name: 'tool-bash', enabled: false, loaded: false, toggleable: false, toggleBlockedReason: 'managed' },
     ]
     const rows = buildSettingsRows(fixture, 'plugins', 'zh')
-    expect(rows[0]?.text).toBe('● storage · storage')
+    expect(rows[0]?.text).toBe('● storage · storage · 已激活')
     const storage = rows.find(row => row.key === 'pl-storage')
     expect(storage?.action).toBe('toggle-plugin')
     expect(storage?.meta).toEqual({ id: 'storage', enabled: true })
-    expect(storage?.text).toBe('● storage · storage')
+    expect(storage?.text).toBe('● storage · storage · 已激活')
     const off = rows.find(row => row.key === 'pl-off')
     expect(off?.action).toBe('toggle-plugin')
     expect(off?.meta).toEqual({ id: 'off', enabled: false })
     expect(off?.text).toBe('○ off · off · 未加载 · 已禁用')
-    expect(off?.dim).toBe(true)
+    expect(off?.dim).toBeUndefined()
     expect(storage?.dim).toBeUndefined()
     const pwsh = rows.find(row => row.key === 'pl-pwsh')
     expect(pwsh).toMatchObject({
-      action: 'toggle-plugin',
       dim: true,
       meta: { id: 'pwsh', enabled: false },
       text: '○ pwsh · pwsh · 未加载 · 已禁用 · 条件控制',
     })
     expect(rows.find(row => row.key === 'pl-session')).toMatchObject({
-      action: 'toggle-plugin',
       meta: { id: 'session', enabled: true },
-      text: '● session · session · 存在活跃依赖方',
+      text: '● session · session · 已激活 · 存在活跃依赖方',
     })
     expect(rows.find(row => row.key === 'pl-tool-bash')).toMatchObject({
-      action: 'toggle-plugin',
       text: '○ tool-bash · tool-bash · 未加载 · 已禁用 · profile 管理',
       dim: true,
     })
-    expect(rows.at(-2)?.text).toContain('每个插件行都可选中')
+    expect(rows.filter(row => ['pl-pwsh', 'pl-session', 'pl-tool-bash'].includes(row.key)).every(row => row.action === undefined)).toBe(true)
+    expect(rows.at(-2)?.text).toContain('受限条目只读')
   })
 
   it('renders toggle guidance in English', () => {
     const fixture = modelsSettings()
     fixture.settings.plugins = [{ id: 'storage', name: 'storage', enabled: true, loaded: true, toggleable: true }]
     const rows = buildSettingsRows(fixture, 'plugins', 'en')
-    expect(rows[0]?.text).toBe('● storage · storage')
+    expect(rows[0]?.text).toBe('● storage · storage · active')
     expect(rows.some(row => row.key === 'pl-storage' && row.action === 'toggle-plugin')).toBe(true)
-    expect(rows.at(-2)?.text).toContain('Every plugin row is selectable')
+    expect(rows.at(-2)?.text).toContain('blocked rows are read-only')
   })
 })
 
@@ -282,7 +280,7 @@ describe('groupProviders', () => {
 })
 
 describe('panel row builders', () => {
-  it('projects jobs with elapsed seconds and a kill action only for live jobs', () => {
+  it('projects all jobs as inspectable details, never immediate stop actions', () => {
     const rows = buildJobsRows([
       { id: 'bash-1', kind: 'bash', label: 'pnpm test', status: 'running', elapsedMs: 65000 },
       { id: 'bash-2', kind: 'bash', label: 'pnpm lint', status: 'completed', detail: 'exit code: 0', elapsedMs: 1200 },
@@ -291,11 +289,11 @@ describe('panel row builders', () => {
     expect(head?.text).toContain('后台任务 Jobs')
     const live = rows.find(row => row.key === 'job-bash-1')
     expect(live?.text).toContain('● bash-1 · bash · pnpm test · running · 65s')
-    expect(live?.action).toBe('kill-job')
+    expect(live?.action).toBe('inspect-job')
     expect(live?.meta?.id).toBe('bash-1')
     const done = rows.find(row => row.key === 'job-bash-2')
     expect(done?.text).toContain('○ bash-2 · bash · pnpm lint · completed · 1s · exit code: 0')
-    expect(done?.action).toBeUndefined()
+    expect(done?.action).toBe('inspect-job')
   })
 
   it('shows an empty placeholder when no jobs are registered', () => {
@@ -310,10 +308,10 @@ describe('panel row builders', () => {
       { id: 'sess-ccc', label: 'corrupt', mode: 'diagnostic', activity: 'diagnostic', depth: 1 },
     ], 'zh')
     const child = rows.find(row => row.key === 'sub-sess-aaa')
-    expect(child?.text).toBe('● 运行中 sess-aaa · continuable · 子任务 A')
+    expect(child?.text).toBe('● 运行中 sess-aaa · continuable · 子任务 A · 预设：未知')
     expect(child?.dim).toBeUndefined()
     const grandchild = rows.find(row => row.key === 'sub-sess-bbb')
-    expect(grandchild?.text).toBe('  ○ 持久化 sess-bbb · one-shot · 孙任务 B')
+    expect(grandchild?.text).toBe('  ○ 持久化 sess-bbb · one-shot · 孙任务 B · 预设：未知')
     expect(grandchild?.dim).toBe(true)
     const diagnostic = rows.find(row => row.key === 'sub-sess-ccc')
     expect(diagnostic?.text).toContain('无法解析')
@@ -367,7 +365,7 @@ describe('en locale', () => {
 
   it('renders the jobs header in English', () => {
     const rows = buildJobsRows([], 'en')
-    expect(rows[0]?.text).toContain('kills the selected job')
+    expect(rows[0]?.text).toContain('Enter views details')
   })
 
   it('renders the workflow empty state in English', () => {
@@ -488,6 +486,14 @@ describe('buildSettingsRows presets page', () => {
     expect(minimal?.meta).toEqual({ id: 'minimal' })
   })
 
+  it('allows restoring the current preset as the future default', () => {
+    const fixture = presetsFixture()
+    fixture.settings.general.preferredPreset = 'minimal'
+    const rows = buildSettingsRows(fixture, 'presets', 'en')
+    expect(rows.find(row => row.key === 'p-code')?.action).toBe('select-preset')
+    expect(rows.find(row => row.key === 'p-minimal')?.text).toContain('new-session default')
+  })
+
   it('labels user-authored presets and renders broken presets dimmed and inert', () => {
     const rows = buildSettingsRows(presetsFixture(), 'presets', 'zh')
     const local = rows.find(row => row.key === 'p-local')
@@ -501,11 +507,11 @@ describe('buildSettingsRows presets page', () => {
 
   it('shows the empty placeholder when no preset service is composed', () => {
     const rows = buildSettingsRows(modelsSettings(), 'presets', 'zh')
-    expect(rows[0]?.text).toContain('没有可用的 agent 预设')
+    expect(rows.find(row => row.key === 'p-empty')?.text).toContain('没有可用的 agent 预设')
   })
 
-  it('navigates to the presets page through the five-page Tab cycle', () => {
-    expect(SETTINGS_PAGES).toEqual(['general', 'models', 'plugins', 'inventory', 'presets'])
+  it('navigates to the presets page through the complete settings Tab cycle', () => {
+    expect(SETTINGS_PAGES).toEqual(['general', 'models', 'permissions', 'plugins', 'mcp', 'presets', 'appearance', 'diagnostics', 'inventory'])
   })
 
   it('keeps every settings page free of the old cyan title row', () => {
@@ -514,4 +520,135 @@ describe('buildSettingsRows presets page', () => {
       expect(rows[0]?.text.includes('Tab 切换模块')).toBe(false)
     }
   })
+})
+
+
+describe('task and settings safety projections', () => {
+  it('requires a separate confirmation and never offers a repeated stop', () => {
+    const job = { id: 'job-1', kind: 'shell', label: 'sleep', status: 'running', elapsedMs: 3000 }
+    expect(buildJobDetailRows(job, 'en').filter(row => row.action).map(row => row.action)).toEqual(['request-job-stop'])
+    expect(buildJobDetailRows(job, 'en', true).filter(row => row.action).map(row => row.action)).toEqual(['kill-job'])
+    for (const status of ['stopping', 'stopped', 'failed', 'completed', 'interrupted']) {
+      const rows = buildJobDetailRows({ ...job, status }, 'en', true)
+      expect(rows.some(row => row.action)).toBe(false)
+      expect(rows[1]?.text).toContain(status)
+    }
+    expect(buildJobDetailRows(undefined, 'en', true).some(row => row.action)).toBe(false)
+  })
+
+  it('keeps actual model visible when refreshed catalog removes it', () => {
+    const fixture = modelsSettings()
+    fixture.settings.models.providers = []
+    const rows = buildSettingsRows(fixture, 'models', 'en')
+    expect(rows[0]?.text).toContain(fixture.model)
+    expect(rows[0]?.text).toContain('unavailable')
+    expect(rows[0]?.action).toBeUndefined()
+  })
+
+  it('does not offer edits for environment-owned credential references', () => {
+    const fixture = modelsSettings()
+    fixture.settings.models.credentials = [{ ref: 'TEST_KEY', configured: true, source: 'environment', writable: false }]
+    const row = buildSettingsRows(fixture, 'models', 'en').find(row => row.key === 'c-TEST_KEY')
+    expect(row?.text).toContain('environment')
+    expect(row?.text).toContain('read-only')
+    expect(row?.action).toBeUndefined()
+  })
+})
+
+
+describe('authoritative runtime capabilities', () => {
+  it.each(['en', 'zh'] as const)('separates bundle install, selection and entry activation (%s)', locale => {
+    const fixture = modelsSettings()
+    fixture.settings.plugins = [{ id: 'x', name: 'plugin', enabled: true, loaded: false, toggleable: false }]
+    fixture.settings.bundles = [{ name: 'bundle', installed: true, enabled: true, availability: 'profile' }]
+    const rows = buildSettingsRows(fixture, 'plugins', locale)
+    expect(rows.find(row => row.key === 'pl-x')?.text).toContain(locale === 'en' ? 'not loaded' : '未加载')
+    expect(rows.find(row => row.key === 'bundle-bundle')?.text).toContain(locale === 'en' ? 'profile-installed' : 'profile 已安装')
+  })
+  it.each(['en', 'zh'] as const)('reports PTC lifecycle without inventing a live worker (%s)', locale => {
+    const fixture = modelsSettings()
+    expect(buildSettingsRows(fixture, 'presets', locale).find(row => row.key === 'ptc-runtime')?.text).toContain(locale === 'en' ? 'unknown' : '未知')
+    fixture.settings.ptc = { available: true, executionMode: 'persistent-in-memory' }
+    const rows = buildSettingsRows(fixture, 'presets', locale)
+    expect(rows.find(row => row.key === 'ptc-memory')?.text).toContain(locale === 'en' ? 'lost on restart' : '重启')
+    fixture.settings.ptc.executionMode = 'per-call'
+    expect(buildSettingsRows(fixture, 'presets', locale).find(row => row.key === 'ptc-memory')?.text).toContain(locale === 'en' ? 'fresh process' : '新进程')
+  })
+  it.each(['en', 'zh'] as const)('keeps independently observed child presets and external mode (%s)', locale => {
+    const rows = buildSubagentRows([{ id: 'child', label: 'Task', mode: 'external', activity: 'inactive', depth: 1, preset: 'minimal' }], locale)
+    expect(rows[1]?.text).toContain('external')
+    expect(rows[1]?.text).toContain('minimal')
+  })
+})
+
+
+describe('phase 2 settings pages', () => {
+  it('offers current appearances and maps old profiles to the current dark selection', () => {
+    const fixture = modelsSettings()
+    const rows = buildSettingsRows(fixture, 'appearance', 'en')
+    expect(rows.filter(row => row.action === 'set-appearance').map(row => row.meta?.id)).toEqual(['claude-terminal-dark', 'claude-terminal-light'])
+    expect(rows.find(row => row.text.startsWith('●'))?.meta?.id).toBe('claude-terminal-dark')
+    expect(rows.find(row => row.key === 'appearance-font')?.action).toBeUndefined()
+    fixture.settings.general.appearance = 'claude-terminal-light'
+    expect(buildSettingsRows(fixture, 'appearance', 'en').find(row => row.text.startsWith('●'))?.meta?.id).toBe('claude-terminal-light')
+  })
+  it('keeps sandbox, Plan and preset facts separate and does not offer implicit permission changes', () => {
+    const fixture = modelsSettings()
+    fixture.settings.currentPreset = 'ptc'
+    const rows = buildSettingsRows({ ...fixture, sandbox: 'read-only', plan: { active: false, pending: true } }, 'permissions', 'en')
+    expect(rows.find(row => row.key === 'perm-sandbox')?.text).toContain('read-only')
+    expect(rows.find(row => row.key === 'perm-plan')?.text).toContain('pending host confirmation')
+    expect(rows.find(row => row.key === 'perm-preset')?.text).toContain('ptc')
+    expect(rows.every(row => row.action === undefined)).toBe(true)
+    expect(buildSettingsRows(fixture, 'permissions', 'en').find(row => row.key === 'perm-sandbox')?.text).toContain('unavailable')
+  })
+  it('shows actual MCP loader/configuration facts without claiming connectivity or exposing secrets', () => {
+    const fixture = modelsSettings()
+    fixture.settings.plugins = [{ id: 'mcp', name: '@deepseek-ai/dsh-mcp', enabled: true, loaded: true, toggleable: false }]
+    fixture.settings.inventory.namespaces = [{ ns: 'mcp', applies: 'live', revision: 7, secretSlots: 1, secretSet: 1 }]
+    fixture.settings.configs = { mcp: [{ key: 'timeout', kind: 'number', display: '30000' }, { key: 'token', kind: 'secret', display: 'MUST-NOT-LEAK' }] }
+    const text = buildSettingsRows(fixture, 'mcp', 'en').map(row => row.text).join('\n')
+    expect(text).toContain('@deepseek-ai/dsh-mcp')
+    expect(text).toContain('rev 7')
+    expect(text).toContain('timeout · 30000')
+    expect(text).toContain('does not prove a connected server')
+    expect(text).not.toContain('MUST-NOT-LEAK')
+    expect(buildSettingsRows(modelsSettings(), 'mcp', 'en').some(row => row.key === 'mcp-empty')).toBe(true)
+  })
+  it('diagnostics carries observed session, PTC and credential sources with explicit unknowns', () => {
+    const fixture = modelsSettings()
+    fixture.settings.ptc = { available: true, executionMode: 'persistent-in-memory' }
+    fixture.settings.inventory.credentials = [{ ref: 'KEY', configured: true, source: 'project-env', writable: false }]
+    const rows = buildSettingsRows({ ...fixture, sessionId: 'session-1', cwd: '/fixture', goal: null }, 'diagnostics', 'en')
+    const text = rows.map(row => row.text).join('\n')
+    expect(text).toContain('Session · session-1')
+    expect(text).toContain('Workspace · /fixture')
+    expect(text).toContain('persistent-in-memory')
+    expect(text).toContain('project-env')
+    expect(text).toContain('Goal · none')
+    expect(buildSettingsRows(fixture, 'diagnostics', 'en').find(row => row.key === 'diag-session')?.text).toContain('unavailable')
+    expect(new Set(rows.map(row => row.key)).size).toBe(rows.length)
+  })
+})
+
+it('offers only host-backed ask/never choices and explains automatic rejection', () => {
+  const fixture = modelsSettings()
+  const rows = buildSettingsRows({ ...fixture, approval: { policy: 'never', source: 'session' } }, 'permissions', 'en')
+  expect(rows.filter(row => row.action !== undefined).map(row => row.meta?.id)).toEqual(['ask', 'never'])
+  expect(rows.find(row => row.key === 'approval-never')?.text).toBe('● Never prompt — reject requests')
+  expect(rows.find(row => row.key === 'approval-source')?.text).toContain('session')
+  expect(rows.find(row => row.key === 'approval-help')?.text).toContain('does not grant access')
+})
+
+
+it('MCP management only selects official client rows, not shared resource services', () => {
+ const fixture=modelsSettings()
+ fixture.settings.plugins=[
+  {id:'mcp-resources',name:'@deepseek-ai/dsh-mcp-resources',enabled:true,loaded:true,toggleable:true},
+  {id:'mcp-demo',name:'@deepseek-ai/dsh-mcp-client',enabled:true,loaded:true,toggleable:true},
+ ]
+ const rows=buildSettingsRows(fixture,'mcp','en')
+ expect(rows.find(row=>row.key==='mcp-plugin-mcp-resources')?.action).toBeUndefined()
+ expect(rows.filter(row=>row.action).every(row=>row.meta?.id==='mcp-demo')).toBe(true)
+ expect(rows.some(row=>row.key==='mcp-reconnect-mcp-demo')).toBe(true)
 })

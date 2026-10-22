@@ -5,12 +5,13 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { PRESET_NAMES, terminalPresetSource } from '../scripts/preset-assets.mjs'
 import { assemblePlugin } from '../scripts/assemble-plugin.mjs'
 import { COMPATIBLE_DSH_VERSIONS, isCompatibleDshVersion, readDshVersionFromBin, resolveOfficialDshBin } from '../bin/dsh-tui.js'
 
 const root = join(import.meta.dirname, '..', '..', '..')
 
-function writeDshPackage(packageRoot: string, version = '0.1.5-rc.3', binName = 'bin.js') {
+function writeDshPackage(packageRoot: string, version = '0.2.1-rc.2', binName = 'bin.js') {
   mkdirSync(join(packageRoot, 'lib'), { recursive: true })
   writeFileSync(join(packageRoot, 'package.json'), `${JSON.stringify({ name: '@deepseek-ai/dsh', version })}\n`)
   writeFileSync(join(packageRoot, 'lib', binName), '#!/usr/bin/env node\n')
@@ -65,13 +66,14 @@ describe('assemblePlugin', () => {
       homepage?: string
       bugs?: { url?: string }
       engines?: { node?: string }
-      dsh?: { bundle?: { patch?: string } }
+      dsh?: { bundle?: { patch?: string[] } }
       dependencies?: Record<string, string>
       bundledDependencies?: string[]
       peerDependencies?: Record<string, string>
     }
     expect(manifest.name).toBe('@jame100101/dsh-tui')
-    expect(manifest.version).toBe('0.2.2')
+    expect(manifest.version).toBe(JSON.parse(readFileSync(join(root, 'apps/tui-cli/package.json'), 'utf8')).version)
+    expect(manifest.version).toMatch(/^0\.3\.0-rc\.[1-9]\d*$/)
     expect(manifest.private).not.toBe(true)
     expect(manifest.repository).toEqual({
       type: 'git',
@@ -81,16 +83,22 @@ describe('assemblePlugin', () => {
     expect(manifest.homepage).toBe('https://github.com/jame100101/dsh-terminal-ui#readme')
     expect(manifest.bugs).toEqual({ url: 'https://github.com/jame100101/dsh-terminal-ui/issues' })
     expect(manifest.engines?.node).toBe('^22.19.0 || >=24.0.0')
-    expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
+    expect(manifest.dsh?.bundle?.patch).toEqual(['./cordis.patch.yml', ...['standard', 'ptc', 'minimal', 'cordis'].map(id => `./presets/${id}.patch.yml`)])
     expect(manifest.dependencies?.ink).toBe('7.1.1')
     expect(manifest.dependencies?.['react-reconciler']).toBe('^0.33.0')
     expect(manifest.bundledDependencies).toEqual(['ink'])
-    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-agent']).toBe('0.1.5-rc.3')
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-agent']).toBe('0.2.1-rc.2')
     expect(existsSync(join(destination, 'lib/index.js'))).toBe(true)
     expect(existsSync(join(destination, 'lib/types'))).toBe(false)
     expect(existsSync(join(destination, 'lib/tsconfig.tsbuildinfo'))).toBe(false)
     expect(existsSync(join(destination, 'bin/dsh-tui.js'))).toBe(true)
     expect(existsSync(join(destination, 'cordis.patch.yml'))).toBe(true)
+    for (const preset of PRESET_NAMES) {
+      const source = readFileSync(createRequire(join(root, 'package.json')).resolve(`@deepseek-ai/dsh-web-app/presets/${preset}.patch.yml`), 'utf8')
+      const actual = readFileSync(join(destination, 'presets', `${preset}.patch.yml`), 'utf8')
+      expect(actual).toBe(terminalPresetSource(source))
+      if (source.includes('- id: tool-schedule')) expect(actual).toContain("name: '@deepseek-ai/dsh-tool-schedule'\n            disabled: true")
+    }
     expect(existsSync(join(destination, 'README.md'))).toBe(true)
     expect(existsSync(join(destination, 'README.zh.md'))).toBe(true)
     expect(existsSync(join(destination, 'README.i18n.yaml'))).toBe(true)
@@ -125,15 +133,15 @@ describe('assemblePlugin', () => {
 
 describe('plugin-mode launcher compatibility', () => {
   it('accepts only the documented dsh RC line', () => {
-    expect(COMPATIBLE_DSH_VERSIONS).toEqual(['0.1.5-rc.3'])
-    expect(isCompatibleDshVersion('0.1.5-rc.3')).toBe(true)
+    expect(COMPATIBLE_DSH_VERSIONS).toEqual(['0.2.1-rc.2'])
+    expect(isCompatibleDshVersion('0.2.1-rc.2')).toBe(true)
     expect(isCompatibleDshVersion('0.1.0')).toBe(false)
     expect(isCompatibleDshVersion('0.2.0')).toBe(false)
   })
 
   it('reads the workspace dsh version from its JS bin', () => {
     const version = readDshVersionFromBin(join(createRequire(import.meta.url).resolve('@deepseek-ai/dsh/package.json'), '..', 'lib/bin.js'))
-    expect(version).toBe('0.1.5-rc.3')
+    expect(version).toBe('0.2.1-rc.2')
   })
 
   it('honors DSH_BIN and rejects an incompatible bin', () => {
@@ -147,7 +155,7 @@ describe('plugin-mode launcher compatibility', () => {
     const fixture = mkdtempSync(join(tmpdir(), 'dsh-path-js-'))
     try {
       const compatible = join(fixture, 'compatible')
-      const compatibleJs = writeDshPackage(compatible, '0.1.5-rc.3', 'dsh.js')
+      const compatibleJs = writeDshPackage(compatible, '0.2.1-rc.2', 'dsh.js')
       expect(resolveOfficialDshBin({ PATH: join(compatible, 'lib') })).toBe(realpathSync(compatibleJs))
 
       const incompatible = join(fixture, 'incompatible')

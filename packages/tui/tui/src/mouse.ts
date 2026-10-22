@@ -16,7 +16,7 @@ export const ENABLE_WHEEL_MOUSE = '\x1b[?1000h\x1b[?1002h\x1b[?1006h'
 /** Disable mouse tracking again (exit path). */
 export const DISABLE_WHEEL_MOUSE = '\x1b[?1006l\x1b[?1002l\x1b[?1000l'
 /** Lines one wheel tick scrolls the transcript by. */
-export const MOUSE_WHEEL_LINES = 3
+export const MOUSE_WHEEL_LINES = 1
 
 /** The direction one wheel tick asks the transcript to scroll. */
 export type MouseWheelDirection = 'up' | 'down'
@@ -103,4 +103,32 @@ export function scrollOffsetForWheel(
   return direction === 'up'
     ? Math.min(maximum, current + distance)
     : Math.max(0, current - distance)
+}
+
+
+/** Per-surface event cadence. Native terminals may already multiply physical wheel ticks. */
+export interface WheelMotion { time: number | null; direction: MouseWheelDirection | null; multiplier: number; fraction: number; integrated: boolean }
+export function createWheelMotion(integrated = false): WheelMotion {
+  return { time: null, direction: null, multiplier: 1, fraction: 0, integrated }
+}
+export function wheelMotionStep(state: WheelMotion, direction: MouseWheelDirection, now: number): number {
+  const gap = state.time === null ? Infinity : Math.max(0, now - state.time)
+  const same = direction === state.direction
+  state.time = now
+  state.direction = direction
+  if (!state.integrated) {
+    state.multiplier = !same || gap > 40 ? 1 : Math.min(6, state.multiplier + 0.3)
+    return Math.floor(state.multiplier)
+  }
+  // xterm.js proportional bursts already contain their intended event count.
+  if (same && gap < 5) return 1
+  if (!same || gap > 500) { state.multiplier = 2; state.fraction = 0 }
+  else {
+    const decay = 0.5 ** (gap / 150)
+    state.multiplier = Math.min(gap >= 80 ? 3 : 6, 1 + (state.multiplier - 1) * decay + 5 * decay)
+  }
+  const total = state.multiplier + state.fraction
+  const rows = Math.floor(total)
+  state.fraction = total - rows
+  return rows
 }

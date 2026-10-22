@@ -24,7 +24,7 @@ for (let offset = 0; offset + 512 <= tar.length;) {
   offset += 512 + Math.ceil(size / 512) * 512
 }
 for (const [name, bytes] of files) {
-  assert(/^(?:package\.json|LICENSE|README(?:\.zh)?\.md|README\.i18n\.yaml|cordis\.patch\.yml|bin\/dsh-tui\.js|lib\/[^/]+\.js|node_modules\/ink\/.+)$/.test(name), `unexpected payload: ${name}`)
+  assert(/^(?:package\.json|LICENSE|README(?:\.zh)?\.md|README\.i18n\.yaml|cordis\.patch\.yml|presets\/(?:standard|ptc|minimal|cordis)\.patch\.yml|bin\/dsh-tui\.js|lib\/[^/]+\.js|node_modules\/ink\/.+)$/.test(name), `unexpected payload: ${name}`)
   assert(!/(?:^|\/)(?:\.env(?:\..*)?|\.git|node_modules\/ink\/node_modules)(?:\/|$)/.test(name), `private payload: ${name}`)
   if (name.endsWith('package.json')) {
     const manifest = JSON.parse(bytes.toString())

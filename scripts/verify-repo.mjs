@@ -1,10 +1,11 @@
+import { verifySecurityLock } from './verify-security.mjs'
 /** Enforce the independent source/dependency closure, including test imports. */
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync, realpathSync, existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { resolve, relative, dirname, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import ts from 'typescript'
+import { moduleSpecifiers } from './module-specifiers.mjs'
 
 const root = realpathSync(fileURLToPath(new URL('../', import.meta.url)))
 const owned = ['packages/tui/tui', 'apps/tui-cli', 'scripts', 'evaluation/tui']
@@ -17,7 +18,7 @@ for (const path of manifests) {
     for (const [name, version] of Object.entries(manifest[field] ?? {})) {
       assert(!/^(workspace|file|link):/.test(version), `${path}: ${name} uses ${version}`)
       if (name.startsWith('@deepseek-ai/dsh') && name !== '@deepseek-ai/dsh-tui') {
-        assert.equal(version, '0.1.5-rc.3', `${name} version drift`)
+        assert.equal(version, '0.2.1-rc.2', `${name} version drift`)
       }
       declared.add(name)
     }
@@ -25,7 +26,9 @@ for (const path of manifests) {
 }
 // Catch stale auto-installed peers after a Harness upgrade, not only direct pins.
 const lock = readFileSync(resolve(root, 'pnpm-lock.yaml'), 'utf8')
-assert(!/@deepseek-ai\/dsh[^\s'"]*@0\.1\.(?:[0-4](?:[.-])|5-rc\.[12](?:[(':\s]|$))/.test(lock), 'lockfile contains stale Harness runtime')
+for (const match of lock.matchAll(/['\"]?(@deepseek-ai\/dsh[^\s'\"@]*)@([^(:\s'\"]+)/g)) {
+  assert.equal(match[2], '0.2.1-rc.2', `lockfile contains stale Harness runtime: ${match[1]}@${match[2]}`)
+}
 const rootManifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
 assert.deepEqual(rootManifest.workspaces, ['packages/tui/tui', 'apps/tui-cli'])
 for (const path of ['tsconfig.base.json', 'tsconfig.json', 'tsconfig.client.json', 'packages/tui/tui/tsconfig.json']) {
@@ -49,17 +52,7 @@ for (const path of walk(resolve(root, 'apps')).filter(p => p.endsWith(`${sep}pac
 const files = [...owned.flatMap(p => walk(resolve(root, p))), ...readdirSync(root).filter(p => /\.(?:ts|mjs)$/.test(p)).map(p => resolve(root, p))]
 let imports = 0
 for (const path of files.filter(p => /\.(?:tsx?|m?js)$/.test(p))) {
-  const source = ts.createSourceFile(path, readFileSync(path, 'utf8'), ts.ScriptTarget.Latest, true)
-  const specs = []
-  function visit(node) {
-    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier)) specs.push(node.moduleSpecifier.text)
-    if (ts.isCallExpression(node) && node.arguments[0] && ts.isStringLiteral(node.arguments[0])) {
-      const call = node.expression.getText(source)
-      if (call === 'import' || call === 'require' || call.endsWith('.resolve')) specs.push(node.arguments[0].text)
-    }
-    ts.forEachChild(node, visit)
-  }
-  visit(source)
+  const specs = moduleSpecifiers(path, readFileSync(path, 'utf8'))
   for (const spec of specs) {
     imports++
     assert(!/^@deepseek-ai\/[^/]+\/src(?:\/|$)/.test(spec), `${path}: private source import ${spec}`)
@@ -81,4 +74,5 @@ for (const path of files.filter(p => /\.(?:tsx?|m?js)$/.test(p))) {
     }
   }
 }
+verifySecurityLock(resolve(root, 'pnpm-lock.yaml'))
 console.log(JSON.stringify({ status: 'PASS', files: files.length, imports, harnessSourceCoupling: false }))

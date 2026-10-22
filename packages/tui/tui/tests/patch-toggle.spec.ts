@@ -117,4 +117,12 @@ describe('plugin toggle topology', () => {
     expect(hasConditionalDisabledState(entry('bash', { options: { id: 'bash', name: 'bash', disabled: { __jsExpr: 'process.platform' } } }))).toBe(true)
     expect(hasConditionalDisabledState(entry('plain', { options: { id: 'plain', name: 'plain', disabled: true } }))).toBe(false)
   })
+
+it('does not treat cached injected implementations as services owned by an MCP client', () => {
+ const provider = entry('tools', { fiber: { inject: {}, store: {} } })
+ const client = entry('mcp-client', { fiber: { inject: { tools: null }, store: { tools: { fiber: provider.fiber } } } })
+ const consumer = entry('consumer', { fiber: { inject: { tools: null }, store: {} } })
+ expect(pluginDisableBlockers([provider,client,consumer],client)).toEqual([])
+})
+
 })

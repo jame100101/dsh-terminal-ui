@@ -1,3 +1,5 @@
+import type { AppearanceId } from './theme'
+import type { ManagedBundle, PluginUpdateState } from './controller/plugin-updates'
 /**
  * Tiny external store bridging the Cordis event world (fold + agent status +
  * pending interactions) to the React world (Ink). Zero React imports:
@@ -43,6 +45,8 @@ export interface ModelEntry {
 
 /** One live agent or persisted-session row for /sessions. */
 export interface SessionEntry {
+  /** This TUI owns the live handle and may reattach without creating another writer. */
+  resident?: boolean
   id: string
   model: string
   status: string
@@ -63,12 +67,18 @@ export interface QueuedEntry {
 
 /** A pending approval question occupying the composer. */
 export interface PendingApproval {
+  /** UI request identity; omitted only by older display fixtures. */
+  requestId?: string
+  sessionId?: string
   toolName: string
   reason?: string
 }
 
 /** A pending ask_user question occupying the composer. */
 export interface PendingQuestion {
+  /** UI request identity; never reused across requests or sessions. */
+  requestId?: string
+  sessionId?: string
   questions: {
     id: string
     question: string
@@ -78,16 +88,23 @@ export interface PendingQuestion {
   }[]
 }
 
-/** The TUI's own general settings (namespace `tui` in `$DSH_HOME/settings.yaml`). */
+/** The TUI's own general settings (volatile namespace `tui` in the selected profile settings layer). */
 export interface GeneralSettings {
+  /** Preferred preset for new sessions only; never overrides replay metadata. */
+  preferredPreset?: string
   /** What plain Enter means while a turn runs: queue behind it or steer it. */
+  taskNotifications?: 'off' | 'always'
   busyEnter: 'queue' | 'steer'
   /** Whether think rows start expanded without an explicit toggle. */
   thinking: 'collapsed' | 'expanded'
   /** Terminal palette: dark (bright ANSI remap) or light (bright-on-light remap). */
   theme: 'dark' | 'light'
+  /** Optional on older profiles; absence retains the classic terminal layout. */
+  appearance?: AppearanceId
   /** UI chrome language. */
   locale: 'zh' | 'en'
+  /** Explicit keyboard migration; absent profiles retain legacy bindings. */
+  keymap?: 'legacy-dsh' | 'claude-fullscreen'
 }
 
 /** Value-free credential view: never carries the secret itself. */
@@ -106,6 +123,8 @@ export interface SettingsProviderRow {
 
 /** One pending composer image chip (Grok `[Image #N]`). */
 export interface PendingImageChip {
+  /** Opaque host-owned attachment identity, never a file path. */
+  resource?: string
   chip: string
   name: string
   bytes: number
@@ -135,7 +154,7 @@ export interface SettingsPresetRow {
   /** Display name from the preset's metadata; absent falls back to the id. */
   name: string
   /** `system` ships with the deployment; `user` was authored locally. */
-  trust: 'system' | 'user'
+  trust?: 'system' | 'user'
   /** Why this preset cannot compose a session, absent when usable. */
   broken?: string
 }
@@ -151,12 +170,18 @@ export interface SettingsNamespaceRow {
 
 /** Everything the /settings five pages render, loaded by the plugin. */
 export interface SettingsData {
+  mcp?: readonly { id: string; server: string; transport: string; tools: readonly string[]; toolCount: number }[]
   general: GeneralSettings
   models: {
     providers: readonly SettingsProviderRow[]
     credentials: readonly CredentialRow[]
   }
   plugins: readonly SettingsPluginRow[]
+  /** Public bundle inventory; installation does not imply runtime activation. */
+  bundles?: readonly ManagedBundle[]
+  pluginUpdates?: readonly PluginUpdateState[]
+  /** Observed runtime capability, not a claim that a worker currently exists. */
+  ptc?: { available: boolean; executionMode?: 'per-call' | 'persistent-in-memory' }
   /** Per-namespace editable top-level fields (plugin config editors). */
   configs: Readonly<Record<string, readonly PluginConfigField[]>>
   inventory: {
@@ -190,6 +215,8 @@ export interface SubagentRow {
   mode: string
   /** `running` / `inactive` / `diagnostic`. */
   activity: string
+  /** Independently recorded child preset; absent when its session cannot be read. */
+  preset?: string
   /** Edge distance from the root session. */
   depth: number
 }
@@ -216,6 +243,10 @@ export interface FeedbackItem {
 
 /** Immutable render snapshot published on every fold or status change. */
 export interface TuiSnapshot {
+  keybindings?: import('./keybindings').KeybindingConfig
+  permissionCatalog?: { defaultPreset?: string; defaultWritable?: boolean; defaultOptions?: readonly { value: string; name: string }[]; current: string; options: readonly { value: string; name: string; description?: string }[] } | undefined
+  /** Effective official approval policy; never means reject requests without prompting. */
+  approval?: { policy: 'ask' | 'never'; source: 'profile' | 'session' } | undefined
   /** Bumped on every publish; lets consumers skip no-op redraws. */
   version: number
   nodes: readonly TuiNode[]

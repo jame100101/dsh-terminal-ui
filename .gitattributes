@@ -1,3 +1,6 @@
 * text=auto eol=lf
 *.png binary
 *.svg text eol=lf
+
+# Terminal captures must retain exact CR/LF control bytes.
+*.ansi -text

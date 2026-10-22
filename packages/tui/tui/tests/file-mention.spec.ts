@@ -1,6 +1,10 @@
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { mentionAtCaret, pathMention, completeMention } from '../src/input/completion'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { atTokenRange, listWorkspaceMentions, pathIsInside, replaceAtToken } from '../src/file-mention'
+import { atTokenRange, listWorkspaceMentions, pathIsInside, readWorkspaceDir, replaceAtToken } from '../src/file-mention'
 
 describe('atTokenRange', () => {
   it('ignores slash commands and captures a trailing @query', () => {
@@ -50,4 +54,25 @@ describe('listWorkspaceMentions', () => {
     })
     expect(matches.map(entry => entry.relative)).toEqual(['src/api.ts', 'src/app.ts'])
   })
+})
+
+it('completes real CJK, space and emoji paths, including pasted Windows separators', () => {
+  const root = mkdtempSync(join(tmpdir(), 'dsh-mention-'))
+  try {
+    mkdirSync(join(root, '中文 目录', '子目录'), { recursive: true })
+    writeFileSync(join(root, '中文 目录', '子目录', '👩🏽‍💻 文件.ts'), '')
+    for (const query of ['中文 目录/子目录/', '中文 目录\\子目录\\']) {
+      const rows = listWorkspaceMentions(root, query, readWorkspaceDir)
+      expect(rows).toEqual([{ relative: '中文 目录/子目录/👩🏽‍💻 文件.ts', directory: false }])
+      const mention = pathMention(rows[0]!.relative)
+      const draft = '查看 @旧 保留后文'
+      const range = mentionAtCaret(draft, draft.indexOf('旧') + 1)!
+      const inserted = completeMention(draft, range, mention)
+      expect(inserted.text).toBe(`查看 ${mention} 保留后文`)
+      expect(mentionAtCaret(inserted.text, inserted.caret)?.query).toBe(rows[0]!.relative)
+    }
+    for (const query of ['../', '..\\', '/etc/', 'C:\\Users\\', '\\\\server\\share\\']) {
+      expect(listWorkspaceMentions(root, query, readWorkspaceDir)).toEqual([])
+    }
+  } finally { rmSync(root, { recursive: true, force: true }) }
 })

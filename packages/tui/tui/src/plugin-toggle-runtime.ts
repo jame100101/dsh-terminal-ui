@@ -1,3 +1,5 @@
+import type { PluginToggleResult } from './harness/adapter'
+export type { PluginToggleResult, PluginToggleFailureCode } from './harness/adapter'
 /**
  * Transactional profile-patch plugin toggles for the TUI settings page.
  * The file mutation is atomic and cross-process serialized; the operation
@@ -17,27 +19,8 @@ import {
   pluginDisableBlockers,
   pluginInventoryEntry,
   profilePatchEntry,
+  type LoaderEntryView,
 } from './patch-toggle'
-
-/** Failure categories rendered into localized TUI notices by the caller. */
-export type PluginToggleFailureCode =
-  | 'entry-unavailable'
-  | 'surface-owned'
-  | 'profile-managed'
-  | 'conditional'
-  | 'dependency-blocked'
-  | 'apply-failed'
-
-/** Outcome of one serialized profile plugin toggle. */
-export type PluginToggleResult =
-  | { ok: true; enabled: boolean }
-  | {
-    ok: false
-    code: PluginToggleFailureCode
-    detail?: string
-    blockers?: readonly string[]
-    rollback?: 'failed' | 'not-needed' | 'preserved-concurrent-edit' | 'restored'
-  }
 
 /** Inputs that vary by profile deployment. */
 export interface PluginToggleOptions {
@@ -60,7 +43,7 @@ interface PatchMutation {
   after: string
 }
 
-async function mutatePatch(
+export async function mutatePatch(
   filename: string,
   render: (content: string) => string,
 ): Promise<PatchMutation> {
@@ -72,7 +55,7 @@ async function mutatePatch(
   })
 }
 
-async function rollbackPatch(
+export async function rollbackPatch(
   filename: string,
   mutation: PatchMutation,
 ): Promise<'not-needed' | 'preserved-concurrent-edit' | 'restored'> {
@@ -92,12 +75,13 @@ interface LoaderStateWaiter {
   dispose(): void
 }
 
-function createLoaderStateWaiter(
+export function createLoaderStateWaiter(
   ctx: Context,
   patchPath: string,
   id: string,
-  enabled: boolean,
+  enabled: boolean | null,
   timeoutMs: number,
+  matches?: (entry: LoaderEntryView) => boolean,
 ): LoaderStateWaiter {
   let disposeWaiter = (): void => {}
   const promise = new Promise<void>((resolve, reject) => {
@@ -120,9 +104,10 @@ function createLoaderStateWaiter(
     const check = (): void => {
       try {
         const entry = profilePatchEntry([...ctx.loader.entries()], id)
-        if (entry === undefined || entry.disabled === enabled) return
+        if (enabled === null) { if (entry === undefined) finish(); return }
+        if (entry === undefined || entry.disabled === enabled || (matches && !matches(entry))) return
         if (enabled && entry.fiber?.state !== FiberState.ACTIVE) return
-        if (!enabled && entry.fiber !== undefined) return
+        if (!enabled && entry.fiber !== undefined && entry.fiber.state !== FiberState.DISPOSED) return
         finish()
       } catch {
         // A Loader tree replacement can make one observation race disposal;
@@ -134,6 +119,8 @@ function createLoaderStateWaiter(
     }, timeoutMs)
     timer.unref()
     disposers.push(ctx.on('internal/status', check, { global: true }))
+    disposers.push(ctx.on('loader/config-update', check, { global: true }))
+    disposers.push(ctx.on('app-boot/config-reload', check, { global: true }))
     disposers.push(ctx.on('loader/partial-dispose', check, { global: true }))
     disposers.push(ctx.on('internal/dispatch', (_mode, eventName, args) => {
       const failedPath: unknown = args[0]

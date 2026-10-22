@@ -5,6 +5,6 @@ export default defineConfig({
   entry: ['packages/tui/tui/src/render.tsx'],
   outDir: 'packages/tui/tui/lib/client',
   platform: 'node', format: 'esm', target: 'es2024',
-  deps: { neverBundle: [/^@deepseek-ai\//, /^(?:react|react\/jsx-runtime|ink|commander|marked|string-width)$/] },
+  deps: { neverBundle: [/^@deepseek-ai\//, /^(?:react|react\/jsx-runtime|ink|commander|marked|string-width|diff)$/] },
   dts: false, sourcemap: false, clean: true,
 })

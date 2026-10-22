@@ -14,14 +14,14 @@ import { randomUUID } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, ModelSelection, ModelSelectionRef } from '@deepseek-ai/dsh-agent'
-import type { AgentPresets } from '@deepseek-ai/dsh-agent-presets'
+import type { AgentPresetRegistry } from '@deepseek-ai/dsh-agent-preset-registry'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 /** A deployment with no preset roster, or the exact preset resolved for an agent. */
 export type TuiPresetResolution =
   | { kind: 'none' }
-  | { kind: 'preset'; id: string; service: AgentPresets }
+  | { kind: 'preset'; id: string; service: AgentPresetRegistry }
 
 /**
  * Resolve the effective preset recorded by one session prefix. A later
@@ -165,4 +165,36 @@ export class SessionPresetQueue {
   forget(sessionId: SessionId): void {
     this.admittedPrompts.delete(sessionId)
   }
+}
+
+/** Switch only blank idle sessions; a locked session may save a future default. */
+export async function applyTuiPreset(options: {
+  registry: Pick<AgentPresetRegistry, 'resolve' | 'select'>
+  agent: Agent
+  id: string
+  isCurrent(): boolean
+  isBusy(): boolean
+  isLocked(): boolean
+  saveDefault(id: string): Promise<unknown>
+}): Promise<'switched' | 'saved-default' | 'unchanged'> {
+  const guard = (): void => {
+    if (!options.isCurrent()) throw new Error('Session changed while selecting preset')
+    if (options.isBusy()) throw new Error('Cannot select a preset while a turn is running')
+  }
+  guard()
+  const preset = await options.registry.resolve(options.id)
+  guard()
+  if (preset.broken !== undefined) throw new Error(`Preset is broken: ${preset.broken}`)
+  const current = recordedPreset(options.agent.session.header, options.agent.session.snapshotEvents())
+  const outcome = current === preset.id ? 'unchanged' : options.isLocked() ? 'saved-default' : 'switched'
+  if (outcome === 'switched') {
+    // rc.2 select owns recomposition and its durable event; never append a duplicate.
+    await options.registry.select(options.agent, preset.id)
+    guard()
+  }
+  try { await options.saveDefault(preset.id) } catch (error) {
+    throw new Error(`${outcome === 'switched' ? 'Preset applied, but default was not saved' : 'Preset default was not saved'}: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  guard()
+  return outcome
 }

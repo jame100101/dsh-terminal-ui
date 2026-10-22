@@ -160,7 +160,7 @@ export function parseDshTuiArgs(argv, streams = { stdout: process.stdout, stderr
 }
 
 /** Harness versions this plugin-mode launcher will spawn. */
-export const COMPATIBLE_DSH_VERSIONS = Object.freeze(['0.1.5-rc.3'])
+export const COMPATIBLE_DSH_VERSIONS = Object.freeze(['0.2.1-rc.2'])
 
 /**
  * Whether a dsh package version is in the plugin-mode compatibility set.

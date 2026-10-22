@@ -12,9 +12,9 @@ export type ToolStatus = 'running' | 'done' | 'error'
 export type TuiNode =
   | { kind: 'user'; id: number; text: string }
   | { kind: 'context'; id: number; text: string; producer: string }
-  | { kind: 'assistant'; id: number; text: string; messageId: string; interrupted?: true }
+  | { kind: 'assistant'; id: number; renderId?: number; text: string; messageId: string; interrupted?: true }
   | { kind: 'deliverables'; id: number; paths: readonly string[] }
-  | { kind: 'think'; id: number; text: string; durationMs: number }
+  | { kind: 'think'; id: number; renderId?: number; text: string; durationMs: number }
   | {
     kind: 'tool'
     id: number
@@ -25,6 +25,8 @@ export type TuiNode =
     /** Parent call id when this row is a Code Mode sub-dispatch. */
     parentCallId?: string
     detail: string
+    /** Bounded presentation label retained after pending payloads are released. */
+    displayTitle?: string
     status: ToolStatus
     text: string
     /**
@@ -57,6 +59,8 @@ export type TuiNode =
     retryAt: number
     /** Whether the matching `llm/retry-started` already fired. */
     started: boolean
+    /** Host turn ended before this wait could dispatch; never a timer-derived outcome. */
+    terminal?: 'cancelled' | 'failed' | 'finished'
     /** Failure code and HTTP status only — never the message (credential safety). */
     failure: { code: string; status?: number }
   }
@@ -77,6 +81,8 @@ export interface TodoItem {
 
 /** The live streaming buffer for the current step; never a settled node. */
 export interface LiveBuffer {
+  /** Stable presentation identity shared with the eventual settled rows. */
+  renderId?: number
   text: string
   think: string
   /** Epoch ms when the current thinking run began (for the live timer). */
@@ -127,6 +133,8 @@ export interface SessionStats {
   decodeMs: number
   tokens: TokenTotals
   contextWindow: number
+  /** Last completed request with reported cache usage; absent/null means unknown. */
+  latestUsage?: TokenTotals | null
   /** Pi-compatible estimated DeepSeek spend in US dollars. */
   costUsd: number
 }

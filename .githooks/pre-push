@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+node scripts/verify-push-content.mjs
 pnpm run typecheck
 pnpm run verify:repo
 pnpm run test:docs

@@ -2,9 +2,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { FiberState, type Context } from '@deepseek-ai/cordis'
-import Hmr from '@deepseek-ai/cordis-plugin-hmr'
+import Hmr from '@deepseek-ai/dsh-hmr'
 import Timer from '@deepseek-ai/cordis-plugin-timer'
-import { boot, watchUserPatches } from '@deepseek-ai/dsh-app-boot'
+import { boot, loadOverlayPatches, reconcileProfilePatches } from '@deepseek-ai/dsh-app-boot'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { LoaderEntryView } from '../src/patch-toggle'
 import { toggleProfilePlugin } from '../src/plugin-toggle-runtime'
@@ -85,9 +85,9 @@ describe('toggleProfilePlugin', () => {
     const ctx = await boot('dsh-tui-plugin-toggle-test', config)
     await ctx.plugin(Timer)
     await ctx.plugin(Hmr, { root: [], ignored: [], debounce: 0 })
-    const disposeWatch = await watchUserPatches(ctx, {
-      binName: 'dsh-tui-plugin-toggle-test',
-      filename: patch,
+    const disposeWatch = await ctx.hmr.watchConfig(patch, async () => {
+      await reconcileProfilePatches(ctx, loadOverlayPatches('dsh-tui-plugin-toggle-test', patch), 'dsh-tui-plugin-toggle-test')
+      ctx.emit('app-boot/config-reload')
     })
     try {
       await expect(toggleProfilePlugin({
@@ -110,7 +110,7 @@ describe('toggleProfilePlugin', () => {
         protectedIds: [],
         settleTimeoutMs: 5_000,
       })).resolves.toEqual({ ok: true, enabled: false })
-      expect([...ctx.loader.entries()].find(candidate => candidate.options.id === 'optional')?.fiber).toBeUndefined()
+      expect([...ctx.loader.entries()].find(candidate => candidate.options.id === 'optional')?.fiber?.state).toBe(FiberState.DISPOSED)
     } finally {
       await disposeWatch()
       await ctx.fiber.dispose()

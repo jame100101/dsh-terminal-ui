@@ -24,7 +24,7 @@ export function standardDecoratorPlugin() {
       const file = id.split('?', 1)[0]!
       if (!/\.[cm]?tsx?$/.test(file) || file.includes('/node_modules/')) return
       program ??= ts.createProgram(
-        ts.sys.readDirectory(process.cwd(), ['.ts', '.tsx'], ['node_modules', '.test-tmp', 'RepoSentinel'], ['packages/tui/tui/**/*', 'scripts/test-invariants.ts']),
+        ts.sys.readDirectory(process.cwd(), ['.ts', '.tsx'], ['node_modules', '.test-tmp', 'RepoSentinel'], ['packages/tui/tui/**/*']),
         { target: ts.ScriptTarget.ES2024, module: ts.ModuleKind.ESNext, moduleResolution: ts.ModuleResolutionKind.Bundler, skipLibCheck: true },
       )
       const source = program.getSourceFile(file)

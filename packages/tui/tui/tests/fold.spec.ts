@@ -494,7 +494,7 @@ describe('session fold', () => {
     expect(texts).toContain('Title')
     expect(texts).toContain('Some bold text')
     expect(texts).toContain('│ const x = 1')
-    expect(texts).toContain('• item one')
+    expect(texts).toContain('- item one')
     expect(texts.some(text => text.includes('**'))).toBe(false)
     expect(texts[texts.indexOf('Title') + 1]).toBe('')
     expect(texts[texts.indexOf('Some bold text') + 1]).toBe('')
@@ -507,21 +507,24 @@ describe('session fold', () => {
     // a matching `├─┼─┤` separator, and body rows padded to the same grid.
     // Each cell sits between `│ ` and ` │`, so its pad spaces plus the border
     // space appear together.
-    expect(texts[0]).toBe('│ 名称     │  数 │')
-    expect(texts[1]).toBe('├──────────┼─────┤')
-    expect(texts[2]).toBe('│ 短       │   1 │')
-    expect(texts[3]).toBe('│ 一个更长 │ 200 │')
+    expect(texts[0]).toBe('┌──────────┬─────┐')
+    expect(texts[1]).toBe('│   名称   │ 数  │')
+    expect(texts[2]).toBe('├──────────┼─────┤')
+    expect(texts[3]).toBe('│ 短       │   1 │')
+    expect(texts[5]).toBe('│ 一个更长 │ 200 │')
+    expect(texts[6]).toBe('└──────────┴─────┘')
     // Every GRID row (markdownLines appends one trailing empty line) has the
     // same cell width, so all column borders line up.
-    expect(new Set(texts.slice(0, 4).map(line => stringWidthOf(line))).size).toBe(1)
+    expect(new Set(texts.slice(0, 7).map(line => stringWidthOf(line))).size).toBe(1)
   })
 
-  it('shrinks over-wide tables to the available width with truncation', () => {
+  it('wraps over-wide tables into labeled fields without losing content', () => {
     const lines = markdownLines('| 很长的第一列 | 第二 |\n| --- | --- |\n| 一二三四五六七八九十一二三四五六七八九十 | x |\n', 20)
     for (const line of lines) {
       expect(stringWidthOf(line.text)).toBeLessThanOrEqual(20)
     }
-    expect(lines.some(line => line.text.includes('…'))).toBe(true)
+    expect(lines.some(line => line.text.includes('…'))).toBe(false)
+    expect(lines.map(line => line.text).join('')).toContain('一二三四五六七八九十一二三四五六七八九十')
   })
 
   it('parses wheel reports and strips them from typed text (DamnatioX mouse API)', () => {
@@ -532,10 +535,10 @@ describe('session fold', () => {
     expect(parseMouseWheel('plain text')).toBeNull()
     expect(parseMouseWheel('')).toBeNull()
     expect(stripMouseReports('abc\x1b[<64;2;2Mdef')).toBe('abcdef')
-    expect(scrollOffsetForWheel(0, 12, 'up')).toBe(3)
+    expect(scrollOffsetForWheel(0, 12, 'up')).toBe(1)
     expect(scrollOffsetForWheel(0, 12, 'down')).toBe(0)
     expect(scrollOffsetForWheel(11, 12, 'up')).toBe(12)
-    expect(scrollOffsetForWheel(3, 12, 'down')).toBe(0)
+    expect(scrollOffsetForWheel(3, 12, 'down')).toBe(2)
   })
 
   it('replays a persisted log into the complete history (resume parity)', () => {
@@ -781,5 +784,46 @@ describe('session fold', () => {
     abort.abort()
     const stopped = await foldFromLogYielding(canonicalSequence(), undefined, { signal: abort.signal, yieldEvery: 1 })
     expect(stopped.fold.nodes).toEqual([])
+  })
+})
+
+
+describe('alpha tool-role message contract', () => {
+  it('settles same-name concurrent calls by first-class toolCallId and preserves error truth', () => {
+    const events = [
+      event('tool/call', { turn: 1, step: 1, callId: 'alpha-a', name: 'read', arguments: '{}' }, 1),
+      event('tool/call', { turn: 1, step: 1, callId: 'alpha-b', name: 'read', arguments: '{}' }, 2),
+      event('tool/result', { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'alpha-b', source: { kind: 'tool', callId: 'alpha-b' }, isError: true, content: [text('denied')] } }, 3),
+      event('tool/result', { turn: 1, step: 1, message: { role: 'tool', toolCallId: 'alpha-a', source: { kind: 'tool', callId: 'alpha-a' }, isError: false, content: [text('actual content')] } }, 4),
+    ]
+    const { fold } = foldFromLog(events)
+    const tools = fold.nodes.filter(node => node.kind === 'tool')
+    expect(tools.map(node => [node.callId, node.status, node.text])).toEqual([
+      ['alpha-a', 'done', 'actual content'], ['alpha-b', 'error', 'denied'],
+    ])
+    expect(decodeToolResult(events[2]!)?.content).toEqual([text('denied')])
+  })
+})
+
+
+describe('latest request cache usage', () => {
+  it('replaces the latest sample while preserving lifetime billing, then clears it on compaction', () => {
+    const events = canonicalSequence()
+    const first = foldAll(events)
+    expect(first.stats.latestUsage).toMatchObject({ input: 100, cacheRead: 800 })
+    events.push(event('step/start', { turn: 2, step: 1 }, 13),
+      event('assistant/chunk', { turn: 2, step: 1, chunk: { type: 'usage', usage: { inputTokens: 400, outputTokens: 10, cacheReadTokens: 0 } } }, 14),
+      event('step/end', { turn: 2, step: 1 }, 15))
+    const second = foldAll(events)
+    expect(second.stats.latestUsage).toMatchObject({ input: 400, cacheRead: 0 })
+    expect(second.stats.tokens.cacheRead).toBe(800)
+    events.push(event('compaction/end', {}, 16))
+    expect(foldAll(events).stats.latestUsage).toBeNull()
+  })
+  it('keeps cache unknown when the provider does not report cache counters', () => {
+    const events = [event('step/start', { turn: 1, step: 1 }, 0),
+      event('assistant/chunk', { turn: 1, step: 1, chunk: { type: 'usage', usage: { inputTokens: 100, outputTokens: 10 } } }, 1),
+      event('step/end', { turn: 1, step: 1 }, 2)]
+    expect(foldAll(events).stats.latestUsage).toBeNull()
   })
 })

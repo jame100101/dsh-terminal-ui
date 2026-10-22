@@ -1,0 +1,8 @@
+{
+  "fflate": "0.8.3",
+  "source-map-js": "1.2.2",
+  "@modelcontextprotocol/sdk": "1.32.0",
+  "@modelcontextprotocol/client": "2.3.0",
+  "vite": "8.3.3",
+  "hono": "4.13.11"
+}

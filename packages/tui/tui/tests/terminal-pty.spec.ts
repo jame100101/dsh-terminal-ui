@@ -1,4 +1,5 @@
 import process from 'node:process'
+import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import * as nodePty from 'node-pty'
 import xtermHeadless from '@xterm/headless'
@@ -165,6 +166,109 @@ function expectScrollbarColumn(
 }
 
 describe('production TUI through a real PTY', () => {
+  it.each([[80, 24], [32, 12]])('keeps input usable at %ix%i with no color and reduced motion', async (columns, rows) => {
+    const harness = spawnFixture(columns!, rows!, {
+      TERM: 'dumb', FORCE_COLOR: '0', NO_COLOR: '1', DSH_TUI_REDUCED_MOTION: '1', TUI_PTY_STATIC_BUSY: '1',
+    })
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await harness.send('中文 draft')
+    const screen = screenLines(harness.terminal).join('\n')
+    expect(screen).toContain('中文 draft')
+    expect(screen).toContain('read only')
+    expectCaretOnComposer(harness.terminal)
+    expect(harness.output()).not.toMatch(/\x1b\[(?:38|48);/)
+    // No provider/store updates in this fixture: an unchanged busy view must not animate.
+    await delay(200)
+    const quietOutput = harness.output().length
+    await delay(650)
+    expect(harness.output().length).toBe(quietOutput)
+    await harness.send(' ok')
+    expect(screenLines(harness.terminal).join('\n')).toContain('中文 draft ok')
+    await harness.send('\x03'); await harness.send('\x03'); await harness.waitForExit()
+    expect(harness.terminal.buffer.active.type).toBe('normal')
+  }, 30_000)
+
+  it('accepts Ctrl+R history results as edits through real terminal input', async () => {
+    const harness = spawnFixture(100, 30)
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await harness.send('earlier command')
+    await harness.send('\r')
+    await harness.send('scratch draft')
+    await harness.send('\x12')
+    await harness.send('earlier')
+    expect(screenLines(harness.terminal).join('\n')).toContain('History search: earlier')
+    await harness.send('\r')
+    const lines = screenLines(harness.terminal)
+    expect(lines.find(line => line.trimStart().startsWith('❯'))).toContain('earlier command')
+    expect(lines.filter(line => line.includes('accepted:earlier command'))).toHaveLength(1)
+    harness.pty.kill()
+    await harness.waitForExit()
+  }, 30_000)
+
+  it('recalls consecutive history entries and restores scratch text and caret', async () => {
+    const harness = spawnFixture(100, 30)
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    const composer = (): string => screenLines(harness.terminal).find(line => line.trimStart().startsWith('❯')) ?? ''
+    await harness.send('first entry')
+    await waitFor(() => composer().includes('first entry'))
+    await harness.send('\r')
+    await waitFor(() => !composer().includes('entry'))
+    await harness.send('second entry')
+    await waitFor(() => composer().includes('second entry'))
+    await harness.send('\r')
+    await waitFor(() => !composer().includes('entry'))
+    await harness.send('scratch')
+    await waitFor(() => composer().includes('scratch'))
+    await harness.send('\x1b[D')
+    await harness.send('\x1b[A')
+    await waitFor(() => composer().includes('second entry'))
+    expect(composer()).toContain('second entry')
+    await harness.send('\x1b[A')
+    await waitFor(() => composer().includes('first entry'))
+    expect(composer()).toContain('first entry')
+    await harness.send('\x1b[B')
+    await waitFor(() => composer().includes('second entry'))
+    expect(composer()).toContain('second entry')
+    await harness.send('\x1b[B')
+    await waitFor(() => composer().includes('scratch'))
+    expect(composer()).toContain('scratch')
+    await harness.send('!')
+    await waitFor(() => composer().includes('scratc!h'))
+    expect(composer()).toContain('scratc!h')
+    await harness.send('\x0c')
+    await waitFor(() => composer().includes('scratc!h'))
+    expect(composer()).toContain('scratc!h')
+    harness.pty.kill()
+    await harness.waitForExit()
+  }, 30_000)
+
+  it('edits combining and ZWJ graphemes without splitting them', async () => {
+    const harness = spawnFixture(100, 30)
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await harness.send('a👨‍👩‍👧‍👦e\u0301z')
+    await harness.send('\x1b[D')
+    await harness.send('\x7f')
+    await harness.send('\x1b[D')
+    await harness.send('X')
+    await harness.send('\r')
+    expect(screenLines(harness.terminal).join('\n')).toContain('accepted:aX👨‍👩‍👧‍👦z')
+    harness.pty.kill()
+    await harness.waitForExit()
+  }, 30_000)
+
+  it('keeps Shift+Tab within settings without changing permission', async () => {
+    const harness = spawnFixture(100, 30)
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await harness.send('/settings')
+    await harness.send('\r')
+    await harness.send('\x1b[Z')
+    const screen = screenLines(harness.terminal).join('\n')
+    expect(screen).toContain('read only')
+    expect(screen).not.toContain('workspace write')
+    harness.pty.kill()
+    await harness.waitForExit()
+  }, 30_000)
+
   it('keeps the cursor and scrollbar stable through typing, scrolling, drag, and resize', async () => {
     const harness = spawnFixture(80, 24)
     await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
@@ -193,6 +297,13 @@ describe('production TUI through a real PTY', () => {
     const rapid = 'rapid '.repeat(30)
     const rapidDraft = `${draftBeforeRapid}${rapid}`
     await harness.write(rapid)
+    // A wrap changes Yoga height before the native caret's follow-up commit.
+    // Wait for that commit rather than treating the fixed 80ms chunk delay as a frame boundary.
+    const rapidCaretLine = selectComposerLayout(rapidDraft, rapidDraft.length, composerWrapWidth(80), 5).caretLine
+    await waitFor(() => {
+      const row = composerTopRow(screenLines(harness.terminal))
+      return row >= 0 && harness.terminal.buffer.active.cursorY === row + rapidCaretLine
+    })
     expectCaretOnComposer(
       harness.terminal,
       selectComposerLayout(rapidDraft, rapidDraft.length, composerWrapWidth(80), 5).caretLine,
@@ -212,8 +323,10 @@ describe('production TUI through a real PTY', () => {
     await harness.write('\x1b[<0;100;5M')
     await harness.write('\x1b[<32;100;14M')
     await harness.send('\x1b[<0;100;14m')
-    await harness.write('\x1b[<0;99;22M')
-    await harness.send('\x1b[<0;99;22m')
+    const jumpRow = screenLines(harness.terminal).findIndex(line => /回到底部|back to bottom/.test(line)) + 1
+    expect(jumpRow).toBeGreaterThan(0)
+    await harness.write(`\x1b[<0;50;${jumpRow}M`)
+    await harness.send(`\x1b[<0;50;${jumpRow}m`)
     expectCaretOnComposer(harness.terminal, resizedCaretLine)
 
     await harness.resize(40, 18)
@@ -223,7 +336,10 @@ describe('production TUI through a real PTY', () => {
     await harness.resize(100, 30)
     expectCaretOnComposer(harness.terminal, resizedCaretLine)
 
-    await harness.write('\x0c')
+    await harness.send('\x0c')
+    // Redraw retains the draft; explicitly select and delete before EOF exit.
+    await harness.send('\x01')
+    await harness.send('\x7f')
     await harness.write('\x04')
     await harness.waitForExit()
     expect(harness.terminal.buffer.active.type).toBe('normal')
@@ -242,6 +358,45 @@ describe('production TUI through a real PTY', () => {
     await harness.waitForExit()
     expect(harness.terminal.buffer.active.type).toBe('normal')
     expect(harness.output().lastIndexOf('\x1b[?1049l')).toBeLessThan(harness.output().lastIndexOf('\x1b[?25h'))
+  }, 30_000)
+
+  it.each(['signal', 'Ctrl+Z'] as const)('restores protocols and preserves draft after POSIX %s suspend/continue', async mode => {
+    if (process.platform === 'win32') return
+    const harness = spawnFixture(80, 24)
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    await harness.write('保留 draft 😀')
+    const beforeSuspend = harness.output().length
+    if (mode === 'signal') process.kill(harness.pty.pid, 'SIGTSTP')
+    else await harness.send('\x1a')
+    try {
+      await waitFor(() => {
+        const state = execFileSync('ps', ['-o', 'stat=', '-p', String(harness.pty.pid)], { encoding: 'utf8' })
+        return state.includes('T')
+      })
+      await waitFor(() => harness.terminal.buffer.active.type === 'normal')
+      const suspended = harness.output().slice(beforeSuspend)
+      expect(suspended).toContain('\x1b[?1006l\x1b[?1002l\x1b[?1000l')
+      expect(suspended).toContain('\x1b[?25h')
+    } finally { process.kill(harness.pty.pid, 'SIGCONT') }
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal)).catch(error => { throw new Error(`${error} buffer=${harness.terminal.buffer.active.type} cursor=${harness.terminal.buffer.active.cursorY}\n${screenLines(harness.terminal).join('\n')}\n${JSON.stringify(harness.output().slice(-900))}`) })
+    expect(screenLines(harness.terminal).join('\n')).toContain('保留 draft 😀')
+    const resumed = harness.output().slice(beforeSuspend)
+    expect(resumed.lastIndexOf('\x1b[?1000h\x1b[?1002h\x1b[?1006h')).toBeGreaterThan(resumed.lastIndexOf('\x1b[?1006l'))
+    await harness.write(' continued')
+    expect(screenLines(harness.terminal).join('\n')).toContain('保留 draft 😀 continued')
+    await harness.send('\x03'); await harness.send('\x03'); await harness.waitForExit()
+    expect(harness.terminal.buffer.active.type).toBe('normal')
+  }, 30_000)
+
+  it.each(['SIGTERM', 'SIGUSR2'] as const)('restores terminal protocols on %s', async signal => {
+    if (process.platform === 'win32') return
+    const harness = spawnFixture(80, 24, { TUI_PTY_CRASH: '1' })
+    await waitFor(() => harness.terminal.buffer.active.type === 'alternate' && caretIsOnComposer(harness.terminal))
+    process.kill(harness.pty.pid, signal)
+    await harness.waitForExit()
+    expect(harness.terminal.buffer.active.type).toBe('normal')
+    expect(harness.output()).toContain('\x1b[?1006l\x1b[?1002l\x1b[?1000l')
+    expect(harness.output().lastIndexOf('\x1b[?25l')).toBeLessThan(harness.output().lastIndexOf('\x1b[?25h'))
   }, 30_000)
 
   it('keeps busy-turn input, permission cycling, animation, and history scrolling responsive', async () => {
@@ -282,11 +437,18 @@ describe('production TUI through a real PTY', () => {
     await waitFor(() => screenLines(harness.terminal).some(line => line.includes('● fixture-plugin')), 3_000)
 
     await harness.send('\r')
-    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('○ fixture-plugin')), 3_000)
+    // Host state and its completion notice can arrive in separate React commits.
+    await waitFor(() => {
+      const lines = screenLines(harness.terminal)
+      return lines.some(line => line.includes('○ fixture-plugin')) && lines.some(line => line.includes('fixture-plugin → disabled'))
+    }, 3_000)
     expect(screenLines(harness.terminal).some(line => line.includes('fixture-plugin → disabled'))).toBe(true)
 
     await harness.send('\r')
-    await waitFor(() => screenLines(harness.terminal).some(line => line.includes('● fixture-plugin')), 3_000)
+    await waitFor(() => {
+      const lines = screenLines(harness.terminal)
+      return lines.some(line => line.includes('● fixture-plugin')) && lines.some(line => line.includes('fixture-plugin → enabled'))
+    }, 3_000)
     expect(screenLines(harness.terminal).some(line => line.includes('fixture-plugin → enabled'))).toBe(true)
 
     harness.pty.kill()

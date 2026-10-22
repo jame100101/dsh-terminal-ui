@@ -15,10 +15,10 @@ describe('Harness integration seam', () => {
   })
 
   it('exposes owner-scoped jobs visibility', () => {
-    const current = {} as Agent
-    const foreign = {} as Agent
+    const current = { id: 'current' } as Agent
+    const foreign = { id: 'foreign' } as Agent
     expect(jobsChangeVisibleTo(undefined, current)).toBe(true)
-    expect(jobsChangeVisibleTo(current, current)).toBe(true)
-    expect(jobsChangeVisibleTo(foreign, current)).toBe(false)
+    expect(jobsChangeVisibleTo(current.id, current)).toBe(true)
+    expect(jobsChangeVisibleTo(foreign.id, current)).toBe(false)
   })
 })

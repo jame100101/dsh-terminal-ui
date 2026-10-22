@@ -6,6 +6,7 @@
  */
 
 import type { TuiNode } from './types'
+import { redactDisplayText } from './display-redaction'
 
 /** Why `/copy` could not pick a node. */
 export type CopySpecError = 'usage' | 'empty' | 'range'
@@ -16,11 +17,6 @@ export interface CopyTarget {
   /** 1-based Nth-latest assistant reply (`1` is newest). */
   index: number
   total: number
-}
-
-/** Strip CSI / OSC sequences if a node ever carried them. Semantic text usually has none. */
-function stripAnsi(text: string): string {
-  return text.replace(/\x1b\][^\x07]*\x07/g, '').replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, '')
 }
 
 /**
@@ -35,9 +31,9 @@ export function extractCopyText(node: TuiNode): string | null {
     case 'assistant':
     case 'think':
     case 'context':
-      return node.text === '' ? null : stripAnsi(node.text)
+      return node.text === '' ? null : redactDisplayText(node.text)
     case 'tool':
-      return node.text === '' ? null : stripAnsi(node.text)
+      return node.text === '' ? null : redactDisplayText(node.text)
     case 'status':
     case 'retry':
     case 'deliverables':

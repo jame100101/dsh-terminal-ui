@@ -20,15 +20,17 @@ const wrapperRequire = createRequire(join(pkgDir, 'package.json'))
 const workspaceManifest = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'))
 const rootManifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'))
 
-const HARNESS = '0.1.5-rc.3'
+const HARNESS = '0.2.1-rc.2'
+import { PRESET_NAMES, terminalPresetSource } from './preset-assets.mjs'
+const sourceRequire = createRequire(join(root, 'package.json'))
 const INK_PATCH = 'patches/ink@7.1.1.patch'
 const PEERS = {
-  '@deepseek-ai/cordis': '4.0.2',
-  '@deepseek-ai/cordis-plugin-loader': '1.0.3',
-  '@deepseek-ai/schemastery': '3.18.2',
+  '@deepseek-ai/cordis': '4.0.5',
+  '@deepseek-ai/cordis-plugin-loader': '1.0.6',
+  '@deepseek-ai/schemastery': '3.18.5',
   '@deepseek-ai/dsh-agent': HARNESS,
   '@deepseek-ai/dsh-agent-default-model': HARNESS,
-  '@deepseek-ai/dsh-agent-presets': HARNESS,
+  '@deepseek-ai/dsh-agent-preset-registry': HARNESS,
   '@deepseek-ai/dsh-app-boot': HARNESS,
   '@deepseek-ai/dsh-atomic-write': HARNESS,
   '@deepseek-ai/dsh-attachment': HARNESS,
@@ -37,7 +39,6 @@ const PEERS = {
   '@deepseek-ai/dsh-compaction': HARNESS,
   '@deepseek-ai/dsh-credentials': HARNESS,
   '@deepseek-ai/dsh-goal': HARNESS,
-  '@deepseek-ai/dsh-invariants': HARNESS,
   '@deepseek-ai/dsh-jobs': HARNESS,
   '@deepseek-ai/dsh-llm': HARNESS,
   '@deepseek-ai/dsh-llm-retry': HARNESS,
@@ -58,6 +59,7 @@ const PEERS = {
   '@deepseek-ai/dsh-user-approval': HARNESS,
   '@deepseek-ai/dsh-user-questions': HARNESS,
   '@deepseek-ai/dsh-workflow': HARNESS,
+  '@deepseek-ai/dsh-working-directory': HARNESS,
 }
 
 /**
@@ -86,6 +88,11 @@ export function assemblePlugin(destination = defaultOut) {
   }
   cpSync(join(pkgDir, 'bin/dsh-tui.js'), join(destination, 'bin/dsh-tui.js'))
   cpSync(patch, join(destination, 'cordis.patch.yml'))
+  // Declarative public assets, pinned to the host version; never copy runtime code.
+  mkdirSync(join(destination, 'presets'))
+  for (const preset of PRESET_NAMES) {
+    writeFileSync(join(destination, 'presets', `${preset}.patch.yml`), terminalPresetSource(readFileSync(sourceRequire.resolve(`@deepseek-ai/dsh-web-app/presets/${preset}.patch.yml`), 'utf8')))
+  }
   const stagedInk = join(destination, 'node_modules/ink')
   cpSync(inkRoot, stagedInk, { recursive: true })
   // pnpm's workspace copy contains dependency links. The packed plugin owns
@@ -115,9 +122,9 @@ export function assemblePlugin(destination = defaultOut) {
     type: 'module',
     main: 'lib/index.js',
     bin: { 'dsh-tui': 'bin/dsh-tui.js' },
-    files: ['bin', 'lib', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md'],
+    files: ['bin', 'lib', 'presets', 'cordis.patch.yml', 'LICENSE', 'README.md', 'README.zh.md'],
     license: 'MIT',
-    dsh: { bundle: { patch: './cordis.patch.yml' } },
+    dsh: { bundle: { patch: ['./cordis.patch.yml', ...PRESET_NAMES.map(preset => `./presets/${preset}.patch.yml`)] } },
     dependencies: {
       ...inkManifest.dependencies,
       commander: '15.0.0',

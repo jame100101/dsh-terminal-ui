@@ -8,7 +8,7 @@ import type { SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
 import { initialState } from '../src/fold'
 import type { FoldState } from '../src/types'
 import {
-  MAX_SIDECAR_BYTES, PROJECTION_VERSION, ProjectionSidecarStore, foldIsIdle, parseProjectionSidecar,
+  MAX_SIDECAR_BYTES, MAX_PENDING_PROJECTIONS, PROJECTION_VERSION, ProjectionSidecarStore, foldIsIdle, parseProjectionSidecar,
   projectionCheckpointIsComplete, projectionSidecarFileName,
 } from '../src/projection-sidecar'
 
@@ -43,11 +43,13 @@ describe('projection sidecar', () => {
     await withDir(async (directory) => {
       const store = new ProjectionSidecarStore(directory, () => {})
       const fold = idleFold([{ kind: 'user', id: 3, text: 'hello' }])
+      fold.stats.latestUsage = { input: 100, output: 10, cacheRead: 800, cacheWrite: 0, reasoning: 0 }
       store.write(header('sess-1', 10), 3, fold)
       await store.drain()
       const hit = await store.read('sess-1', 10)
       expect(hit?.lastSeq).toBe(3)
       expect(hit?.fold.nodes).toEqual(fold.nodes)
+      expect(hit?.fold.stats.latestUsage).toEqual(fold.stats.latestUsage)
       expect(await store.read('sess-1', 99)).toBeNull()
       expect(projectionSidecarFileName('sess/1')).toBe('sess_1.json')
     })
@@ -109,5 +111,22 @@ describe('projection sidecar', () => {
       const raw = JSON.parse(await readFile(join(directory, 'sess-1.json'), 'utf8')) as { projectionVersion: number }
       expect(raw.projectionVersion).toBe(PROJECTION_VERSION)
     })
+  })
+})
+
+it('bounds pending session snapshots under a synchronous producer burst', async () => {
+  await withDir(async directory => {
+    const errors: unknown[] = []
+    const store = new ProjectionSidecarStore(directory, error => errors.push(error))
+    // No await: the first atomic write is in flight throughout the burst.
+    for (let id = 0; id < 1000; id++) {
+      store.write(header(`burst-${id}`, id), id, idleFold([{ kind: 'user', id, text: '中文🙂' }]))
+    }
+    await store.drain()
+    expect(errors).toEqual([])
+    const { readdir } = await import('node:fs/promises')
+    expect((await readdir(directory)).filter(name => name.endsWith('.json')).length).toBe(MAX_PENDING_PROJECTIONS + 1)
+    expect((await store.read('burst-999', 999))?.lastSeq).toBe(999)
+    expect(await store.read('burst-1', 1)).toBeNull()
   })
 })

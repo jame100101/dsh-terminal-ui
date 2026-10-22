@@ -28,7 +28,7 @@ export function wrapDisplayLines(text: string, width: number): string[] {
     }
     let current = ''
     let currentWidth = 0
-    for (const character of source) {
+    for (const { segment: character } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(source)) {
       const characterWidth = Math.max(1, stringWidth(character))
       if (currentWidth + characterWidth > width) {
         lines.push(current)

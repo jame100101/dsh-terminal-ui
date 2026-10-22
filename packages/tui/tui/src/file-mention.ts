@@ -5,7 +5,7 @@
  */
 
 import { readdirSync } from 'node:fs'
-import { relative, resolve, sep } from 'node:path'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 /** Cap on picker rows so the palette cannot flood the frame. */
 export const MAX_FILE_MENTIONS = 32
@@ -50,7 +50,7 @@ export function replaceAtToken(value: string, insert: string): string {
  */
 export function pathIsInside(root: string, target: string): boolean {
   const rel = relative(root, target)
-  return rel === '' || (rel !== '..' && !rel.startsWith(`..${sep}`))
+  return rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith(`..${sep}`))
 }
 
 /**
@@ -69,7 +69,10 @@ export function listWorkspaceMentions(
   const lastSep = Math.max(query.lastIndexOf('/'), query.lastIndexOf('\\'))
   const dirPart = lastSep >= 0 ? query.slice(0, lastSep) : ''
   const namePart = (lastSep >= 0 ? query.slice(lastSep + 1) : query).toLowerCase()
-  const absDir = resolve(root, dirPart)
+  // Both separators are accepted in pasted queries; emitted paths use slash.
+  const normalizedDir = dirPart.replaceAll('\\', '/')
+  if (/^[A-Za-z]:/.test(normalizedDir) || normalizedDir.startsWith('/')) return []
+  const absDir = resolve(root, normalizedDir)
   if (!pathIsInside(root, absDir)) return []
   let entries: MentionEntry[]
   try {

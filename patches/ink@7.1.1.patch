@@ -829,7 +829,7 @@ index cdb5fc41f158304c4c4f230a765065ab1fe0a2f7..29475f7fcb31b777511943ef1834fb2c
 +                continue;
 +            }
 +            const skip = asciiPrefixLength(previous, next);
-+            parts.push(ansiEscapes.cursorTo(skip, index) + next.slice(skip) + ansiEscapes.eraseEndLine);
++            parts.push(ansiEscapes.cursorTo(skip, index) + (/\u001B\[\d+G/.test(next) ? ansiEscapes.eraseLine : '') + next.slice(skip) + ansiEscapes.eraseEndLine);
 +        }
 +        // buildCursorSuffix assumes the cursor is on the last output row.
 +        parts.push(ansiEscapes.cursorTo(0, nextLines.length - 1));
@@ -1033,3 +1033,82 @@ index 6f185f6212d7e1867fb5dc70d26cd64b3931c339..eeeaad29e56fd6b5a46f970d89e005c4
          concurrent: false,
          alternateScreen: false,
          ...getOptions(options),
+diff --git a/build/bounded-text-cache.js b/build/bounded-text-cache.js
+new file mode 100644
+--- /dev/null
++++ b/build/bounded-text-cache.js
+@@ -0,0 +1,35 @@
++/** Bounded process-wide text cache; oversized text is computed but not retained. */
++export default class BoundedTextCache {
++    entries = new Map();
++    characters = 0;
++    constructor(maxEntries = 2048, maxCharacters = 1000000) {
++        this.maxEntries = maxEntries;
++        this.maxCharacters = maxCharacters;
++    }
++    get size() { return this.entries.size; }
++    get retainedCharacters() { return this.characters; }
++    get(key) {
++        const entry = this.entries.get(key);
++        if (entry === undefined) return undefined;
++        this.entries.delete(key);
++        this.entries.set(key, entry);
++        return entry.value;
++    }
++    set(key, value) {
++        const prior = this.entries.get(key);
++        if (prior !== undefined) {
++            this.characters -= prior.weight;
++            this.entries.delete(key);
++        }
++        const weight = key.length + (typeof value === 'string' ? value.length : 32);
++        if (weight > this.maxCharacters) return;
++        while (this.entries.size >= this.maxEntries || this.characters + weight > this.maxCharacters) {
++            const oldest = this.entries.keys().next().value;
++            if (oldest === undefined) break;
++            this.characters -= this.entries.get(oldest).weight;
++            this.entries.delete(oldest);
++        }
++        this.entries.set(key, {value, weight});
++        this.characters += weight;
++    }
++}
+diff --git a/build/measure-text.js b/build/measure-text.js
+--- a/build/measure-text.js
++++ b/build/measure-text.js
+@@ -1,5 +1,6 @@
+ import widestLine from 'widest-line';
+-const cache = new Map();
++import BoundedTextCache from './bounded-text-cache.js';
++const cache = new BoundedTextCache();
+ const measureText = (text) => {
+     if (text.length === 0) {
+         return {
+diff --git a/build/wrap-text.js b/build/wrap-text.js
+--- a/build/wrap-text.js
++++ b/build/wrap-text.js
+@@ -1,10 +1,11 @@
+ import wrapAnsi from 'wrap-ansi';
+ import cliTruncate from 'cli-truncate';
+-const cache = {};
++import BoundedTextCache from './bounded-text-cache.js';
++const cache = new BoundedTextCache();
+ const wrapText = (text, maxWidth, wrapType) => {
+-    const cacheKey = text + String(maxWidth) + String(wrapType);
+-    const cachedText = cache[cacheKey];
+-    if (cachedText) {
++    const cacheKey = JSON.stringify([text, maxWidth, wrapType]);
++    const cachedText = cache.get(cacheKey);
++    if (cachedText !== undefined) {
+         return cachedText;
+     }
+     let wrappedText = text;
+@@ -31,7 +32,7 @@
+         }
+         wrappedText = cliTruncate(text, maxWidth, { position });
+     }
+-    cache[cacheKey] = wrappedText;
++    cache.set(cacheKey, wrappedText);
+     return wrappedText;
+ };
+ export default wrapText;

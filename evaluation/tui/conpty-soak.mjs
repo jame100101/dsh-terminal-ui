@@ -2,7 +2,7 @@
 /** Automated Windows ConPTY campaign for busy rendering and build contention. */
 
 import { spawn } from 'node:child_process'
-import { readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -30,6 +30,7 @@ const runBuild = process.env.DSH_TUI_CONPTY_BUILD !== '0'
 const reportPath = process.env.DSH_TUI_CONPTY_REPORT === undefined
   ? join(evaluationDir, 'conpty-soak-last.json')
   : resolve(root, process.env.DSH_TUI_CONPTY_REPORT)
+await mkdir(dirname(reportPath), { recursive: true })
 const terminal = new xtermHeadless.Terminal({ cols: 100, rows: 30, allowProposedApi: true, scrollback: 0 })
 const pty = nodePty.spawn(process.execPath, ['--import', 'tsx/esm', fixture], {
   cols: 100,
@@ -157,7 +158,7 @@ try {
       permissionIndex = (permissionIndex + 1) % permissions.length
       await waitFor(() => screen().some(line => line.includes(permissions[permissionIndex])))
     }
-    const thinking = screen().find(line => /Thinking \d+\.\ds/u.test(line)) ?? ''
+    const thinking = screen().find(line => /Thinking(?: ·)? \d+\.\ds/u.test(line)) ?? ''
     if (thinking !== lastThinking) {
       maxThinkingStallMs = Math.max(maxThinkingStallMs, Date.now() - lastThinkingChange)
       lastThinking = thinking
@@ -201,6 +202,9 @@ const postWarmupTuiRssSlopeBytesPerMinute = linearSlopePerMinute(samples
   .filter(entry => entry.elapsedMs >= warmupMs && entry.elapsedMs <= campaignEndedAt - started && entry.tuiRssBytes > 0)
   .map(entry => ({ elapsedMs: entry.elapsedMs, value: entry.tuiRssBytes })))
 const report = {
+  platform: process.platform,
+  appearance: process.env.TUI_PTY_APPEARANCE ?? 'fixture-default',
+  scope: 'Real PTY and current renderer; synthetic store updates, no Harness Agent loop or provider requests',
   durationMs: campaignEndedAt - started,
   cleanupMs: Date.now() - campaignEndedAt,
   requestedDurationMs: durationMs,

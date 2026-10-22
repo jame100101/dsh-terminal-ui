@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { describe, expect, it, vi } from 'vitest'
-import { resolveTuiPreset, SessionPresetQueue } from '../src/preset-lifecycle'
+import { applyTuiPreset, resolveTuiPreset, SessionPresetQueue } from '../src/preset-lifecycle'
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void
@@ -85,5 +85,60 @@ describe('SessionPresetQueue', () => {
       time: 1,
       data: { turn: 1, trigger: { kind: 'message', source: { kind: 'user' } } },
     }])).toBe(true)
+  })
+})
+
+
+describe('preset selection boundaries', () => {
+  function setup() {
+    const select = vi.fn(async () => {})
+    const saveDefault = vi.fn(async () => {})
+    const options = {
+      registry: { resolve: vi.fn(async () => ({ id: 'minimal' })), select },
+      agent: { session: { header: { agentPreset: 'standard' }, snapshotEvents: () => [] } },
+      id: 'minimal', isCurrent: () => true, isBusy: () => false, isLocked: () => false, saveDefault,
+    } as unknown as Parameters<typeof applyTuiPreset>[0]
+    return { options, select, saveDefault }
+  }
+  it('switches a blank session through select and saves the future default', async () => {
+    const { options, select, saveDefault } = setup()
+    await expect(applyTuiPreset(options)).resolves.toBe('switched')
+    expect(select).toHaveBeenCalledExactlyOnceWith(options.agent, 'minimal')
+    expect(saveDefault).toHaveBeenCalledExactlyOnceWith('minimal')
+  })
+  it('only saves the default for an already started session', async () => {
+    const { options, select, saveDefault } = setup()
+    options.isLocked = () => true
+    await expect(applyTuiPreset(options)).resolves.toBe('saved-default')
+    expect(select).not.toHaveBeenCalled()
+    expect(saveDefault).toHaveBeenCalledWith('minimal')
+  })
+  it.each(['busy', 'stale'])('rejects %s before mutation', async kind => {
+    const { options, select, saveDefault } = setup()
+    options.isBusy = () => kind === 'busy'
+    options.isCurrent = () => kind !== 'stale'
+    await expect(applyTuiPreset(options)).rejects.toThrow()
+    expect(select).not.toHaveBeenCalled()
+    expect(saveDefault).not.toHaveBeenCalled()
+  })
+  it('checks ownership again after asynchronous resolution', async () => {
+    const { options, select, saveDefault } = setup()
+    let current = true
+    options.isCurrent = () => current
+    options.registry.resolve = vi.fn(async () => { current = false; return { id: 'minimal' } }) as typeof options.registry.resolve
+    await expect(applyTuiPreset(options)).rejects.toThrow('Session changed')
+    expect(select).not.toHaveBeenCalled()
+    expect(saveDefault).not.toHaveBeenCalled()
+  })
+  it('does not save a default when official selection fails', async () => {
+    const { options, select, saveDefault } = setup()
+    select.mockRejectedValueOnce(new Error('host rejected'))
+    await expect(applyTuiPreset(options)).rejects.toThrow('host rejected')
+    expect(saveDefault).not.toHaveBeenCalled()
+  })
+  it('reports partial success truthfully if persistence fails', async () => {
+    const { options, saveDefault } = setup()
+    saveDefault.mockRejectedValueOnce(new Error('read only'))
+    await expect(applyTuiPreset(options)).rejects.toThrow('Preset applied, but default was not saved')
   })
 })

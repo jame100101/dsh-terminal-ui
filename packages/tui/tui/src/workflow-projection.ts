@@ -8,6 +8,9 @@
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import type { WorkflowRow } from './store'
 
+/** Display history only; active runs and the official session log are never evicted. */
+export const MAX_COMPLETED_WORKFLOW_ROWS = 256
+
 interface RunStartData {
   runId: string
   name: string
@@ -98,7 +101,13 @@ export function applyWorkflowSessionEvent(
     return next
   }
   if (durable.type === 'tool-workflow/agent-end') return current
+  next.delete(id)
   next.set(id, { ...row, status: statusFromStopReason(durable.data.stopReason) })
+  let completed = [...next.values()].filter(entry => entry.status !== 'running').length
+  for (const [key, entry] of next) {
+    if (completed <= MAX_COMPLETED_WORKFLOW_ROWS) break
+    if (entry.status !== 'running') { next.delete(key); completed -= 1 }
+  }
   return next
 }
 

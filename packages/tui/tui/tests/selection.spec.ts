@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  extractSelectedText, glyphSpanAt, orderedSelection, selectionFromGlyphs, selectionIsDrag, selectionMoved,
+  extractSelectedText, glyphSpanAt, remapSelection, orderedSelection, selectionFromGlyphs, selectionIsDrag, selectionMoved,
   selectionSpanOnLine, sliceDisplayParts, sliceDisplayRange, sliceDisplaySegment,
 } from '../src/selection'
 import type { TranscriptLine } from '../src/viewport'
@@ -141,4 +141,21 @@ describe('transcript drag-select', () => {
     expect(same.head).toEqual({ lineIndex: 2, column: 4 })
     expect(selectionIsDrag(same)).toBe(false)
   })
+})
+
+it('keeps ZWJ emoji and combining marks intact in transcript selections', () => {
+  const text = 'A👩🏽‍💻e\u0301中'
+  expect(glyphSpanAt(text, 2)).toEqual({ start: 1, end: 3 })
+  expect(sliceDisplayRange(text, 1, 3)).toBe('👩🏽‍💻')
+  expect(sliceDisplayRange(text, 3, 4)).toBe('e\u0301')
+  expect(sliceDisplaySegment(text, 0, 2) + sliceDisplaySegment(text, 2, 6)).toBe(text)
+})
+
+it('remaps a selected stream block through settlement and rejects ambiguous or changed content', () => {
+  const selection = { anchor: { lineIndex: 4, column: 1 }, head: { lineIndex: 5, column: 4 } }
+  const recorded = new Map([[4, line('live-0', 'alpha')], [5, line('live-1', 'beta')]])
+  const next = remapSelection(selection, recorded, [line('padding', ''), line('settled-0', 'alpha'), line('settled-1', 'beta')], 5)
+  expect(next).toEqual({ anchor: { lineIndex: 6, column: 1 }, head: { lineIndex: 7, column: 4 } })
+  expect(remapSelection(selection, recorded, [line('new', 'wrong'), line('new2', 'beta')], 4)).toBeNull()
+  expect(remapSelection(selection, recorded, [line('a', 'alpha'), line('b', 'beta'), line('c', 'alpha'), line('d', 'beta')], 4)).toBeNull()
 })

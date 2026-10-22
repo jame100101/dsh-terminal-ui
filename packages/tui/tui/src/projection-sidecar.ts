@@ -167,6 +167,7 @@ function parseStats(value: unknown): SessionStats {
     stepsWithTtft: read('stepsWithTtft'),
     decodeMs: read('decodeMs'),
     tokens: parseTokens(row.tokens),
+    ...(row.latestUsage === undefined ? {} : { latestUsage: row.latestUsage === null ? null : parseTokens(row.latestUsage) }),
     contextWindow: read('contextWindow'),
     costUsd: read('costUsd'),
   }
@@ -263,6 +264,7 @@ function parseNode(value: unknown, index: number): TuiNode {
         name: requireString(row.name, `node ${index} name`),
         ...(typeof row.parentCallId === 'string' ? { parentCallId: row.parentCallId } : {}),
         detail: requireString(row.detail, `node ${index} detail`),
+        ...(typeof row.displayTitle === 'string' ? { displayTitle: row.displayTitle.slice(0, 300) } : {}),
         status: row.status,
         text: requireString(row.text, `node ${index} text`),
         args: row.args,
@@ -351,6 +353,9 @@ export function parseProjectionSidecar(text: string): ProjectionSidecarRecord {
   }
 }
 
+/** Pending derived caches may be dropped: the official session log is authoritative. */
+export const MAX_PENDING_PROJECTIONS = 8
+
 /**
  * File-backed TUI fold projection cache, one file per session id.
  * Each session keeps at most one pending write in-process. A newer idle fold
@@ -402,6 +407,11 @@ export class ProjectionSidecarStore {
   write(header: SessionHeader, lastSeq: number, fold: FoldState): void {
     if (!foldIsIdle(fold) || !isSafeInt(lastSeq)) return
     const sessionId = String(header.id)
+    this.queued.delete(sessionId)
+    if (this.queued.size >= MAX_PENDING_PROJECTIONS) {
+      const oldest = this.queued.keys().next().value
+      if (oldest !== undefined) this.queued.delete(oldest)
+    }
     this.queued.set(sessionId, { header, lastSeq, fold })
     this.startFlush()
   }

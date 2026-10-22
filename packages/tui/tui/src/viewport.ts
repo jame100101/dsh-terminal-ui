@@ -8,6 +8,7 @@
  */
 
 import stringWidth from 'string-width'
+import { graphemes, nextGraphemeBoundary } from './input/editor-state'
 
 /**
  * Select the width Ink may paint without touching the terminal's autowrap
@@ -31,6 +32,8 @@ export interface TranscriptLine {
   bold?: boolean
   dim?: boolean
   /** Waiting retry headers blink dim from a Transcript-local timer. */
+  toolMarker?: 'running' | 'done' | 'error'
+  toolRunning?: boolean
   pulse?: boolean
   /**
    * Live thinking/compaction header. Transcript owns the 100ms glyph and
@@ -40,8 +43,10 @@ export interface TranscriptLine {
   /** Epoch ms for the elapsed suffix on a thinking shimmer row. */
   shimmerSince?: number
   /** Grok prompt-block fill (`bg = light`): a gray bar behind user rows. */
+  /** Real diff additions/removals, mapped to the active terminal palette. */
+  diffKind?: 'add' | 'remove'
   background?: boolean
-  runs?: { text: string; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string; backgroundColor?: string; exactColor?: boolean }[]
+  runs?: { text: string; italic?: boolean; strikethrough?: boolean; diffChange?: 'add' | 'remove'; bold?: boolean; code?: boolean; underline?: boolean; dim?: boolean; color?: string; backgroundColor?: string; exactColor?: boolean }[]
   /** Node whose disclosure arrow owns this header line. */
   disclosureNodeId?: number
   /** Thinking arrows toggle the global display; other arrows toggle one node. */
@@ -460,21 +465,17 @@ export function wrapComposerRanges(value: string, width: number): ComposerLineRa
     let current = ''
     let currentStart = offset
     let currentWidth = 0
-    let index = 0
-    while (index < source.length) {
-      const next = nextCodePointBoundary(source, index)
-      const character = source.slice(index, next)
+    for (const part of graphemes(source)) {
+      const character = part.segment
       const characterWidth = Math.max(1, stringWidth(character))
       if (currentWidth > 0 && currentWidth + characterWidth > lineWidth) {
-        out.push({ text: current, start: currentStart, end: offset + index })
+        out.push({ text: current, start: currentStart, end: offset + part.index })
         current = ''
-        currentStart = offset + index
+        currentStart = offset + part.index
         currentWidth = 0
-        continue
       }
       current += character
       currentWidth += characterWidth
-      index = next
     }
     out.push({ text: current, start: currentStart, end: offset + source.length })
     offset += source.length + (partIndex === parts.length - 1 ? 0 : 1)
@@ -526,7 +527,7 @@ export function composerOffsetAt(value: string, width: number, lineIndex: number
   let used = 0
   let index = row.start
   while (index < row.end) {
-    const next = nextCodePointBoundary(value, index)
+    const next = nextGraphemeBoundary(value, index)
     const character = value.slice(index, next)
     const characterWidth = Math.max(1, stringWidth(character))
     if (used + characterWidth > target) return index
@@ -538,7 +539,7 @@ export function composerOffsetAt(value: string, width: number, lineIndex: number
 
 /**
  * Source offsets of the glyph under a composer cell. The exclusive end is the
- * next code-point boundary so a drag includes the character under the pointer
+ * next grapheme boundary so a drag includes the character under the pointer
  * in both directions.
  * @param value - the full input value.
  * @param width - wrap budget in terminal cells.
@@ -554,7 +555,7 @@ export function composerGlyphAt(
 ): { start: number; end: number } {
   const start = composerOffsetAt(value, width, lineIndex, column)
   if (start >= value.length) return { start: value.length, end: value.length }
-  return { start, end: nextCodePointBoundary(value, start) }
+  return { start, end: nextGraphemeBoundary(value, start) }
 }
 
 /**

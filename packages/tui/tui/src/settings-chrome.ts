@@ -1,3 +1,4 @@
+import { displayTextMatches } from './display-redaction'
 /**
  * Claude Code-style settings chrome: a search field, a clickable tab strip,
  * and a one-line key hint. Geometry is pure so mouse hit-testing stays
@@ -23,26 +24,17 @@ export interface SettingsTab {
 export type SettingsChromeHit = 'search' | 'tab' | 'hint' | 'list'
 
 /**
- * Labels for the five settings pages, in display order.
+ * Labels for the settings pages, in display order.
  * @param locale - chrome language.
  * @returns the tabs.
  */
 export function settingsTabLabels(locale: 'zh' | 'en'): readonly SettingsTab[] {
-  return locale === 'en'
-    ? [
-      { id: 'general', label: 'General' },
-      { id: 'models', label: 'Models' },
-      { id: 'plugins', label: 'Plugins' },
-      { id: 'inventory', label: 'Inventory' },
-      { id: 'presets', label: 'Presets' },
-    ]
-    : [
-      { id: 'general', label: '常规' },
-      { id: 'models', label: '模型' },
-      { id: 'plugins', label: '插件' },
-      { id: 'inventory', label: '清单' },
-      { id: 'presets', label: '预设' },
-    ]
+  const labels: Record<SettingsPageId, readonly [string, string]> = {
+    general: ['General', '常规'], models: ['Models', '模型'], permissions: ['Permissions', '权限'],
+    plugins: ['Plugins', '插件'], mcp: ['MCP', 'MCP'], presets: ['Presets', '预设'],
+    appearance: ['Appearance', '外观'], diagnostics: ['Diagnostics', '诊断'], inventory: ['Inventory', '清单'],
+  }
+  return SETTINGS_PAGES.map(id => ({ id, label: labels[id][locale === 'en' ? 0 : 1] }))
 }
 
 /**
@@ -134,7 +126,7 @@ export function settingsListIndex(row: number, top: number, headerRows: number):
 export function filterSettingsRows(rows: readonly PanelRow[], query: string): PanelRow[] {
   const needle = query.trim().toLowerCase()
   if (needle === '') return [...rows]
-  return rows.filter(row => row.dim === true || row.text.toLowerCase().includes(needle))
+  return rows.filter(row => row.dim === true || displayTextMatches([row.text, row.columns?.label ?? '', row.columns?.value ?? ''].join(' '), needle))
 }
 
 /**
@@ -147,4 +139,47 @@ export function cycleSettingsPage(current: SettingsPageId, delta: 1 | -1): Setti
   const index = SETTINGS_PAGES.indexOf(current)
   const start = index < 0 ? 0 : index
   return SETTINGS_PAGES[(start + delta + SETTINGS_PAGES.length) % SETTINGS_PAGES.length] as SettingsPageId
+}
+
+/** A tab viewport is shared by drawing and hit-testing, including clipped labels. */
+export interface SettingsTabWindow {
+  tabs: readonly (SettingsTab & { text: string; startColumn: number; endColumn: number })[]
+  hiddenBefore: boolean
+  hiddenAfter: boolean
+}
+export function settingsTabWindow(locale: 'zh' | 'en', active: SettingsPageId, width: number, startColumn = 2): SettingsTabWindow {
+  const tabs = settingsTabLabels(locale)
+  const budget = Math.max(0, Math.floor(width))
+  const index = Math.max(0, tabs.findIndex(tab => tab.id === active))
+  if (budget === 0) return { tabs: [], hiddenBefore: index > 0, hiddenAfter: index < tabs.length - 1 }
+  let start = index
+  let end = index + 1
+  let cells = stringWidth(settingsTabCell(tabs[index]!.label))
+  // Start with the active tab, then include its nearest neighbours when they fit.
+  while (start > 0 || end < tabs.length) {
+    const left = start > 0 ? stringWidth(settingsTabCell(tabs[start - 1]!.label)) : Infinity
+    const right = end < tabs.length ? stringWidth(settingsTabCell(tabs[end]!.label)) : Infinity
+    if (cells + left > budget && cells + right > budget) break
+    if (cells + left <= budget && (index - start <= end - index - 1 || cells + right > budget)) { start--; cells += left }
+    else { end++; cells += right }
+  }
+  let column = startColumn
+  const shown = tabs.slice(start, end).map(tab => {
+    let text = settingsTabCell(tab.label)
+    if (stringWidth(text) > budget) {
+      let clipped = ''
+      for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text.trim())) {
+        if (stringWidth(clipped + segment) > budget - 1) break
+        clipped += segment
+      }
+      text = clipped + '…'
+    }
+    const result = { ...tab, text, startColumn: column, endColumn: column + stringWidth(text) }
+    column = result.endColumn
+    return result
+  })
+  return { tabs: shown, hiddenBefore: start > 0, hiddenAfter: end < tabs.length }
+}
+export function hitSettingsTabWindow(column: number, viewport: SettingsTabWindow): SettingsPageId | undefined {
+  return viewport.tabs.find(tab => column >= tab.startColumn && column < tab.endColumn)?.id
 }

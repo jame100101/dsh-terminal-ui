@@ -19,6 +19,7 @@ interface LogUpdateModule {
     create: (stream: { columns: number; isTTY: boolean; write: (output: string) => boolean }, options: {
       showCursor: boolean
       incremental: boolean
+      absoluteLineDiff?: boolean
     }) => LogUpdate
   }
 }
@@ -93,4 +94,21 @@ describe('Ink cursor-only terminal updates', () => {
     render('a\nB\nc\nd')
     await flush(terminal)
   })
+})
+
+
+it('erases old cells before an anchored scrollbar skips over a now-empty row', async () => {
+  const terminal = new xtermHeadless.Terminal({ cols: 20, rows: 6, allowProposedApi: true, convertEol: true })
+  const logUpdate = await loadLogUpdate()
+  const render = logUpdate.create({ columns: 20, isTTY: true, write: output => { terminal.write(output); return true } }, { showCursor: true, incremental: true, absoluteLineDiff: true })
+  try {
+    render('header\n  BACK TO BOTTOM\x1b[19G█\nfooter')
+    await flush(terminal)
+    expect(terminal.buffer.active.getLine(1)?.translateToString(true)).toContain('BACK TO BOTTOM')
+    render('header\n\x1b[19G█\nfooter')
+    await flush(terminal)
+    expect(terminal.buffer.active.getLine(1)?.translateToString(true)).toBe(' '.repeat(18) + '█')
+    expect(terminal.buffer.active.getLine(0)?.translateToString(true)).toBe('header')
+    expect(terminal.buffer.active.getLine(2)?.translateToString(true)).toBe('footer')
+  } finally { terminal.dispose() }
 })

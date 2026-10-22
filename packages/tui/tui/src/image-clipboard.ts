@@ -57,10 +57,14 @@ export function clipboardImageCommands(platform: NodeJS.Platform = process.platf
         {
           command: 'osascript',
           args: [
-            '-e', 'set pngData to the clipboard as «class PNGf»',
-            '-e', 'set outputFile to open for access POSIX file "/dev/stdout" with write permission',
-            '-e', 'write pngData to outputFile',
-            '-e', 'close access outputFile',
+            '-l', 'JavaScript', '-e', [
+              "ObjC.import('AppKit')",
+              'const image = $.NSImage.alloc.initWithPasteboard($.NSPasteboard.generalPasteboard)',
+              "if (image.isNil()) throw new Error('No clipboard image')",
+              'const rep = $.NSBitmapImageRep.imageRepWithData(image.TIFFRepresentation)',
+              'const png = rep.representationUsingTypeProperties($.NSBitmapImageFileTypePNG, $({}))',
+              '$.NSFileHandle.fileHandleWithStandardOutput.writeData(png)',
+            ].join('; '),
           ],
         },
       ]
@@ -78,12 +82,23 @@ export function clipboardImageCommands(platform: NodeJS.Platform = process.platf
   }
 }
 
-function readBytes(command: string, args: readonly string[], spawnImpl: ClipboardImageSpawn): Promise<Uint8Array | null> {
+/** Limits apply before the official attachment service admits the image. */
+export interface ClipboardReadOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
+  maxBytes?: number
+}
+
+function readBytes(command: string, args: readonly string[], spawnImpl: ClipboardImageSpawn, options: ClipboardReadOptions): Promise<Uint8Array | null> {
   return new Promise((resolve) => {
     let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const cancel = (): void => { settle(null); child?.kill?.() }
     const settle = (bytes: Uint8Array | null): void => {
       if (settled) return
       settled = true
+      clearTimeout(timer)
+      options.signal?.removeEventListener('abort', cancel)
       resolve(bytes)
     }
     let child: ReturnType<ClipboardImageSpawn>
@@ -94,19 +109,27 @@ function readBytes(command: string, args: readonly string[], spawnImpl: Clipboar
       return
     }
     const chunks: Buffer[] = []
+    let total = 0
     child.stdout?.on('data', (chunk: Buffer) => {
+      if (settled) return
+      total += chunk.byteLength
+      if (total > (options.maxBytes ?? 32 * 1024 * 1024)) { cancel(); return }
       chunks.push(chunk)
     })
     child.once('error', () => {
       settle(null)
     })
     child.once('close', (code) => {
+      if (settled) return
       if (code !== 0) {
         settle(null)
         return
       }
       settle(Buffer.concat(chunks))
     })
+    if (options.signal?.aborted) { cancel(); return }
+    options.signal?.addEventListener('abort', cancel, { once: true })
+    timer = setTimeout(cancel, options.timeoutMs ?? 4000)
   })
 }
 
@@ -119,9 +142,11 @@ function readBytes(command: string, args: readonly string[], spawnImpl: Clipboar
 export async function readClipboardImage(
   spawnImpl: ClipboardImageSpawn = spawn,
   platform: NodeJS.Platform = process.platform,
+  options: ClipboardReadOptions = {},
 ): Promise<ClipboardImage | null> {
   for (const entry of clipboardImageCommands(platform)) {
-    const bytes = await readBytes(entry.command, entry.args, spawnImpl)
+    if (options.signal?.aborted) return null
+    const bytes = await readBytes(entry.command, entry.args, spawnImpl, options)
     if (bytes === null || bytes.byteLength === 0) continue
     const mediaType = sniffMediaType(bytes)
     if (mediaType === undefined) continue

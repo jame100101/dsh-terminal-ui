@@ -4,6 +4,7 @@ import {
   copyFileSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -19,7 +20,7 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 const pty = require('node-pty')
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
-const DSH_VERSION = '0.1.5-rc.3'
+const DSH_VERSION = '0.2.1-rc.2'
 const PLUGIN_NAME = '@jame100101/dsh-tui'
 const BUNDLES = ['@deepseek-ai/dsh-base', PLUGIN_NAME]
 
@@ -116,7 +117,9 @@ function bootPty(executable, args, options) {
       reject(new Error(`verify-official-plugin: PTY boot timed out\n${output.slice(-8_000)}`))
     }, 30_000)
     const stopWhenReady = () => {
-      if (stopping || !output.includes('DSH-TUI') || !output.includes('idle')) return
+      // Current chrome omits the legacy idle label. Require the rendered
+      // composer and mounted bracketed-paste input protocol instead.
+      if (stopping || !output.includes('DSH-TUI') || !output.includes('❯') || !output.includes('\x1b[?2004h')) return
       if (options.diagnosticPath !== undefined && !existsSync(options.diagnosticPath)) return
       stopping = true
       child.write('\x03')
@@ -141,14 +144,45 @@ function bootPty(executable, args, options) {
   })
 }
 
+/** Synthetic preservation markers never impersonate real credential/session schemas.
+ * Their independent filenames are ignored by official stores; the default profile
+ * marker verifies that installing the explicit tui profile does not rewrite it.
+ */
+function seedPreservationFixtures(dshHome) {
+  const definitions = [
+    { kind: 'non-tui-default-profile', path: 'profiles/default/.dsh-tui-preservation.fixture' },
+    { kind: 'pre-existing-session-marker', path: 'sessions/.dsh-tui-preservation.fixture' },
+    { kind: 'synthetic-credentials-marker', path: '.credentials-preservation.fixture' },
+    { kind: 'synthetic-settings-marker', path: '.settings-preservation.fixture' },
+  ]
+  return definitions.map(definition => {
+    const path = join(dshHome, definition.path)
+    const bytes = Buffer.from(`synthetic nonsecret preservation fixture\r\n${definition.kind}\r\n旧数据不得改写 😀\r\n`, 'utf8')
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, bytes, { mode: 0o600, flag: 'wx' })
+    return { ...definition, absolutePath: path, bytes, checkedStages: [] }
+  })
+}
+
+function assertPreservationFixtures(fixtures, stage) {
+  for (const fixture of fixtures) {
+    assert(existsSync(fixture.absolutePath), `${fixture.kind} was removed during ${stage}`)
+    assert(readFileSync(fixture.absolutePath).equals(fixture.bytes), `${fixture.kind} bytes changed during ${stage}`)
+    fixture.checkedStages.push(stage)
+  }
+}
+
 async function main() {
   const input = process.argv[2]
   if (input === undefined) throw new Error('usage: node apps/tui-cli/scripts/verify-official-plugin.mjs <plugin.tgz>')
   const sourceTgz = realpathSync(resolve(input))
   const clean = mkdtempSync(join(tmpdir(), 'dsh-official-clean-'))
   const dshHome = mkdtempSync(join(tmpdir(), 'dsh-official-home-'))
+  const preservationFixtures = seedPreservationFixtures(dshHome)
   assert(!pathIsInside(root, clean), 'clean room is inside the repository')
-  writeFileSync(join(clean, 'package.json'), '{\n  "private": true\n}\n')
+  // Only this temporary host gets the documented third-party security fixes.
+  const securityOverrides = readJson(join(root, 'scripts/security-overrides.json'))
+  writeFileSync(join(clean, 'package.json'), JSON.stringify({ private: true, overrides: securityOverrides }, null, 2))
   const npm = process.platform === 'win32'
     ? { command: process.env.ComSpec ?? 'cmd.exe', args: ['/d', '/s', '/c', 'npm.cmd'] }
     : { command: 'npm', args: [] }
@@ -156,6 +190,8 @@ async function main() {
     'install', '--save-exact', '--no-audit', '--no-fund',
     '--cache', join(clean, '.npm-cache'), `@deepseek-ai/dsh@${DSH_VERSION}`,
   ], { cwd: clean })
+
+  run(process.execPath, [join(root, 'scripts/verify-security.mjs'), join(clean, 'package-lock.json')], { cwd: root })
 
   const dshManifestPath = join(clean, 'node_modules', '@deepseek-ai', 'dsh', 'package.json')
   const dshManifest = readJson(dshManifestPath)
@@ -182,13 +218,14 @@ async function main() {
     env: commonEnv,
   })
 
+  assertPreservationFixtures(preservationFixtures, 'local-tarball-install')
   const profile = join(dshHome, 'profiles', 'tui')
   const profileManifest = readJson(join(profile, 'package.json'))
   assert(JSON.stringify(profileManifest.dsh?.profile?.bundles) === JSON.stringify(BUNDLES), 'profile bundle order differs')
   assert(!JSON.stringify(profileManifest).includes('@deepseek-ai/dsh-tui-app'), 'profile includes the bundled TUI app')
   const installedPlugin = join(profile, 'node_modules', '@jame100101', 'dsh-tui')
   const pluginManifest = readJson(join(installedPlugin, 'package.json'))
-  assert(pluginManifest.version === '0.2.2', `installed plugin ${String(pluginManifest.version)}`)
+  assert(pluginManifest.version === readJson(join(root, 'apps/tui-cli/package.json')).version, `installed plugin ${String(pluginManifest.version)}`)
   assert(pluginManifest.private !== true, 'staged plugin is private')
   assert(pluginManifest.repository?.url === 'git+https://github.com/jame100101/dsh-terminal-ui.git', 'repository metadata differs')
   assert(pluginManifest.engines?.node === '^22.19.0 || >=24.0.0', 'Node engine range differs')
@@ -212,6 +249,7 @@ async function main() {
     env: runtimeEnv,
     diagnosticPath,
   })
+  assertPreservationFixtures(preservationFixtures, 'direct-official-boot')
   const diagnostic = readJson(diagnosticPath)
   assert(diagnostic.cordisContextIdentity === true, 'Cordis Context identity differs')
   for (const [name, path] of Object.entries(diagnostic.modules ?? {})) {
@@ -235,6 +273,7 @@ async function main() {
     env: { ...runtimeEnv, DSH_BIN: dshBin },
     diagnosticPath,
   })
+  assertPreservationFixtures(preservationFixtures, 'launcher-explicit-host-boot')
   unlinkSync(diagnosticPath)
   const pathBinDir = join(clean, 'node_modules', '.bin')
   const expectedPathEntry = join(pathBinDir, process.platform === 'win32' ? 'dsh.cmd' : 'dsh')
@@ -244,6 +283,8 @@ async function main() {
     env: withPrependedPath(runtimeEnv, pathBinDir),
     diagnosticPath,
   })
+
+  assertPreservationFixtures(preservationFixtures, 'launcher-path-host-boot')
 
   const missingHome = mkdtempSync(join(tmpdir(), 'dsh-official-missing-profile-'))
   const missingProfile = spawnSync(process.execPath, [launcher], {
@@ -257,6 +298,7 @@ async function main() {
 
   console.log(JSON.stringify({
     status: 'PASS',
+    securityOverrides,
     clean,
     dshHome,
     installedDsh: dshManifest.version,
@@ -267,6 +309,15 @@ async function main() {
     launcherDshBinBootMs: launcherBoot.durationMs,
     launcherPathBootMs: launcherPathBoot.durationMs,
     missingProfileUx: 'PASS',
+    preservedFixtures: preservationFixtures.map(fixture => ({
+      kind: fixture.kind,
+      path: fixture.path,
+      bytes: fixture.bytes.length,
+      sha256: createHash('sha256').update(fixture.bytes).digest('hex'),
+      checkedStages: fixture.checkedStages,
+      status: 'PASS',
+      scope: 'Independent synthetic marker; not an actual credential or session migration fixture',
+    })),
     couplingScan,
     moduleIdentity: diagnostic,
   }, undefined, 2))

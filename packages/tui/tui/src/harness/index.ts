@@ -8,7 +8,7 @@
 export { createForkAgent, createForkArtifact } from '../fork-lifecycle'
 export type { ForkAgentInput, ForkArtifactInput } from '../fork-lifecycle'
 
-export { createTuiAgent, recordedPreset, resolveTuiPreset, SessionPresetQueue } from '../preset-lifecycle'
+export { applyTuiPreset, createTuiAgent, recordedPreset, resolveTuiPreset, SessionPresetQueue } from '../preset-lifecycle'
 export type { CreatedTuiAgent, TuiPresetResolution } from '../preset-lifecycle'
 
 export { prepareTuiResume, replayTuiResumeOrDispose, resolveTuiReasoning } from '../resume-lifecycle'
