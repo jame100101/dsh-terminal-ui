@@ -176,8 +176,10 @@ async function main() {
   const input = process.argv[2]
   if (input === undefined) throw new Error('usage: node apps/tui-cli/scripts/verify-official-plugin.mjs <plugin.tgz>')
   const sourceTgz = realpathSync(resolve(input))
-  const clean = mkdtempSync(join(tmpdir(), 'dsh-official-clean-'))
-  const dshHome = mkdtempSync(join(tmpdir(), 'dsh-official-home-'))
+  // Windows TEMP can use an 8.3 alias (RUNNER~1). Host resolution uses native
+  // directory spelling; use it at process entry too to avoid two ESM identities.
+  const clean = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-official-clean-')))
+  const dshHome = realpathSync.native(mkdtempSync(join(tmpdir(), 'dsh-official-home-')))
   const preservationFixtures = seedPreservationFixtures(dshHome)
   assert(!pathIsInside(root, clean), 'clean room is inside the repository')
   // Only this temporary host gets the documented third-party security fixes.
@@ -251,7 +253,7 @@ async function main() {
   })
   assertPreservationFixtures(preservationFixtures, 'direct-official-boot')
   const diagnostic = readJson(diagnosticPath)
-  assert(diagnostic.cordisContextIdentity === true, 'Cordis Context identity differs')
+  assert(diagnostic.cordisContextIdentity === true, `Cordis Context identity differs: ${JSON.stringify(diagnostic)}`)
   for (const [name, path] of Object.entries(diagnostic.modules ?? {})) {
     assert(pathIsInside(join(clean, 'node_modules'), path), `${name} did not resolve from official dsh`)
     assert(!pathIsInside(profile, path), `${name} resolved from a profile-local duplicate`)
