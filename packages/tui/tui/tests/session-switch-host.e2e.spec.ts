@@ -65,7 +65,10 @@ it('switches A → new B → A → B and sends another turn without exiting the 
     await until(text => text.includes('fixture second answer'))
     for (const [title, id, answer] of [['first session', a, 'fixture plain answer'], ['second session', b, 'fixture second answer']]) {
       await command(`/sessions ${title}`)
-      await until(text => text.includes('Live / persisted sessions') && text.includes('persisted'))
+      // The heading itself contains 'persisted' before async rows arrive.
+      // Wait for the selected target row, otherwise Enter hits an empty list.
+      await until(text => text.split('\n').some(line => line.trimStart().startsWith('▸')
+        && line.includes(title!) && line.includes('persisted')))
       child.write('\r')
       await until(text => text.includes(`resumed session ${id}`) && text.includes(answer!))
       expect(await sessionId()).toBe(id)

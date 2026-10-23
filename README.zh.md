@@ -346,8 +346,8 @@ DSH_TUI_ACCEPTANCE_HOME=/absolute/existing/isolated/home pnpm dev:tui
 在本 checkout 中使用 Node `^22.19.0 || >=24.0.0` 和 pnpm `11.7.0`：
 
 ```sh
-# Replace this path if the checkout was moved.
-cd /Users/apple/.codex/worktrees/claude-tui-parity/dsh-terminal-ui
+# Run in your checkout.
+cd /path/to/dsh-terminal-ui
 pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck
@@ -358,6 +358,8 @@ pnpm dsh-tui:pack-plugin
 pnpm audit:tarball apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
 pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
 ```
+
+原生集成测试需要允许 PTY、本地回环监听和官方操作系统沙箱的环境。嵌套执行沙箱可能拒绝这些操作；此时应在外层沙箱之外复验，保留 Harness 原有策略，不要关闭审批或沙箱检查来通过测试。渲染 fixture 等待 Ink 输出完成，PTY 测试观察目标画面状态后才发送依赖该状态的按键。
 
 验证器会创建独立官方安装与 `DSH_HOME`，安装精确 tarball，通过三条启动路径进行 PTY 检查，并验证 Harness/Cordis 身份、patched Ink 与 React 单实例。临时目录会保留并输出路径。这些检查证明打包和启动，不代表真实账号授权或每一种终端环境都已验证。实际执行证据、PASS/FAIL/UNTESTED 及剩余验收项见实施进度（验收记录单独保存在仓库外）。
 

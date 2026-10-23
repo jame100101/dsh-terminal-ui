@@ -251,6 +251,7 @@ describe('production TUI through a real PTY', () => {
     await harness.send('\x1b[D')
     await harness.send('X')
     await harness.send('\r')
+    await waitFor(() => screenLines(harness.terminal).join('\n').includes('accepted:aX👨‍👩‍👧‍👦z'))
     expect(screenLines(harness.terminal).join('\n')).toContain('accepted:aX👨‍👩‍👧‍👦z')
     harness.pty.kill()
     await harness.waitForExit()

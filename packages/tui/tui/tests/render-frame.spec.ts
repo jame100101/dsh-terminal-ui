@@ -365,10 +365,13 @@ async function mount(nodes: readonly TuiNode[] = [], hostOverrides: Partial<TuiH
       stdin: stdin as never,
     },
   )
-  // Ink 7 probes the kitty keyboard protocol for the first ~200ms after
-  // mount (a 'data' listener swallows input during that window); settle past
-  // it before driving keys, exactly like a real user's first keystroke.
-  const settle = async (): Promise<void> => { await new Promise<void>(resolve => setTimeout(resolve, 320)) }
+  // Timers alone do not guarantee a React commit or xterm write completion
+  // under concurrent test load. Flush Ink's pending work before inspecting
+  // the screen or sending the next key (including draft resource effects).
+  const settle = async (): Promise<void> => {
+    await new Promise<void>(resolve => setTimeout(resolve, 320))
+    await instance.waitUntilRenderFlush()
+  }
   await settle()
   return { store, capture, stdin, unmount: () => instance.unmount(), type: async (text) => { stdin.write(text); await settle() } }
 }

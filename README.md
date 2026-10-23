@@ -346,8 +346,8 @@ This builds the checkout against pinned rc.2, seeds a separate `tui-source` prof
 Run from this checkout with Node `^22.19.0 || >=24.0.0` and pnpm `11.7.0`:
 
 ```sh
-# Replace this path if the checkout was moved.
-cd /Users/apple/.codex/worktrees/claude-tui-parity/dsh-terminal-ui
+# Run in your checkout.
+cd /path/to/dsh-terminal-ui
 pnpm install --frozen-lockfile
 pnpm build
 pnpm typecheck
@@ -358,6 +358,8 @@ pnpm dsh-tui:pack-plugin
 pnpm audit:tarball apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
 pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
 ```
+
+Run the native integration suite in an environment that permits PTYs, loopback listeners and the official OS sandbox. A nested execution sandbox may reject these operations; reproduce that failure outside the outer sandbox while retaining the Harness policy. Do not disable approval or sandbox checks to make tests pass. Render fixtures wait for Ink output completion; PTY tests observe the target screen state before sending dependent keys.
 
 The verifier creates a separate official installation and `DSH_HOME`, installs the exact tarball, boots three PTY launcher paths and verifies shared Harness/Cordis identities, patched Ink, and one React runtime. It retains its temporary directories and reports their locations. These checks establish packaging and startup; they do not certify real provider requests, real account authorization or every terminal environment. Use implementation progress (review records are stored outside Git) for executed evidence, PASS/FAIL/UNTESTED and remaining acceptance gaps.
 
