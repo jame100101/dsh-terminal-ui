@@ -29,6 +29,8 @@ describe('official PTC retained worker state', () => {
       { id: 'storage-json', config: { root: join(home, 'storages') } },
       { id: 'session-telemetry-otel', disabled: true },
       { id: 'hmr', disabled: true },
+      // Agentless calls must mount the fixture cwd, not the repository; Linux isolates /tmp.
+      { id: 'sandbox-policy', config: { mode: 'workspace-write', workspaceRoot: workspace } },
       { id: 'ptc-runtime', config: { executionMode: 'persistent-in-memory' } },
       { id: 'session-title-llm', disabled: true },
     ], async root => {
@@ -43,6 +45,7 @@ describe('official PTC retained worker state', () => {
   it('reuses only the exact owner and loses memory after releasing its process', async () => {
     const runtime = ctx.ptcRuntime
     expect(runtime.programFormat).toBe('repl')
+    expect(ctx.sandboxPolicy.resolve()).toMatchObject({ workspaceRoot: workspace, mode: 'workspace-write' })
     const owner = {}; const other = {}
     const run = (program: string, stateOwner: object) => runtime.run(runtime.resolve({ program, stateOwner, cwd: workspace, bindings: [] }))
     try {

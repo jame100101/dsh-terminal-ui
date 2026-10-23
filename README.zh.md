@@ -17,7 +17,7 @@
 
 <p align="center">Claude Code 风格交互 · 本地优先 · 官方 Harness 运行时</p>
 
-> **当前发布候选：`0.3.0-rc.1`（`next`）** · 需要官方 Harness **`0.2.1-rc.2`**。请按下文安装明确版本；npm `latest` 暂时仍为面向旧宿主的 `0.2.2`。
+> **GitHub 版本：`v1.0.0`** · npm 当前提供 `0.3.0-rc.1`（`next`）；`1.0.0` 尚未发布到 npm · 需要官方 Harness **`0.2.1-rc.2`**。请按下文安装明确版本；npm `latest` 暂时仍为面向旧宿主的 `0.2.2`。
 
 新版欢迎页与设置页。图片来自隔离官方 Harness 实际 PTY 输出的单元格重放，并非 macOS Terminal 原生窗口截图；没有模拟模型回复。
 
@@ -364,8 +364,8 @@ pnpm test
 pnpm verify:repo
 pnpm test:docs
 pnpm dsh-tui:pack-plugin
-pnpm audit:tarball apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
-pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
+pnpm audit:tarball apps/tui-cli/jame100101-dsh-tui-1.0.0.tgz
+pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-1.0.0.tgz
 ```
 
 原生集成测试需要允许 PTY、本地回环监听和官方操作系统沙箱的环境。嵌套执行沙箱可能拒绝这些操作；此时应在外层沙箱之外复验，保留 Harness 原有策略，不要关闭审批或沙箱检查来通过测试。渲染 fixture 等待 Ink 输出完成，PTY 测试观察目标画面状态后才发送依赖该状态的按键。

@@ -73,7 +73,7 @@ describe('assemblePlugin', () => {
     }
     expect(manifest.name).toBe('@jame100101/dsh-tui')
     expect(manifest.version).toBe(JSON.parse(readFileSync(join(root, 'apps/tui-cli/package.json'), 'utf8')).version)
-    expect(manifest.version).toMatch(/^0\.3\.0-rc\.[1-9]\d*$/)
+    expect(manifest.version).toBe('1.0.0')
     expect(manifest.private).not.toBe(true)
     expect(manifest.repository).toEqual({
       type: 'git',

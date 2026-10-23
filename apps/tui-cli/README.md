@@ -6,7 +6,9 @@ English | [中文](README.zh.md)
 
 `@jame100101/dsh-tui` adds a Claude Code-inspired React and Ink terminal interface to an official DeepSeek Harness profile. The optional `dsh-tui` command is a thin argument translator for `dsh --profile tui`; session, agent, tool, and persistence services come from the official Harness installation.
 
-## Release candidate
+## Version
+
+The source version is **`1.0.0`** (GitHub tag `v1.0.0`); it has not been published to npm.
 
 `0.3.0-rc.1` is published under npm `next` and requires official Harness **`0.2.1-rc.2`**. The older `latest` package (`0.2.2`) targets a different host. With a compatible official installation:
 
@@ -48,7 +50,7 @@ If no compatible official Harness is present, the launcher names the required pa
 The clean-room verifier installs official Harness outside this repository, creates an isolated `DSH_HOME`, installs the packed plugin, checks package identity and patched Ink resolution, and boots direct dsh plus launcher paths using explicit `DSH_BIN` and npm's PATH entry under a PTY:
 
 ```sh
-node apps/tui-cli/scripts/verify-official-plugin.mjs apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
+node apps/tui-cli/scripts/verify-official-plugin.mjs apps/tui-cli/jame100101-dsh-tui-1.0.0.tgz
 ```
 
 It leaves the temporary install and `DSH_HOME` in place and prints both paths for inspection.

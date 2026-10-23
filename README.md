@@ -17,7 +17,7 @@ An independently maintained, unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Claude Code-inspired interaction · Local-first · Official Harness runtime</p>
 
-> **Current release candidate: `0.3.0-rc.1` (`next`)** · Requires official Harness **`0.2.1-rc.2`**. Install the explicit version below. npm `latest` remains the older `0.2.2` release for a different host.
+> **GitHub release: `v1.0.0`** · npm currently provides `0.3.0-rc.1` (`next`); `1.0.0` has not been published to npm · Requires official Harness **`0.2.1-rc.2`**. Install the explicit version below. npm `latest` remains the older `0.2.2` release for a different host.
 
 Welcome and settings in the current release. Images replay actual cells captured from an isolated official Harness PTY; they are not native macOS Terminal window screenshots. No model response is simulated.
 
@@ -364,8 +364,8 @@ pnpm test
 pnpm verify:repo
 pnpm test:docs
 pnpm dsh-tui:pack-plugin
-pnpm audit:tarball apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
-pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
+pnpm audit:tarball apps/tui-cli/jame100101-dsh-tui-1.0.0.tgz
+pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-1.0.0.tgz
 ```
 
 Run the native integration suite in an environment that permits PTYs, loopback listeners and the official OS sandbox. A nested execution sandbox may reject these operations; reproduce that failure outside the outer sandbox while retaining the Harness policy. Do not disable approval or sandbox checks to make tests pass. Render fixtures wait for Ink output completion; PTY tests observe the target screen state before sending dependent keys.

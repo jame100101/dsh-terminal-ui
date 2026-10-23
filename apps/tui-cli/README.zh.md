@@ -6,7 +6,9 @@
 
 `@jame100101/dsh-tui` 为官方 DeepSeek Harness profile 添加参考 Claude Code 视觉与键盘交互风格的 React 和 Ink 终端界面。可选的 `dsh-tui` 命令只把参数转换后交给 `dsh --profile tui`；会话、agent、工具和持久化服务来自官方 Harness 安装。
 
-## 发布候选
+## 版本
+
+源码版本为 **`1.0.0`**（GitHub 标签 `v1.0.0`），尚未发布到 npm。
 
 `0.3.0-rc.1` 已发布至 npm `next`，需要官方 Harness **`0.2.1-rc.2`**。旧版 `latest`（`0.2.2`）对应不同宿主。已有兼容官方安装时：
 
@@ -48,7 +50,7 @@ dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 Clean-room verifier 会在仓库外安装官方 Harness、创建隔离的 `DSH_HOME`、安装 packed plugin、检查包 identity 和 patched Ink 解析，并在 PTY 中分别通过 direct dsh、显式 `DSH_BIN` launcher 和 npm PATH entry launcher 启动：
 
 ```sh
-node apps/tui-cli/scripts/verify-official-plugin.mjs apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
+node apps/tui-cli/scripts/verify-official-plugin.mjs apps/tui-cli/jame100101-dsh-tui-1.0.0.tgz
 ```
 
 验证器会保留临时安装和 `DSH_HOME`，并输出两个路径供检查。
