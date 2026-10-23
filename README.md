@@ -6,7 +6,7 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.2"><img alt="previous npm release 0.2.2" src="https://img.shields.io/badge/PREVIOUS_RELEASE-0.2.2-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.3.0-rc.1"><img alt="npm 0.3.0-rc.1 · next" src="https://img.shields.io/badge/NPM_NEXT-0.3.0--rc.1-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#architecture"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#architecture"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#architecture"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,13 +15,13 @@ Unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">Local-first · Session persistence · Tool runtime</p>
 
-> **Unpublished development branch**: local builds target exact official Harness `0.2.1-rc.2`. Published npm `0.2.2` targets the previous host and does not contain this work. Use the local tarball in [isolated installation and validation](README.md#isolated-development); the default npm `0.2.0-rc.2` channel is a separate untested version.
+> **Current release candidate: `0.3.0-rc.1` (`next`)** · Requires official Harness **`0.2.1-rc.2`**. Install the explicit version below. npm `latest` remains the older `0.2.2` release for a different host.
 
-These are reference screenshots from an earlier release, not acceptance screenshots of this branch.
+Welcome and settings in the current release. Images replay actual cells captured from an isolated official Harness PTY; they are not native macOS Terminal window screenshots. No model response is simulated.
 
 <p align="center">
-  <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2.2 startup" width="100%">
-  <img src="assets/tui-rc-chat.png" alt="dsh-tui 0.2 RC conversation" width="100%">
+  <img src="assets/tui-v03-welcome.png" alt="DSH-TUI 0.3 welcome — actual PTY replay" width="100%">
+  <img src="assets/tui-v03-settings.png" alt="DSH-TUI 0.3 settings — actual PTY replay" width="100%">
 </p>
 
 `dsh-tui` is a **local terminal assistant** for the DeepSeek Harness agent runtime — a Claude Code-style CLI with a React 19 + Ink 7 interface: thinking shimmer, streaming replies, tool cards, permissions, slash-command palette, persistent sessions, and settings panels.
@@ -121,15 +121,20 @@ which npm
 
 Use `source ~/.zshrc` instead when the login shell is zsh. If the host already has an older apt or system Node.js, upgrade or select a supported version before continuing.
 
-### 2. Install the local development tarball
+### 2. Install the release candidate
 
-Follow [isolated installation and validation](README.md#isolated-development) to build, install the exact official host, and add the local tarball. All evaluation uses a new temporary directory and separate `DSH_HOME`, without upgrading a global installation or touching production sessions.
+For an existing official **Harness `0.2.1-rc.2`** installation:
 
-The unpublished package version is `0.3.0-rc.1`; npm `0.2.2` remains the previous release. The profile composes official `@deepseek-ai/dsh-base` with local `@jame100101/dsh-tui`; the optional thin launcher is not automatically added to shell PATH.
+```sh
+dsh --version
+dsh plugin --profile tui add @jame100101/dsh-tui@0.3.0-rc.1
+```
+
+Keep the same `DSH_HOME` when updating to retain credentials and sessions. Do not rebuild an existing profile from defaults. For a fresh installation, or when your existing host has a different version, use [isolated installation](#isolated-development). The optional thin launcher is not automatically added to shell PATH; start with `dsh --profile tui`.
 
 ### 3. Start a project
 
-The `dsh` examples below refer to the isolated official executable. Use its full path and temporary `DSH_HOME` from the validation guide when evaluating this branch.
+The examples below use your compatible official `dsh` executable. For an isolated installation, use the executable path and `DSH_HOME` from that installation.
 
 Run the `tui` profile from the directory you want to use as the workspace. The current directory is the default workspace:
 
@@ -279,7 +284,7 @@ Prefer nvm or another user-level Node.js installation so npm's global prefix is 
 
 ## Release status and maintenance
 
-This branch is unpublished and unmerged; it changes no npm dist-tag or GitHub Release. Published `0.2.2` and the local development package are not interchangeable; the new candidate has a separate version and filename. Evaluate the exact tarball instead of npm `latest`.
+`0.3.0-rc.1` is published on npm under `next`, for Harness `0.2.1-rc.2`. The older `0.2.2` remains on `latest`; these host/plugin pairs are not interchangeable. Use an explicit package version. Older source remains available through the `v0.2.2` Git tag for rollback.
 
 The official host owns sessions, credentials and configuration. Do not delete the production home or automatically rebuild it with `--from-default-profile`. See the [development validation guide](README.md#isolated-development) for sources, versions, rollback and manual coverage limits.
 
@@ -329,7 +334,7 @@ See [docs/architecture.md](docs/architecture.md) for plugin architecture.
 
 ## Isolated development
 
-This branch is unpublished. Its unpublished candidate version is `0.3.0-rc.1`; the npm `@jame100101/dsh-tui@0.2.2` release is a different artifact for Harness `0.1.5-rc.3`. Use the local tarball below with exact official Harness `0.2.1-rc.2`. Use the pinned version rather than a mutable npm tag.
+Use candidate `0.3.0-rc.1` with exact official Harness `0.2.1-rc.2`. The published `0.2.2` artifact targets older Harness `0.1.5-rc.3`. The commands below install the published candidate in a separate host and home; local source validation can substitute its verified tarball for the package spec.
 
 ## Preferred ongoing source acceptance
 
@@ -365,15 +370,15 @@ The verifier creates a separate official installation and `DSH_HOME`, installs t
 
 ## Interactive evaluation on macOS or Linux
 
-Run the following from the checkout after packing. It installs only into a new temporary directory, without changing global Harness or the production home:
+Run the following from the checkout to apply the pinned dependency security overrides. It installs into a new temporary directory without changing global Harness or the production home. Keep the resulting paths and reuse the same home for subsequent runs:
 
 ```sh
-DSH_VALIDATION_TARBALL="$(pwd)/apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz"
+DSH_VALIDATION_PLUGIN="@jame100101/dsh-tui@0.3.0-rc.1"
 DSH_VALIDATION_DIR="$(mktemp -d -t dsh-tui-eval.XXXXXX)"
 mkdir -p "$DSH_VALIDATION_DIR/host"
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({private:true,overrides:require("./scripts/security-overrides.json")}))' "$DSH_VALIDATION_DIR/host/package.json"
 npm install --prefix "$DSH_VALIDATION_DIR/host" --save-exact --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.2
-DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/host/node_modules/.bin/dsh" plugin --profile tui add "$DSH_VALIDATION_TARBALL"
+DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/host/node_modules/.bin/dsh" plugin --profile tui add "$DSH_VALIDATION_PLUGIN"
 NODE_ENV=production DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/host/node_modules/.bin/dsh" --profile tui
 ```
 
@@ -383,10 +388,10 @@ Configure a test credential through the Models settings page or an inherited env
 
 ## Windows PowerShell
 
-After packing from the checkout:
+From the checkout, using the pinned dependency security overrides:
 
 ```powershell
-$dshValidationTarball = (Resolve-Path 'apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz').Path
+$dshValidationPlugin = '@jame100101/dsh-tui@0.3.0-rc.1'
 $dshValidationDir = Join-Path ([IO.Path]::GetTempPath()) ('dsh-tui-eval-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $dshValidationDir | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $dshValidationDir 'host') | Out-Null
@@ -398,7 +403,7 @@ $dshPreviousNodeEnv = $env:NODE_ENV
 try {
   $env:NODE_ENV = 'production'
   $env:DSH_HOME = Join-Path $dshValidationDir 'home'
-  & $dshValidationBin plugin --profile tui add $dshValidationTarball
+  & $dshValidationBin plugin --profile tui add $dshValidationPlugin
   & $dshValidationBin --profile tui
 } finally {
   $env:DSH_HOME = $dshPreviousHome

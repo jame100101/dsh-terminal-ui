@@ -6,7 +6,7 @@
 
 <p align="center">
   <a href="#快速开始"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
-  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.2.2"><img alt="previous npm release 0.2.2" src="https://img.shields.io/badge/PREVIOUS_RELEASE-0.2.2-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
+  <a href="https://www.npmjs.com/package/@jame100101/dsh-tui/v/0.3.0-rc.1"><img alt="npm 0.3.0-rc.1 · next" src="https://img.shields.io/badge/NPM_NEXT-0.3.0--rc.1-CB3837?style=for-the-badge&logo=npm&logoColor=white"></a>
   <a href="#架构"><img alt="React 19" src="https://img.shields.io/badge/REACT-19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB"></a>
   <a href="#架构"><img alt="TypeScript" src="https://img.shields.io/badge/TYPESCRIPT-3178C6?style=for-the-badge&logo=typescript&logoColor=white"></a>
   <a href="#架构"><img alt="Ink 7" src="https://img.shields.io/badge/INK-7-3A3A3A?style=for-the-badge"></a>
@@ -15,13 +15,13 @@
 
 <p align="center">本地优先 · 会话持久化 · 工具运行时</p>
 
-> **未发布开发分支**：本地构建仅验证精确官方 Harness `0.2.1-rc.2`。已发布 npm `0.2.2` 面向旧宿主，不能用于验收本分支。请按[隔离安装与验收](README.zh.md#isolated-development)使用本地 tarball；默认 npm `0.2.0-rc.2` 是另一个尚未验证的版本。
+> **当前发布候选：`0.3.0-rc.1`（`next`）** · 需要官方 Harness **`0.2.1-rc.2`**。请按下文安装明确版本；npm `latest` 暂时仍为面向旧宿主的 `0.2.2`。
 
-这些是已有发布版参考截图，不是本分支的验收截图。
+新版欢迎页与设置页。图片来自隔离官方 Harness 实际 PTY 输出的单元格重放，并非 macOS Terminal 原生窗口截图；没有模拟模型回复。
 
 <p align="center">
-  <img src="assets/tui-rc-startup.png" alt="dsh-tui 0.2.2 startup" width="100%">
-  <img src="assets/tui-rc-chat.png" alt="dsh-tui 0.2 RC conversation" width="100%">
+  <img src="assets/tui-v03-welcome.png" alt="DSH-TUI 0.3 welcome — actual PTY replay" width="100%">
+  <img src="assets/tui-v03-settings.png" alt="DSH-TUI 0.3 settings — actual PTY replay" width="100%">
 </p>
 
 `dsh-tui` 是 DeepSeek Harness agent runtime 的**本地终端助手**，提供类似 Claude Code 的 CLI 和 React 19 + Ink 7 界面，包含思考动画、流式回复、工具卡片、权限、斜杠命令面板、持久会话和设置面板。
@@ -123,15 +123,20 @@ which npm
 
 如果登录 shell 是 zsh，请将 `source ~/.bashrc` 换成 `source ~/.zshrc`。如果系统已有旧版 apt 或系统 Node.js，请先升级或选择满足要求的版本。
 
-### 2. 安装本地开发 tarball
+### 2. 安装发布候选
 
-执行[隔离安装与验收](README.zh.md#isolated-development)中的构建、精确宿主安装和本地 tarball 命令。所有验证使用新临时目录与独立 `DSH_HOME`，不升级全局安装，也不触碰生产会话。
+已有官方 **Harness `0.2.1-rc.2`** 时：
 
-未发布开发包版本为 `0.3.0-rc.1`；npm `0.2.2` 保持为上一版本。profile 包含官方 `@deepseek-ai/dsh-base` 和本地 `@jame100101/dsh-tui`；可选 thin launcher 不会自动进入 shell PATH。
+```sh
+dsh --version
+dsh plugin --profile tui add @jame100101/dsh-tui@0.3.0-rc.1
+```
+
+更新时沿用原来的 `DSH_HOME`，保留凭据和会话，不要从默认配置重建已有 profile。首次安装或现有宿主版本不同时，请使用[隔离安装](#isolated-development)。可选 thin launcher 不会自动进入 shell PATH；使用 `dsh --profile tui` 启动。
 
 ### 3. 启动项目
 
-以下 `dsh` 示例表示上文隔离安装中的官方可执行文件；实际运行时使用验收指南里的完整路径和临时 `DSH_HOME`。
+以下示例使用兼容的官方 `dsh`。采用隔离安装时，使用该安装的可执行文件路径及 `DSH_HOME`。
 
 在想要作为 workspace 的目录中启动 `tui` profile。当前目录默认就是 workspace：
 
@@ -279,7 +284,7 @@ where.exe dsh
 
 ## 发布状态与维护
 
-本分支未发布、未合并 main，也未改动 npm dist-tag 或 GitHub Release。已发布 `0.2.2` 与本地开发包不可互换；新候选包已使用独立版本和文件名。验收使用精确 tarball，不使用 npm `latest`。
+`0.3.0-rc.1` 已发布至 npm `next`，适配 Harness `0.2.1-rc.2`。旧版 `0.2.2` 暂时保留在 `latest`；两组宿主与插件不可混用，请指定版本安装。旧源码通过 Git 标签 `v0.2.2` 保留回退入口。
 
 会话、凭据和配置由官方宿主管理。不要删除整个生产 home，也不要自动执行 `--from-default-profile` 重建。配置来源、精确版本、回退和人工验收边界见[开发验收指南](README.zh.md#isolated-development)。
 
@@ -329,7 +334,7 @@ wrapper 负责转换启动参数并运行 `dsh --profile tui`。TUI 插件将 ap
 
 ## 隔离开发
 
-本分支尚未发布。开发包版本为 `0.3.0-rc.1`；npm 上的 `@jame100101/dsh-tui@0.2.2` 是面向 Harness `0.1.5-rc.3` 的不同产物。请使用下面的本地 tarball 配合精确官方版本 `0.2.1-rc.2`。请使用固定版本，不依赖可变 npm 标签。
+候选版本 `0.3.0-rc.1` 对应精确官方 Harness `0.2.1-rc.2`；旧包 `0.2.2` 对应 Harness `0.1.5-rc.3`。下列命令把已发布候选安装到独立宿主和 home；源码验收时可以把 npm 包名替换为已验证的本地 tarball。
 
 ## 后续优先使用源码验收
 
@@ -365,15 +370,15 @@ pnpm dsh-tui:verify-plugin apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz
 
 ## macOS 或 Linux 交互验收
 
-打包后在 checkout 中运行。安装仅写入新临时目录，不改变全局 Harness 或生产 home：
+在 checkout 中运行，应用锁定的依赖安全修复。安装仅写入新临时目录；保存生成的路径，后续启动沿用同一 home，不改变全局 Harness 或生产 home：
 
 ```sh
-DSH_VALIDATION_TARBALL="$(pwd)/apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz"
+DSH_VALIDATION_PLUGIN="@jame100101/dsh-tui@0.3.0-rc.1"
 DSH_VALIDATION_DIR="$(mktemp -d -t dsh-tui-eval.XXXXXX)"
 mkdir -p "$DSH_VALIDATION_DIR/host"
 node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({private:true,overrides:require("./scripts/security-overrides.json")}))' "$DSH_VALIDATION_DIR/host/package.json"
 npm install --prefix "$DSH_VALIDATION_DIR/host" --save-exact --no-audit --no-fund @deepseek-ai/dsh@0.2.1-rc.2
-DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/host/node_modules/.bin/dsh" plugin --profile tui add "$DSH_VALIDATION_TARBALL"
+DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/host/node_modules/.bin/dsh" plugin --profile tui add "$DSH_VALIDATION_PLUGIN"
 NODE_ENV=production DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/host/node_modules/.bin/dsh" --profile tui
 ```
 
@@ -383,10 +388,10 @@ NODE_ENV=production DSH_HOME="$DSH_VALIDATION_DIR/home" "$DSH_VALIDATION_DIR/hos
 
 ## Windows PowerShell
 
-在 checkout 打包后运行：
+在 checkout 中运行，应用锁定的依赖安全修复。安装后保存路径，后续启动沿用同一 home：
 
 ```powershell
-$dshValidationTarball = (Resolve-Path 'apps/tui-cli/jame100101-dsh-tui-0.3.0-rc.1.tgz').Path
+$dshValidationPlugin = '@jame100101/dsh-tui@0.3.0-rc.1'
 $dshValidationDir = Join-Path ([IO.Path]::GetTempPath()) ('dsh-tui-eval-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $dshValidationDir | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $dshValidationDir 'host') | Out-Null
@@ -398,7 +403,7 @@ $dshPreviousNodeEnv = $env:NODE_ENV
 try {
   $env:NODE_ENV = 'production'
   $env:DSH_HOME = Join-Path $dshValidationDir 'home'
-  & $dshValidationBin plugin --profile tui add $dshValidationTarball
+  & $dshValidationBin plugin --profile tui add $dshValidationPlugin
   & $dshValidationBin --profile tui
 } finally {
   $env:DSH_HOME = $dshPreviousHome

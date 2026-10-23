@@ -4,11 +4,23 @@
 
 `@jame100101/dsh-tui` 为官方 DeepSeek Harness profile 添加 React 和 Ink 终端界面。可选的 `dsh-tui` 命令只把参数转换后交给 `dsh --profile tui`；会话、agent、工具和持久化服务来自官方 Harness 安装。
 
-## 未发布开发构建
+## 发布候选
 
-本分支精确适配官方 Harness `0.2.1-rc.2`，默认 npm `0.2.0-rc.2` 尚未验证。未发布包版本为 `0.3.0-rc.1`；已发布的 `0.2.2`面向旧 Harness `0.1.5-rc.3`，不包含这些更改。不要用已发布 npm 包验收本分支。
+`0.3.0-rc.1` 已发布至 npm `next`，需要官方 Harness **`0.2.1-rc.2`**。旧版 `latest`（`0.2.2`）对应不同宿主。已有兼容官方安装时：
 
-从 checkout 构建本地 tarball，按checkout 中的 `docs/development-validation.zh.md` 验收指南安装到临时官方宿主和新 `DSH_HOME`。不升级全局安装，不更改生产配置。profile bundle 顺序为 `@deepseek-ai/dsh-base`、`@jame100101/dsh-tui`。包只捆绑 patched Ink，Harness 保持外部依赖，Ink/TUI 共享 React。
+```sh
+dsh --version
+dsh plugin --profile tui add @jame100101/dsh-tui@0.3.0-rc.1
+dsh --profile tui
+```
+
+沿用同一 `DSH_HOME` 保留凭据和会话，不要从默认配置重建已有 profile。新宿主或隔离安装请参阅[仓库安装指南](https://github.com/jame100101/dsh-terminal-ui/blob/main/README.zh.md#isolated-development)。profile bundle 顺序为 `@deepseek-ai/dsh-base`、`@jame100101/dsh-tui`。包只捆绑 patched Ink，Harness 保持外部依赖，Ink/TUI 共享 React。
+
+新版界面来自隔离官方宿主 PTY 的单元格重放，并非原生 Terminal 窗口截图。
+
+![DSH-TUI welcome — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-welcome.png)
+
+![DSH-TUI settings — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-settings.png)
 
 ## Thin launcher
 
@@ -27,7 +39,7 @@ dsh-tui -c -p "keep going"       resume, then run one task non-interactively
 
 退出码为：成功或 official Harness 收到 SIGTERM 后的 supervisor-stop 结果 `0`、执行失败 `1`、用法错误 `2`、SIGINT `130`。SIGTERM 保持为 `0`，因为 official Harness 在所有 application surface 上都把它视为普通的 supervised shutdown。`--print` 把助手结果写到 stdout，把诊断写到 stderr。
 
-缺少兼容的官方 Harness 时，launcher 会指出所需包版本。启动前，它通过兼容的官方安装解析 Harness home，并报告 profile 缺少插件。本分支未发布，即使旧诊断提示 npm 包名，也应使用指南中的本地 tarball 安装命令。交互 child 退出后，它会复位 mouse tracking、bracketed paste、光标可见性、alternate screen 和 SGR 状态。
+缺少兼容的官方 Harness 时，launcher 会指出所需包版本。启动前，它通过兼容的官方安装解析 Harness home，并报告 profile 缺少插件。交互 child 退出后，它会复位 mouse tracking、bracketed paste、光标可见性、alternate screen 和 SGR 状态。
 
 ## 验证
 
