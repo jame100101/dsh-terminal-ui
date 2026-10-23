@@ -1,8 +1,10 @@
-# @jame100101/dsh-tui
+<h1 align="center">DSH Terminal UI</h1>
+
+<p align="center"><strong>A Claude Code-inspired terminal frontend for DeepSeek Harness</strong></p>
 
 English | [中文](README.zh.md)
 
-`@jame100101/dsh-tui` adds the React and Ink terminal interface to an official DeepSeek Harness profile. The optional `dsh-tui` command is a thin argument translator for `dsh --profile tui`; session, agent, tool, and persistence services come from the official Harness installation.
+`@jame100101/dsh-tui` adds a Claude Code-inspired React and Ink terminal interface to an official DeepSeek Harness profile. The optional `dsh-tui` command is a thin argument translator for `dsh --profile tui`; session, agent, tool, and persistence services come from the official Harness installation.
 
 ## Release candidate
 
@@ -18,9 +20,9 @@ Reuse the same `DSH_HOME` to retain credentials and sessions; do not rebuild an 
 
 Current UI, captured from an isolated official-host PTY and replayed as terminal cells (not a native Terminal window screenshot).
 
-![DSH-TUI welcome — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-welcome.png)
+![DSH Terminal UI welcome — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-welcome.png)
 
-![DSH-TUI settings — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-settings.png)
+![DSH Terminal UI settings — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-settings.png)
 
 ## Thin launcher
 

@@ -1,4 +1,6 @@
-# DSH Terminal UI（`dsh-tui`）
+<h1 align="center">DSH Terminal UI</h1>
+
+<p align="center"><strong>参考 Claude Code 风格的 DeepSeek Harness 终端前端</strong></p>
 
 [English](README.md) | 中文
 
@@ -13,18 +15,20 @@
   <a href="#核心功能"><img alt="Local TUI" src="https://img.shields.io/badge/TUI-REACT%20%7C%20INK-EC4899?style=for-the-badge"></a>
 </p>
 
-<p align="center">本地优先 · 会话持久化 · 工具运行时</p>
+<p align="center">Claude Code 风格交互 · 本地优先 · 官方 Harness 运行时</p>
 
 > **当前发布候选：`0.3.0-rc.1`（`next`）** · 需要官方 Harness **`0.2.1-rc.2`**。请按下文安装明确版本；npm `latest` 暂时仍为面向旧宿主的 `0.2.2`。
 
 新版欢迎页与设置页。图片来自隔离官方 Harness 实际 PTY 输出的单元格重放，并非 macOS Terminal 原生窗口截图；没有模拟模型回复。
 
 <p align="center">
-  <img src="assets/tui-v03-welcome.png" alt="DSH-TUI 0.3 welcome — actual PTY replay" width="100%">
-  <img src="assets/tui-v03-settings.png" alt="DSH-TUI 0.3 settings — actual PTY replay" width="100%">
+  <img src="assets/tui-v03-welcome.png" alt="DSH Terminal UI 0.3 welcome — actual PTY replay" width="100%">
+  <img src="assets/tui-v03-settings.png" alt="DSH Terminal UI 0.3 settings — actual PTY replay" width="100%">
 </p>
 
-`dsh-tui` 是 DeepSeek Harness agent runtime 的**本地终端助手**，提供类似 Claude Code 的 CLI 和 React 19 + Ink 7 界面，包含思考动画、流式回复、工具卡片、权限、斜杠命令面板、持久会话和设置面板。
+**DSH Terminal UI** 是 DeepSeek Harness agent runtime 的**本地终端助手**，提供类似 Claude Code 的 CLI 和 React 19 + Ink 7 界面，包含思考动画、流式回复、工具卡片、权限、斜杠命令面板、持久会话和设置面板。
+
+前端重点参考 Claude Code 的视觉和交互：键盘优先的输入栏、斜杠命令、紧凑工具输出、思考状态和权限操作。Agent Loop 与执行能力仍由官方 DeepSeek Harness 提供。本项目独立维护，并非 Claude Code 官方客户端，也不宣称功能完全一致。
 
 <a id="quick-start"></a>
 

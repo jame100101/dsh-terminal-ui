@@ -1,8 +1,10 @@
-# DSH Terminal UI (`dsh-tui`)
+<h1 align="center">DSH Terminal UI</h1>
+
+<p align="center"><strong>A Claude Code-inspired terminal frontend for DeepSeek Harness</strong></p>
 
 English | [中文](README.zh.md)
 
-Unofficial terminal UI for DeepSeek Harness.
+An independently maintained, unofficial terminal UI for DeepSeek Harness.
 
 <p align="center">
   <a href="#quick-start"><img alt="Node 22.19+ / 24+" src="https://img.shields.io/badge/NODE-22.19%2B%20%2F%2024%2B-339933?style=for-the-badge&logo=nodedotjs&logoColor=white"></a>
@@ -13,18 +15,20 @@ Unofficial terminal UI for DeepSeek Harness.
   <a href="#key-features"><img alt="Local TUI" src="https://img.shields.io/badge/TUI-REACT%20%7C%20INK-EC4899?style=for-the-badge"></a>
 </p>
 
-<p align="center">Local-first · Session persistence · Tool runtime</p>
+<p align="center">Claude Code-inspired interaction · Local-first · Official Harness runtime</p>
 
 > **Current release candidate: `0.3.0-rc.1` (`next`)** · Requires official Harness **`0.2.1-rc.2`**. Install the explicit version below. npm `latest` remains the older `0.2.2` release for a different host.
 
 Welcome and settings in the current release. Images replay actual cells captured from an isolated official Harness PTY; they are not native macOS Terminal window screenshots. No model response is simulated.
 
 <p align="center">
-  <img src="assets/tui-v03-welcome.png" alt="DSH-TUI 0.3 welcome — actual PTY replay" width="100%">
-  <img src="assets/tui-v03-settings.png" alt="DSH-TUI 0.3 settings — actual PTY replay" width="100%">
+  <img src="assets/tui-v03-welcome.png" alt="DSH Terminal UI 0.3 welcome — actual PTY replay" width="100%">
+  <img src="assets/tui-v03-settings.png" alt="DSH Terminal UI 0.3 settings — actual PTY replay" width="100%">
 </p>
 
-`dsh-tui` is a **local terminal assistant** for the DeepSeek Harness agent runtime — a Claude Code-style CLI with a React 19 + Ink 7 interface: thinking shimmer, streaming replies, tool cards, permissions, slash-command palette, persistent sessions, and settings panels.
+**DSH Terminal UI** is a **local terminal assistant** for the DeepSeek Harness agent runtime — a Claude Code-style CLI with a React 19 + Ink 7 interface: thinking shimmer, streaming replies, tool cards, permissions, slash-command palette, persistent sessions, and settings panels.
+
+The frontend takes its visual and interaction cues from Claude Code: a keyboard-first composer, slash commands, compact tool output, thinking indicators, and permission controls. Official DeepSeek Harness provides the agent loop and execution capabilities. This is an independent project, not an official Claude Code client or a claim of complete feature parity.
 
 <a id="run"></a>
 

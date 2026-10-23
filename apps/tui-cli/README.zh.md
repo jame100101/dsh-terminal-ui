@@ -1,8 +1,10 @@
-# @jame100101/dsh-tui
+<h1 align="center">DSH Terminal UI</h1>
+
+<p align="center"><strong>参考 Claude Code 风格的 DeepSeek Harness 终端前端</strong></p>
 
 [English](README.md) | 中文
 
-`@jame100101/dsh-tui` 为官方 DeepSeek Harness profile 添加 React 和 Ink 终端界面。可选的 `dsh-tui` 命令只把参数转换后交给 `dsh --profile tui`；会话、agent、工具和持久化服务来自官方 Harness 安装。
+`@jame100101/dsh-tui` 为官方 DeepSeek Harness profile 添加参考 Claude Code 视觉与键盘交互风格的 React 和 Ink 终端界面。可选的 `dsh-tui` 命令只把参数转换后交给 `dsh --profile tui`；会话、agent、工具和持久化服务来自官方 Harness 安装。
 
 ## 发布候选
 
@@ -18,9 +20,9 @@ dsh --profile tui
 
 新版界面来自隔离官方宿主 PTY 的单元格重放，并非原生 Terminal 窗口截图。
 
-![DSH-TUI welcome — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-welcome.png)
+![DSH Terminal UI welcome — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-welcome.png)
 
-![DSH-TUI settings — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-settings.png)
+![DSH Terminal UI settings — actual PTY replay](https://raw.githubusercontent.com/jame100101/dsh-terminal-ui/main/assets/tui-v03-settings.png)
 
 ## Thin launcher
 
