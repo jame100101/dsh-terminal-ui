@@ -339,7 +339,7 @@ Reuse an existing isolated acceptance home instead of creating a new one for eve
 DSH_TUI_ACCEPTANCE_HOME=/absolute/existing/isolated/home pnpm dev:tui
 ```
 
-This builds the checkout against pinned rc.2, seeds a separate `tui-source` profile once, and keeps the same credentials and sessions. It requires an existing `tui` profile and does not change the global installation. Stop it before using the previous launcher for rollback. On macOS Terminal, paste screenshots with **Ctrl+V**; Cmd+V may send no input event. See the feature comparison and limitations (review records are stored outside Git).
+This builds the checkout against pinned rc.2, seeds a separate `tui-source` profile once, and keeps the same credentials and sessions. It requires an existing `tui` profile and does not change the global installation. Existing source profiles must point to this checkout; foreign or dangling source links are rejected before any build or profile write. Keep the owning checkout when reusing a source profile. Stop it before using the previous launcher for rollback. On macOS Terminal, paste screenshots with **Ctrl+V**; Cmd+V may send no input event. See the feature comparison and limitations (review records are stored outside Git).
 
 ## Build and automated checks
 

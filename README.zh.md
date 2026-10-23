@@ -339,7 +339,7 @@ wrapper 负责转换启动参数并运行 `dsh --profile tui`。TUI 插件将 ap
 DSH_TUI_ACCEPTANCE_HOME=/absolute/existing/isolated/home pnpm dev:tui
 ```
 
-入口针对固定 rc.2 构建当前源码，仅首次初始化独立的 `tui-source` profile，继续使用同一份凭据与会话。要求已有 `tui` profile，不修改全局安装。回退时先关闭它，再使用旧启动入口。macOS Terminal 粘贴截图请按 **Ctrl+V**；Cmd+V 可能不发送任何输入事件。参见功能对照与限制（验收记录单独保存在仓库外）。
+入口针对固定 rc.2 构建当前源码，仅首次初始化独立的 `tui-source` profile，继续使用同一份凭据与会话。要求已有 `tui` profile，不修改全局安装。已有源码 profile 必须指向当前 checkout；若源码链接属于其他 checkout 或已失效，入口会在构建及写入 profile 前拒绝启动。复用源码 profile 时应保留其所属的 checkout。回退时先关闭它，再使用旧启动入口。macOS Terminal 粘贴截图请按 **Ctrl+V**；Cmd+V 可能不发送任何输入事件。参见功能对照与限制（验收记录单独保存在仓库外）。
 
 ## 构建与自动检查
 

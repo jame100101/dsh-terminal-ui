@@ -2435,7 +2435,11 @@ describe('Ink 7 full-screen render', () => {
       await type('/editor')
       await type('\r')
       expect(lastFrameLines(capture).some(line => line.includes('❯original [Image #1]'))).toBe(true)
-      expect(lastFrameLines(capture).some(line => line.includes('Image reference tokens changed'))).toBe(true)
+      // suspendTerminal waits for the resumed frame to flush before the rejection
+      // reaches setNotice. A fixed key-input delay is not that completion signal.
+      await vi.waitFor(() => {
+        expect(lastFrameLines(capture).some(line => line.includes('Image reference tokens changed'))).toBe(true)
+      }, { timeout: 2000 })
       expect(store.getSnapshot().pendingImages[0]?.resource).toBe('official-image')
       expect(restoreDraftImages).toHaveBeenLastCalledWith(['official-image'])
     } finally { unmount() }
@@ -2556,7 +2560,10 @@ describe('Ink 7 full-screen render', () => {
       await type(command)
       await type('\r')
       expect(lastFrameLines(capture).some(line => line.includes('❯original draft'))).toBe(true)
-      expect(lastFrameLines(capture).some(line => line.includes('editor exited with 7'))).toBe(true)
+      // Error notices arrive after Ink's asynchronous terminal-resume flush.
+      await vi.waitFor(() => {
+        expect(lastFrameLines(capture).some(line => line.includes('editor exited with 7'))).toBe(true)
+      }, { timeout: 2000 })
       expect(capture.terminal.buffer.active.cursorX).toBeGreaterThan(1)
       await type('\x1b[C')
       await type('X')
